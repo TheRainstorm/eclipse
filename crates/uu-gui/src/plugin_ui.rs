@@ -54,6 +54,14 @@ impl Manager {
         if let Some(runtime)=&self.runtime {let runtime=runtime.lock().unwrap();self.pages.retain(|id,_|runtime.get(id).is_ok());}
     }
     pub fn enabled(&self,id:&str)->bool {self.runtime.as_ref().is_some_and(|r|r.lock().unwrap().get(id).is_ok())}
+    #[cfg(windows)]
+    pub fn loaded_manifests(&self)->Vec<uu_plugin_sdk::Manifest> {
+        self.runtime.as_ref().map(|r|r.lock().unwrap().active().into_iter().map(|(_,loaded)|loaded.manifest.clone()).collect()).unwrap_or_default()
+    }
+    #[cfg(windows)]
+    pub fn service_preferences(&self)->Option<Preferences> {
+        self.error.is_empty().then(||self.preferences.clone())
+    }
     pub fn client_support(&self,id:&str)->uu_plugin_sdk::ClientSupport {
         self.runtime.as_ref().and_then(|r|r.lock().unwrap().get(id).ok()).map(|p|p.plugin.client_support()).unwrap_or_default()
     }
@@ -125,7 +133,7 @@ impl Manager {
                             .and_then(|config|runtime.lock().unwrap().save(config,&id,&expected,value));
                         match result {
                             Ok(value)=> {
-                                self.preferences=value;self.notice=uu_i18n::text("插件设置已保存；现有串流继续，主机入口需重启共享服务生效。").into();
+                                self.preferences=value;self.notice=uu_i18n::text(if cfg!(windows){"插件设置已保存；现有串流继续，服务将在空闲时自动应用。"}else{"插件设置已保存；现有串流继续，主机入口需重启共享服务生效。"}).into();
                                 if let Some(watch)=&self.watch {watch.epoch.fetch_add(1,Ordering::AcqRel);watch.thread.thread().unpark();}
                                 ui.ctx().request_repaint();
                             },

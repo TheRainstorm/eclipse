@@ -13,7 +13,7 @@ use uu_core::{
     device_book::Sharing,
     device_trust::{Permissions, PublicDevice},
     host_admin,
-    service_admin::{windows::*, PluginRequest, PluginSnapshot, PluginInfo, Request, Response, TrustRequest, TrustSnapshot},
+    service_admin::{windows::*, PluginRequest, PluginSnapshot, Request, Response, TrustRequest, TrustSnapshot},
 };
 use windows_sys::Win32::System::Services::{SERVICE_RUNNING, SERVICE_STOPPED};
 mod connections;
@@ -23,10 +23,23 @@ pub(super) struct Entry {
     manager: Option<Manager>,
     requested_section: Option<u8>,
     deployment: Option<Deployment>,
-    job: Option<mpsc::Receiver<Result<bool, String>>>,
+    job: Option<mpsc::Receiver<Result<DeploymentOutcome, String>>>,
     feedback: super::ui_feedback::Feedback,
+    loaded_plugins: Vec<uu_plugin_sdk::Manifest>,
+    plugin_preferences: Option<uu_core::plugins::Preferences>,
+    automatic_update_attempted: bool,
+    automatic_plugin_attempts: std::collections::BTreeSet<String>,
+    automatic_sync_enabled: bool,
+    automatic_job: bool,
+    retry_after: Option<Instant>,
+    deployment_error: String,
 }
 impl Entry {
+    pub fn set_loaded_plugins(&mut self,plugins:Vec<uu_plugin_sdk::Manifest>,preferences:Option<uu_core::plugins::Preferences>) {
+        self.loaded_plugins=plugins;
+        self.plugin_preferences=preferences;
+        self.automatic_sync_enabled=true;
+    }
     pub fn poll(&mut self, ctx: &egui::Context, _host: &mut super::sharing_ui::HostUi) -> bool {
         if self.manager.is_none() {
             match Manager::new() {
@@ -35,15 +48,26 @@ impl Entry {
             }
         }
         if let Some(manager) = &mut self.manager {
+            manager.loaded_plugins=self.loaded_plugins.clone();
             if let Some(section)=self.requested_section.take() {manager.section=section;}
             manager.poll();
+            if let Some(deployment)=manager.deployment.take() {self.deployment=Some(deployment);}
+        }
+        if !cfg!(test) && self.automatic_sync_enabled && self.job.is_none() && self.deployment.is_none()
+            && self.retry_after.is_none_or(|at|Instant::now()>=at) {
+            self.schedule_automatic_sync();
         }
         let mut installed = false;
         if let Some(job) = &self.job {
-            if let Ok(result) = job.try_recv() {
+            let completed=match job.try_recv() {
+                Ok(result)=>Some(result),
+                Err(mpsc::TryRecvError::Empty)=>None,
+                Err(mpsc::TryRecvError::Disconnected)=>Some(Err("Eclipse update worker exited without a completion result".into())),
+            };
+            if let Some(result) = completed {
                 self.job = None;
                 match result {
-                    Ok(true) => {
+                    Ok(DeploymentOutcome::Applied) => {
                         installed = true;
                         self.feedback.success(
                             super::ui_feedback::Scope::Services(0),
@@ -53,46 +77,62 @@ impl Entry {
                             manager.submit(Job::Refresh);
                         }
                     }
-                    Ok(false) => self.feedback.report(
+                    Ok(DeploymentOutcome::Cancelled) => self.feedback.report(
                         super::ui_feedback::Scope::Services(0),
                         super::ui_feedback::Kind::Info,
                         uu_i18n::text("已取消系统授权，服务尚未更新"),
                     ),
-                    Err(error) => self.feedback.error(
-                        super::ui_feedback::Scope::Services(0),
-                        error,
-                    ),
+                    Ok(DeploymentOutcome::Deferred) => {
+                        self.automatic_update_attempted=false;
+                        self.automatic_plugin_attempts.clear();
+                        self.retry_after=Some(Instant::now()+Duration::from_secs(5));
+                        self.feedback.report(super::ui_feedback::Scope::Services(0),super::ui_feedback::Kind::Progress,
+                            uu_i18n::text("更新正在等待串流结束或临时显示器关闭；未完成的显示器操作也需要先处理。"));
+                    }
+                    Err(error) => {
+                        self.deployment_error=error;
+                        self.feedback.error(super::ui_feedback::Scope::Services(0),uu_i18n::text("更新尚未完成，请重试或查看诊断详情。"));
+                    }
                 }
             }
         }
         if let Some(deployment) = self.deployment.take() {
+            let automatic=std::mem::take(&mut self.automatic_job);
+            if matches!(deployment,Deployment::Install) {self.automatic_update_attempted=true;}
             let (send, receive) = mpsc::channel();
             self.job = Some(receive);
             let ctx = ctx.clone();
             std::thread::spawn(move || {
-                let result = (|| -> anyhow::Result<bool> {
+                let result = (|| -> anyhow::Result<DeploymentOutcome> {
                     let exe = std::env::current_exe()?;
                     uu_core::service_admin::package::verify(
                         exe.parent()
                             .ok_or_else(|| anyhow::anyhow!("application directory unavailable"))?,
                         env!("UU_BUILD_COMMIT"),
                     )?;
+                    // Recheck immediately before an automatic restart. A host
+                    // with temporary displays or an accepted preparation is
+                    // still in use even when its stream count reaches zero.
+                    if automatic && !automatic_restart_ready()? {return Ok(DeploymentOutcome::Deferred);}
                     let config = uu_core::Config::from_env()?;
-                    match elevated(
+                    match elevated_exit_code(
                         &exe,
                         &format!(
-                            "--background-service-action {} --source-data \"{}\"",
+                            "--background-service-action {} --source-data \"{}\"{}",
                             deployment.action(),
-                            config.data_dir.display()
+                            config.data_dir.display(),
+                            if automatic {" --defer-if-busy"}else{""}
                         ),
                     ) {
-                        Ok(()) => Ok(true),
+                        Ok(0) => Ok(DeploymentOutcome::Applied),
+                        Ok(10) => Ok(DeploymentOutcome::Deferred),
+                        Ok(code) => anyhow::bail!("Eclipse update helper exited with status {code}"),
                         Err(error)
                             if error
                                 .downcast_ref::<std::io::Error>()
                                 .is_some_and(|e| e.raw_os_error() == Some(1223)) =>
                         {
-                            Ok(false)
+                            Ok(DeploymentOutcome::Cancelled)
                         }
                         Err(error) => Err(error),
                     }
@@ -108,6 +148,35 @@ impl Entry {
     }
     pub fn keep_displays(&self) -> Option<bool> {
         self.manager.as_ref().and_then(|m| m.keep_displays)
+    }
+    fn schedule_automatic_sync(&mut self) {
+        let Some(manager)=&self.manager else{return;};
+        if manager.busy || manager.confirm.is_some() || manager.dirty || manager.state==0 {return;}
+        let idle=manager.state==SERVICE_STOPPED || manager.snapshot.as_ref().is_some_and(|s|s.connections.is_empty());
+        if !idle {return;}
+        if manager.update_needed() {
+            if !self.automatic_update_attempted {
+                self.automatic_update_attempted=true;
+                self.automatic_job=true;
+                self.deployment=Some(Deployment::Install);
+            }
+        } else if let (Some(snapshot),Some(preferences))=(&manager.plugins,&self.plugin_preferences) {
+            let missing=manager.loaded_plugins.iter().filter(|loaded|!snapshot.plugins.iter().any(|p|p.id==loaded.id&&p.enabled&&p.compatible&&p.version==loaded.version)).collect::<Vec<_>>();
+            let changed=snapshot.plugins.iter().find(|p| {
+                (!preferences.get(&p.id).enabled&&p.preferences.enabled)
+                    || (manager.loaded_plugins.iter().any(|loaded|loaded.id==p.id&&loaded.version==p.version)&&p.compatible&&p.preferences!=preferences.get(&p.id))
+            });
+            let key=format!("{}:{}:{:?}",missing.iter().map(|p|format!("{}:{}",p.id,p.library_sha256)).collect::<Vec<_>>().join("|"),serde_json::to_string(preferences).unwrap_or_default(),changed.map(|p|&p.id));
+            if (!missing.is_empty()||changed.is_some())&&self.automatic_plugin_attempts.insert(key) {
+                if let Some(plugin)=changed {
+                    let request=PluginRequest::Save{id:plugin.id.clone(),expected:plugin.preferences.clone(),value:preferences.get(&plugin.id)};
+                    self.manager.as_mut().unwrap().submit(Job::Rpc(Request::Plugins{request}));
+                }else if !missing.is_empty() {
+                    self.automatic_job=true;
+                    self.deployment=Some(Deployment::ImportPlugins);
+                }
+            }
+        }
     }
     pub fn password_configured(&self) -> Option<bool> {
         self.manager
@@ -140,7 +209,7 @@ impl Entry {
             if manager.state == 0 {
                 self.deployment = Some(Deployment::Install);
             } else if manager.state == SERVICE_RUNNING {
-                manager.confirm = Some(Confirmation::Stop);
+                manager.request_action(Confirmation::Stop);
             } else if manager.state == SERVICE_STOPPED {
                 manager.submit(Job::Control(true));
             }
@@ -157,9 +226,13 @@ impl Entry {
             ui.weak(uu_i18n::text("后台服务管理未就绪"));
             self.feedback
                 .show(ui, super::ui_feedback::Scope::Services(0));
+            if !self.deployment_error.is_empty() {
+                ui.collapsing(uu_i18n::text("诊断详情"),|ui|{ui.label(&self.deployment_error);});
+            }
             return installed;
         }
         if let Some(manager) = &mut self.manager {
+            if self.job.is_some() {ui.horizontal(|ui|{ui.spinner();ui.label(uu_i18n::text("正在完成更新…"));});}
             manager.show_tabs(ui);
         }
         let section = self.manager.as_ref().map_or(0, |manager| manager.section);
@@ -167,13 +240,13 @@ impl Entry {
             self.show_status_card(ui, available);
         }
         if let Some(manager) = &mut self.manager {
-            manager.show_body(ui);
+            ui.add_enabled_ui(self.job.is_none(),|ui|manager.show_body(ui));
         }
         installed
     }
 
     fn show_status_card(&mut self, ui: &mut egui::Ui, available: bool) {
-        let busy = self.job.is_some() || self.manager.as_ref().is_some_and(|manager| manager.busy);
+        let busy = self.job.is_some() || self.manager.as_ref().is_some_and(|manager| manager.busy || manager.confirm.is_some());
         let frame = crate::theme::card(ui.visuals());
         let width = (ui.available_width()
             - frame.inner_margin.sum().x
@@ -206,11 +279,7 @@ impl Entry {
                 "开机自动运行；关闭此窗口后继续提供串流。配置和配对统一保存在服务中。",
             ));
             if let Some(manager) = &mut self.manager {
-                let outdated = manager
-                    .build
-                    .as_ref()
-                    .and_then(|b| b.installed.as_ref())
-                    .is_some_and(|v| v.revision != env!("UU_BUILD_COMMIT"));
+                let outdated = manager.update_needed();
                 if let Some(build) = &manager.build {
                     ui.small(crate::build_info::label())
                         .on_hover_ui(|ui| version_labels(ui, build));
@@ -231,14 +300,14 @@ impl Entry {
                             .add_enabled(
                                 !busy,
                                 crate::theme::secondary_button(if outdated {
-                                    uu_i18n::text("应用程序更新")
+                                    uu_i18n::text("完成更新")
                                 } else {
                                     uu_i18n::text("重新部署服务")
                                 }),
                             )
                             .clicked()
                         {
-                            manager.confirm = Some(Confirmation::Update);
+                            manager.request_action(Confirmation::Update);
                         }
                         if ui
                             .add_enabled(
@@ -258,65 +327,16 @@ impl Entry {
                             if manager.state == SERVICE_STOPPED {
                                 manager.submit(Job::Control(true));
                             } else {
-                                manager.confirm = Some(Confirmation::Stop);
+                                manager.request_action(Confirmation::Stop);
                             }
                         }
                     }
                 });
-                if manager.section == 5 && manager.state != 0 {
-                    if ui
-                        .add_enabled(
-                            !busy,
-                            crate::theme::secondary_button(uu_i18n::text("导入服务插件")),
-                        )
-                        .on_hover_text(uu_i18n::text(
-                            "将当前已启用插件及其声明的配置、账号复制到服务；导入代码需要系统授权。",
-                        ))
-                        .clicked()
-                    {
-                        manager.confirm = Some(Confirmation::ImportPlugins);
-                    }
-                }
                 if outdated {
                     ui.colored_label(
                         crate::theme::palette(ui.visuals()).warning,
-                        uu_i18n::text("新程序包尚未应用到服务。更新会保留同一份配置与配对。"),
+                        uu_i18n::text("Eclipse 更新尚未完成；空闲时会自动继续，Windows 可能请求系统授权。"),
                     );
-                }
-                if let Some(confirm) = manager.confirm {
-                    ui.separator();
-                    if let Some(snapshot) = &manager.snapshot {
-                        ui.label(uu_i18n::format!(
-                            "此操作会断开当前 {} 个串流会话。",
-                            snapshot.connections.len()
-                        ));
-                    } else {
-                        ui.label(uu_i18n::text(
-                            "无法确认当前连接数；此操作可能会断开正在进行的串流。",
-                        ));
-                    }
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add(crate::theme::primary_button(uu_i18n::text("确认继续")))
-                            .clicked()
-                        {
-                            manager.confirm = None;
-                            match confirm {
-                                Confirmation::Update => self.deployment = Some(Deployment::Install),
-                                Confirmation::ImportPlugins => {
-                                    self.deployment = Some(Deployment::ImportPlugins)
-                                }
-                                Confirmation::Stop => manager.submit(Job::Control(false)),
-                                Confirmation::Restart => manager.save(true),
-                            }
-                        }
-                        if ui
-                            .add(crate::theme::secondary_button(uu_i18n::text("取消")))
-                            .clicked()
-                        {
-                            manager.confirm = None;
-                        }
-                    });
                 }
             }
             self.feedback
@@ -376,6 +396,23 @@ enum Deployment {
     Install,
     ImportPlugins,
 }
+enum DeploymentOutcome { Applied, Cancelled, Deferred }
+fn automatic_restart_ready()->anyhow::Result<bool> {
+    if status()?!=SERVICE_RUNNING {return Ok(true);}
+    let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    runtime.block_on(async {
+        let host=request_remote(Request::Status).await?;
+        if !matches!(host,Response::Status{ref snapshot,..} if snapshot.connections.is_empty()) {return Ok(false);}
+        let displays=request_remote(Request::VirtualDisplay{request:uu_core::native_virtual_display::Request::Inspect.into()}).await?;
+        Ok(automatic_restart_safe(&displays))
+    })
+}
+fn automatic_restart_safe(response:&Response)->bool {
+    matches!(response,Response::VirtualDisplay{response:uu_core::native_virtual_display::Response::Snapshot{displays,status,..}}
+        if displays.iter().all(|d|d.persistent&&!d.cleanup_pending)
+            && status.preparation.as_ref().is_none_or(|p|!super::virtual_display_ui::preparation_active(p)
+                && p.phase!=uu_core::virtual_display::preparation::Phase::RecoveryPending))
+}
 impl Deployment {
     fn action(self) -> &'static str {
         match self {
@@ -384,7 +421,7 @@ impl Deployment {
         }
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Confirmation {
     Update,
     ImportPlugins,
@@ -423,18 +460,6 @@ enum Event {
         result: Result<Response, String>,
     },
 }
-struct PluginDraft {
-    expected:uu_core::plugins::PluginPreferences,
-    value:uu_core::plugins::PluginPreferences,
-    options:String,
-    dirty:bool,
-}
-impl PluginDraft {
-    fn new(value:uu_core::plugins::PluginPreferences)->Self {
-        let options=serde_json::to_string_pretty(&value.options).unwrap_or_else(|_| "{}".into());
-        Self{expected:value.clone(),value,options,dirty:false}
-    }
-}
 struct Manager {
     virtual_display: super::virtual_display_ui::State,
     sender: mpsc::SyncSender<Job>,
@@ -449,7 +474,6 @@ struct Manager {
     snapshot: Option<host_admin::Snapshot>,
     trust: Option<TrustSnapshot>,
     plugins:Option<PluginSnapshot>,
-    plugin_drafts:HashMap<String,PluginDraft>,
     service_connections: connections::State,
     endpoints: Vec<(String, String)>,
     pending: Vec<uu_core::service_admin::Pairing>,
@@ -464,6 +488,8 @@ struct Manager {
     permissions: HashMap<String, Permissions>,
     pairing: ServicePairing,
     confirm: Option<Confirmation>,
+    deployment: Option<Deployment>,
+    loaded_plugins: Vec<uu_plugin_sdk::Manifest>,
 }
 impl Drop for Manager {
     fn drop(&mut self) {
@@ -624,7 +650,6 @@ impl Manager {
             snapshot: None,
             trust: None,
             plugins:None,
-            plugin_drafts:HashMap::new(),
             service_connections: Default::default(),
             endpoints: vec![],
             pending: vec![],
@@ -639,6 +664,8 @@ impl Manager {
             permissions: HashMap::new(),
             pairing: Default::default(),
             confirm: None,
+            deployment: None,
+            loaded_plugins: Vec::new(),
         }
     }
     fn submit(&mut self, job: Job) {
@@ -817,77 +844,95 @@ impl Manager {
             },
         }));
     }
-    fn apply_plugin_snapshot(&mut self,snapshot:PluginSnapshot) {
-        let ids=snapshot.plugins.iter().map(|plugin|plugin.id.clone()).collect::<std::collections::HashSet<_>>();
-        for plugin in &snapshot.plugins {
-            match self.plugin_drafts.get_mut(&plugin.id) {
-                Some(draft) if draft.dirty=>{},
-                Some(draft)=>{
-                    if draft.expected!=plugin.preferences {*draft=PluginDraft::new(plugin.preferences.clone());}
-                }
-                None=>{self.plugin_drafts.insert(plugin.id.clone(),PluginDraft::new(plugin.preferences.clone()));}
-            }
+    fn request_action(&mut self, action:Confirmation) {
+        if self.busy || self.confirm.is_some() || self.deployment.is_some() {return;}
+        if self.state==SERVICE_STOPPED || self.snapshot.as_ref().is_some_and(|s|s.connections.is_empty()) {
+            self.apply_action(action);
+        } else {
+            self.confirm=Some(action);
         }
-        self.plugin_drafts.retain(|id,_|ids.contains(id));
+    }
+    fn update_needed(&self)->bool {
+        self.build.as_ref().is_some_and(|build| {
+            build.installed.as_ref().is_some_and(|version|version.revision!=env!("UU_BUILD_COMMIT"))
+                || build.running.as_ref().is_some_and(|version|version.revision!=env!("UU_BUILD_COMMIT"))
+        })
+    }
+    fn apply_action(&mut self, action:Confirmation) {
+        match action {
+            Confirmation::Update=>self.deployment=Some(Deployment::Install),
+            Confirmation::ImportPlugins=>self.deployment=Some(Deployment::ImportPlugins),
+            Confirmation::Stop=>self.submit(Job::Control(false)),
+            Confirmation::Restart=>self.save(true),
+
+        }
+    }
+    fn show_confirmation(&mut self,ctx:&egui::Context) {
+        if self.confirm.is_none(){return;}
+        if self.state==SERVICE_STOPPED || self.snapshot.as_ref().is_some_and(|s|s.connections.is_empty()) {
+            if let Some(action)=self.confirm.take(){self.apply_action(action);}
+            return;
+        }
+        let mut accept=false;let mut cancel=false;
+        egui::Window::new(uu_i18n::text("确认继续"))
+            .id(egui::Id::new("service-action-confirmation"))
+            .anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO)
+            .collapsible(false).resizable(false).default_width(420.).show(ctx,|ui|{
+                if let Some(snapshot)=&self.snapshot {
+                    ui.label(uu_i18n::format!("此操作会断开当前 {} 个串流会话。",snapshot.connections.len()));
+                }else{ui.label(uu_i18n::text("无法确认当前连接数；此操作可能会断开正在进行的串流。"));}
+                ui.horizontal(|ui|{
+                    accept=ui.add(crate::theme::primary_button(uu_i18n::text("确认继续"))).clicked();
+                    cancel=ui.add(crate::theme::secondary_button(uu_i18n::text("取消"))).clicked();
+                });
+            });
+        if accept {if let Some(action)=self.confirm.take(){self.apply_action(action);}}
+        else if cancel {self.confirm=None;}
+    }
+    fn apply_plugin_snapshot(&mut self,snapshot:PluginSnapshot) {
         self.plugins=Some(snapshot);
     }
     fn plugins_ui(&mut self,ui:&mut egui::Ui,enabled:bool) {
-        ui.add_space(12.);
-        crate::theme::card(ui.visuals()).show(ui,|ui|{
-            ui.horizontal_wrapped(|ui|{
-                ui.strong(uu_i18n::text("后台插件"));
-                if ui.add_enabled(enabled,crate::theme::secondary_button(uu_i18n::text("重新扫描后台插件"))).clicked(){
-                    self.submit(Job::Rpc(Request::Plugins{request:PluginRequest::Rescan}));
-                }
-            });
-            ui.weak(uu_i18n::text("这里读写 Windows 后台服务自己的插件开关和选项；不会读取或覆盖当前用户的前台插件配置。保存后共享服务会重启。"));
-            let Some(snapshot)=self.plugins.clone() else{ui.weak(uu_i18n::text("正在读取后台插件…"));return;};
-            ui.small(snapshot.directory);
-            if snapshot.plugins.is_empty(){ui.label(uu_i18n::text("后台尚未安装插件。可先导入服务插件，再重新扫描。"));}
-            let mut save=None;
-            for plugin in snapshot.plugins {
-                ui.push_id(("service-plugin",&plugin.id),|ui|{
-                    egui::Frame::group(ui.style()).inner_margin(12.).show(ui,|ui|{
-                        ui.horizontal_wrapped(|ui|{
-                            ui.strong(&plugin.name);ui.label(format!("v{}",plugin.version));
-                            if !plugin.compatible{ui.colored_label(crate::theme::palette(ui.visuals()).danger,uu_i18n::text("与当前后台 SDK 不匹配"));}
-                        });
-                        if !plugin.error.is_empty(){ui.colored_label(crate::theme::palette(ui.visuals()).danger,&plugin.error);}
-                        let draft=self.plugin_drafts.entry(plugin.id.clone()).or_insert_with(||PluginDraft::new(plugin.preferences.clone()));
-                        let mut changed=false;
-                        changed|=ui.add_enabled_ui(enabled&&plugin.compatible,|ui|crate::theme::switch(ui,&mut draft.value.enabled,uu_i18n::text("在后台启用"))).inner.changed();
-                        ui.collapsing(uu_i18n::text("高级选项（JSON）"),|ui|{
-                            changed|=ui.add(egui::TextEdit::multiline(&mut draft.options).desired_rows(3).code_editor()).changed();
-                        });
-                        if changed{draft.dirty=true;}
-                        if draft.dirty {
-                            ui.horizontal_wrapped(|ui|{
-                                if ui.add_enabled(enabled&&plugin.compatible,crate::theme::primary_button(uu_i18n::text("保存并重启服务"))).clicked(){
-                                    match serde_json::from_str::<serde_json::Map<String,serde_json::Value>>(&draft.options) {
-                                        Ok(options)=>{draft.value.options=options;save=Some((plugin.id.clone(),draft.expected.clone(),draft.value.clone()));},
-                                        Err(error)=>self.feedback.error(
-                                            super::ui_feedback::Scope::Services(5),
-                                            uu_i18n::format!("插件选项不是有效 JSON：{error}"),
-                                        ),
-                                    }
-                                }
-                                if ui.add(crate::theme::secondary_button(uu_i18n::text("还原"))).clicked(){*draft=PluginDraft::new(draft.expected.clone());}
-                            });
-                            ui.weak(uu_i18n::text("保存会按后台插件自己的校验规则应用选项，并重启共享服务以更新主机入口。"));
+        // The user's loaded extensions define the product surface. Stale
+        // protected files, disabled extensions and SDK failures do not add UI.
+        let providers=uu_core::plugins::registry().descriptors();
+        for loaded in self.loaded_plugins.clone() {
+            let installed=self.plugins.as_ref().and_then(|s|s.plugins.iter().find(|p|p.id==loaded.id)).cloned();
+            let ready=installed.as_ref().is_some_and(|p|p.enabled&&p.compatible&&p.error.is_empty()&&p.version==loaded.version);
+            ui.push_id(("connection-plugin",&loaded.id),|ui| {
+                section_card(ui,&loaded.name,|ui| {
+                    if ready {
+                        ui.weak(uu_i18n::text("已就绪"));
+                    }else{
+                        ui.weak(uu_i18n::text("正在完成插件配置；串流空闲后会自动应用。"));
+                        if ui.add_enabled(enabled,crate::theme::secondary_button(uu_i18n::text("完成配置"))).clicked() {
+                            self.request_action(if self.update_needed(){Confirmation::Update}else{Confirmation::ImportPlugins});
+                        }
+                    }
+                    if let Some(provider)=providers.iter().find(|p|p.id==loaded.id) {
+                        let mut selected=self.draft.plugin_services.iter().any(|id|id==provider.id);
+                        if ui.add_enabled_ui(enabled,|ui|crate::theme::switch(ui,&mut selected,provider.name)).inner.changed() {
+                            self.draft.plugin_services.retain(|id|id!=provider.id);
+                            if selected {self.draft.plugin_services.push(provider.id.into());}
+                            self.dirty=true;
+                        }
+                    }
+                    ui.collapsing(uu_i18n::text("诊断详情"),|ui| {
+                        ui.label(format!("{} · v{}",loaded.id,loaded.version));
+                        if let Some(snapshot)=&self.plugins {ui.small(&snapshot.directory);}
+                        if let Some(plugin)=&installed {
+                            if !plugin.error.is_empty(){ui.label(&plugin.error);}
+                            ui.monospace(serde_json::to_string_pretty(&plugin.preferences).unwrap_or_default());
                         }
                     });
                 });
-            }
-            if let Some((id,expected,value))=save {
-                self.plugin_drafts.get_mut(&id).map(|draft|draft.dirty=false);
-                self.submit(Job::Rpc(Request::Plugins{request:PluginRequest::Save{id,expected,value}}));
-            }
-        });
+            });
+        }
     }
     fn show_tabs(&mut self, ui: &mut egui::Ui) {
         self.virtual_display.poll(None);
         ui.add_space(10.);
-        ui.horizontal_wrapped(|ui| {
+        ui.add_enabled_ui(self.confirm.is_none(),|ui|ui.horizontal_wrapped(|ui| {
             for (tab, label) in [
                 (0, "服务管理"),
                 (1, "输入"),
@@ -899,10 +944,14 @@ impl Manager {
             ] {
                 crate::theme::tab_value(ui, &mut self.section, tab, uu_i18n::text(label));
             }
-        });
+        }));
         ui.add_space(10.);
     }
     fn show_body(&mut self, ui: &mut egui::Ui) {
+        ui.add_enabled_ui(self.confirm.is_none(),|ui|self.show_body_contents(ui));
+        self.show_confirmation(ui.ctx());
+    }
+    fn show_body_contents(&mut self, ui: &mut egui::Ui) {
         self.feedback.tick(ui.ctx());
         self.feedback
             .show(ui, super::ui_feedback::Scope::Services(self.section));
@@ -1015,7 +1064,7 @@ impl Manager {
                                 )))
                                 .clicked()
                             {
-                                self.confirm = Some(Confirmation::Restart);
+                                self.request_action(Confirmation::Restart);
                             }
                         });
                     });
@@ -1043,19 +1092,6 @@ impl Manager {
                                     .range(1..=65535),
                             );
                         });
-                        for provider in uu_core::plugins::registry().descriptors() {
-                            let mut selected = self
-                                .draft
-                                .plugin_services
-                                .iter()
-                                .any(|id| id == provider.id);
-                            if crate::theme::switch(ui, &mut selected, provider.name).changed() {
-                                self.draft.plugin_services.retain(|id| id != provider.id);
-                                if selected {
-                                    self.draft.plugin_services.push(provider.id.into());
-                                }
-                            }
-                        }
                         self.dirty |= self.draft != before;
                         ui.horizontal_wrapped(|ui| {
                             if ui
@@ -1088,7 +1124,7 @@ impl Manager {
                                 )))
                                 .clicked()
                             {
-                                self.confirm = Some(Confirmation::Restart);
+                                self.request_action(Confirmation::Restart);
                             }
                         });
                         if self.dirty
@@ -1220,10 +1256,14 @@ struct Standalone {
     entry: Entry,
     host: super::sharing_ui::HostUi,
     appearance: super::theme::PreferenceWatch,
+    plugins: super::plugin_ui::Manager,
 }
 impl eframe::App for Standalone {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.appearance.poll(ctx);
+        self.plugins.poll();
+        self.entry.loaded_plugins=self.plugins.loaded_manifests();
+        self.entry.plugin_preferences=self.plugins.service_preferences();
         ctx.request_repaint_after(Duration::from_millis(500));
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1413,6 +1453,7 @@ fn run_manager(virtual_displays: bool) -> eframe::Result {
                 },
                 host: Default::default(),
                 appearance,
+                plugins: super::plugin_ui::Manager::new(uu_core::Config::from_env().ok().as_ref(),&cc.egui_ctx),
             }))
         }),
     )
@@ -1565,7 +1606,8 @@ pub(super) fn dispatch() -> Option<eframe::Result> {
     }
     let virtual_displays = args == ["--open-virtual-display-manager"];
     let opening = args == ["--open-background-service-manager"] || virtual_displays;
-    let action = if args.len() == 4
+    let defer_if_busy=args.len()==5&&args[4]=="--defer-if-busy";
+    let action = if (args.len() == 4 || defer_if_busy)
         && args[0] == "--background-service-action"
         && args[2] == "--source-data"
     {
@@ -1596,6 +1638,7 @@ pub(super) fn dispatch() -> Option<eframe::Result> {
                     .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定安装包目录")))?,
                 env!("UU_BUILD_COMMIT"),
             )?;
+            if defer_if_busy && !automatic_restart_ready()? {std::process::exit(10);}
             let mut command = std::process::Command::new(exe.with_file_name("eclipse-cli.exe"));
             command
                 .args(["service", action, "--source-data"])
@@ -2113,17 +2156,100 @@ mod tests {
         h.click("取消");
         assert!(!h.has("保存服务器"));
     }
+
     #[test]
-    fn periodic_plugin_snapshots_do_not_overwrite_an_unsaved_service_draft() {
-        let (mut manager,_,_,_)=fixture();
-        let initial=uu_core::plugins::PluginPreferences{enabled:false,options:Default::default()};
-        manager.apply_plugin_snapshot(PluginSnapshot{directory:"generated".into(),plugins:vec![PluginInfo{id:"fixture".into(),name:"Fixture".into(),version:"1".into(),enabled:false,compatible:true,error:String::new(),preferences:initial.clone()}]});
-        let draft=manager.plugin_drafts.get_mut("fixture").unwrap();draft.value.enabled=true;draft.dirty=true;
-        let remote=uu_core::plugins::PluginPreferences{enabled:false,options:serde_json::from_str(r#"{"remote":true}"#).unwrap()};
-        manager.apply_plugin_snapshot(PluginSnapshot{directory:"generated".into(),plugins:vec![PluginInfo{id:"fixture".into(),name:"Fixture".into(),version:"1".into(),enabled:false,compatible:true,error:String::new(),preferences:remote.clone()}]});
-        let draft=manager.plugin_drafts.get("fixture").unwrap();assert!(draft.dirty&&draft.value.enabled);assert_eq!(draft.expected,initial);
-        manager.plugin_drafts.get_mut("fixture").unwrap().dirty=false;
-        manager.apply_plugin_snapshot(PluginSnapshot{directory:"generated".into(),plugins:vec![PluginInfo{id:"fixture".into(),name:"Fixture".into(),version:"1".into(),enabled:false,compatible:true,error:String::new(),preferences:remote.clone()}]});
-        assert_eq!(manager.plugin_drafts.get("fixture").unwrap().expected,remote);
+    fn restart_with_no_streams_applies_from_the_current_settings_tab() {
+        for section in [1,2,3,5] {
+            let mut h=Harness::new();h.manager.section=section;
+            h.click("保存并重启服务");
+            assert_eq!(h.manager.section,section);
+            assert!(h.manager.confirm.is_none());
+            assert!(!h.has("确认继续"));
+            assert!(matches!(h.jobs.try_recv(),Ok(Job::Rpc(Request::Admin{request:host_admin::Request::Save{restart:true,..}}))));
+        }
     }
+    fn active_stream(manager:&mut Manager) {
+        manager.snapshot.as_mut().unwrap().connections.push(host_admin::Connection {
+            id:"generated".into(),peer:"generated-peer".into(),name:"Generated stream".into(),
+            status:"streaming".into(),permissions:Permissions::CONTROL,
+        });
+    }
+    #[test]
+    fn active_restart_confirms_on_current_tab_and_cancel_keeps_the_draft() {
+        let mut h=Harness::new();h.manager.section=3;active_stream(&mut h.manager);
+        h.manager.draft.audio=false;h.manager.dirty=true;
+        h.click("保存并重启服务");
+        assert!(h.manager.confirm.is_some());assert_eq!(h.manager.section,3);
+        assert!(h.has("此操作会断开当前 1 个串流会话。"));
+        assert!(matches!(h.jobs.try_recv(),Err(mpsc::TryRecvError::Empty)));
+        h.click("取消");
+        assert!(h.manager.confirm.is_none());assert!(!h.manager.draft.audio);assert!(h.manager.dirty);
+        assert!(matches!(h.jobs.try_recv(),Err(mpsc::TryRecvError::Empty)));
+    }
+    #[test]
+    fn unknown_stream_count_confirms_and_zero_count_never_shows_a_zero_warning() {
+        let mut h=Harness::new();h.manager.section=5;h.manager.snapshot=None;
+        h.manager.request_action(Confirmation::Update);h.frame(vec![]);h.frame(vec![]);
+        assert!(h.has("无法确认当前连接数；此操作可能会断开正在进行的串流。"));
+        h.send.send(state(true,Sharing::default())).unwrap();h.frame(vec![]);
+        assert!(h.manager.confirm.is_none());assert!(matches!(h.manager.deployment,Some(Deployment::Install)));
+    }
+    fn generated_plugin()->uu_plugin_sdk::Manifest {
+        uu_plugin_sdk::Manifest{api_version:1,sdk_id:uu_plugin_sdk::SDK_ID.into(),id:"fixture".into(),name:"Generated extension".into(),version:"1".into(),library:"fixture.dll".into(),library_sha256:"a".repeat(64),data_files:vec![]}
+    }
+    #[test]
+    fn only_loaded_plugins_appear_and_technical_errors_stay_in_diagnostics() {
+        let mut h=Harness::new();h.manager.section=5;
+        h.manager.apply_plugin_snapshot(PluginSnapshot{directory:"generated/private/plugin/path".into(),plugins:vec![uu_core::service_admin::PluginInfo {
+            id:"fixture".into(),name:"Generated extension".into(),version:"1".into(),enabled:false,compatible:false,error:"generated SDK mismatch detail".into(),preferences:Default::default(),
+        }]});
+        h.frame(vec![]);h.frame(vec![]);
+        assert!(!h.has("后台插件"));assert!(!h.has("Generated extension"));
+        assert!(!h.has("generated/private/plugin/path"));assert!(!h.has("generated SDK mismatch detail"));
+        h.manager.loaded_plugins=vec![generated_plugin()];h.frame(vec![]);h.frame(vec![]);
+        assert!(h.has("Generated extension"));assert!(h.has("完成配置"));
+        assert!(!h.has("generated/private/plugin/path"));assert!(!h.has("generated SDK mismatch detail"));
+        h.click("诊断详情");assert!(h.has("generated SDK mismatch detail"));
+        h.manager.loaded_plugins.clear();h.frame(vec![]);assert!(!h.has("Generated extension"));
+    }
+    #[test]
+    fn automatic_update_waits_for_idle_and_never_repeats_an_authorization_attempt() {
+        let (mut manager,send,_jobs,_stop)=fixture();send.send(state(true,Sharing::default())).unwrap();manager.poll();
+        manager.build=Some(BuildStatus{state:SERVICE_RUNNING,process_id:42,installed:Some(BuildVersion{revision:"a".repeat(40)}),running:None,running_error:None});
+        active_stream(&mut manager);
+        let mut entry=Entry{manager:Some(manager),..Default::default()};
+        entry.schedule_automatic_sync();assert!(entry.deployment.is_none());
+        entry.manager.as_mut().unwrap().snapshot.as_mut().unwrap().connections.clear();
+        entry.schedule_automatic_sync();assert!(matches!(entry.deployment.take(),Some(Deployment::Install)));
+        entry.schedule_automatic_sync();assert!(entry.deployment.is_none());
+    }
+    #[test]
+    fn automatic_update_preserves_temporary_displays_and_unfinished_preparation() {
+        use uu_core::virtual_display::{Display,LeaseId,Owner,Spec,Status,preparation};
+        let mut status=Status{supported:true,driver_present:true,available_slots:1,leased:0,allocated:0,keep_after_stream:false,limit:2,supports_lifetimes:true,supports_configuration:true,explanation:String::new(),install_url:String::new(),preparation:None};
+        let display=Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Manual,spec:Spec::default(),actual:None,name:"Generated".into(),source:"generated-source".into(),active:true,persistent:false,cleanup_pending:false,last_error:None};
+        let response=|status:Status,displays|Response::VirtualDisplay{response:uu_core::native_virtual_display::Response::Snapshot{status,displays,slots:vec![]}};
+        assert!(!automatic_restart_safe(&Response::Applied));
+        assert!(automatic_restart_safe(&response(status.clone(),vec![])));
+        assert!(!automatic_restart_safe(&response(status.clone(),vec![display.clone()])));
+        assert!(automatic_restart_safe(&response(status.clone(),vec![Display{persistent:true,..display.clone()}])));
+        assert!(!automatic_restart_safe(&response(status.clone(),vec![Display{persistent:true,cleanup_pending:true,..display}])));
+        status.preparation=Some(preparation::Status{phase:preparation::Phase::RecoveryPending,configured_capacity:None,targets:0,available:0,requested_capacity:2,queued:false,error:Some("generated pending recovery".into())});
+        assert!(!automatic_restart_safe(&response(status,vec![])));
+    }
+    #[test]
+    fn plugin_policy_changes_use_the_existing_owner_rpc_without_another_installation() {
+        for enabled in [true,false] {
+            let (mut manager,send,jobs,_stop)=fixture();send.send(state(true,Sharing::default())).unwrap();manager.poll();
+            let before=uu_core::plugins::PluginPreferences{enabled:true,..Default::default()};
+            let after=uu_core::plugins::PluginPreferences{enabled,options:serde_json::from_value(serde_json::json!({"generated_option":true})).unwrap()};
+            manager.loaded_plugins=if enabled{vec![generated_plugin()]}else{vec![]};
+            manager.apply_plugin_snapshot(PluginSnapshot{directory:"generated".into(),plugins:vec![uu_core::service_admin::PluginInfo{id:"fixture".into(),name:"Generated extension".into(),version:"1".into(),enabled:true,compatible:true,error:String::new(),preferences:before.clone()}]});
+            let mut preferences=uu_core::plugins::Preferences::default();preferences.plugins.insert("fixture".into(),after.clone());
+            let mut entry=Entry{manager:Some(manager),plugin_preferences:Some(preferences),..Default::default()};
+            entry.schedule_automatic_sync();assert!(entry.deployment.is_none());
+            assert!(matches!(jobs.try_recv(),Ok(Job::Rpc(Request::Plugins{request:PluginRequest::Save{id,expected,value}})) if id=="fixture"&&expected==before&&value==after));
+        }
+    }
+
 }

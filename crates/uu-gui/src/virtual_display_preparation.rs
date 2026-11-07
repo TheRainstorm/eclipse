@@ -45,7 +45,7 @@ pub(super) fn can_create(status: Option<&Status>, available: usize, foreground: 
         && !matches!(status.phase, Phase::Preparing | Phase::NeedsElevation)
         && !(status.phase == Phase::WaitingForIdle && status.queued)
 }
-pub(super) fn active(status: &Status) -> bool {
+pub(crate) fn active(status: &Status) -> bool {
     status.phase == Phase::Preparing || (matches!(status.phase,Phase::WaitingForIdle|Phase::RecoveryPending) && status.queued)
 }
 

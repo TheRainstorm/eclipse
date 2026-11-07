@@ -1,6 +1,8 @@
 //! Explicit local management and per-stream temporary display controls.
 #[path = "virtual_display_preparation.rs"]
 mod preparation_ui;
+#[cfg(windows)]
+pub(super) use preparation_ui::active as preparation_active;
 use eframe::egui;
 use crate::ui_feedback::{Feedback, Kind, Scope};
 use std::{

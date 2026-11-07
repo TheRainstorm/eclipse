@@ -1336,6 +1336,8 @@ impl App {
         self.sessions.reap();
         self.poll_application_settings();
         self.plugins.poll();
+        #[cfg(windows)]
+        self.workspace.background_service.set_loaded_plugins(self.plugins.loaded_manifests(),self.plugins.service_preferences());
         // A hidden/minimized viewport can buffer both focus loss and recovery
         // before its next UI pass. Preserve that boundary even if focused=true.
         if ctx.input(|i|i.events.iter().any(|event|matches!(event,egui::Event::WindowFocused(false)))){self.pause_video_observation();}

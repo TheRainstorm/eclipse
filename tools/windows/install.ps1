@@ -195,9 +195,10 @@ if (!$SkipServiceUpdate -and (Test-Path -LiteralPath (Join-Path $env:ProgramData
     $dataHome = if ([string]::IsNullOrWhiteSpace($env:XDG_DATA_HOME)) { Join-Path $env:USERPROFILE '.local\share' } else { $env:XDG_DATA_HOME }
     $sourceData = Join-Path $dataHome 'uu-remote'
     try {
-        $arguments = '--background-service-action install --source-data "' + $sourceData.Replace('"','""') + '"'
+        $arguments = '--background-service-action install --source-data "' + $sourceData.Replace('"','""') + '" --defer-if-busy'
         $update = Start-Process -FilePath (Join-Path $InstallDir $guiName) -ArgumentList $arguments -Verb RunAs -Wait -PassThru
         if ($update.ExitCode -eq 0) { $serviceUpdate = 'updated' }
+        elseif ($update.ExitCode -eq 10) { $serviceUpdate = 'deferred-until-idle' }
         elseif ($update.ExitCode -eq 1223) { $serviceUpdate = 'cancelled' }
         else { $serviceUpdate = 'failed:' + $update.ExitCode }
     } catch {

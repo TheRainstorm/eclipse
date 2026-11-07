@@ -154,7 +154,15 @@ pub fn install(source: PathBuf) -> Result<()> {
         .parent()
         .context("无法确定安装包目录")?
         .to_path_buf();
-    install_from(source, package, true)
+    install_from(source.clone(), package, true)?;
+    // The package installer is one product update. Reuse the exact, bounded
+    // import transaction for extensions the console owner already enabled.
+    // An import failure leaves the updated core running and reports the
+    // remaining step instead of claiming that every component was updated.
+    if source.join(uu_core::plugins::Preferences::FILE).try_exists()? {
+        import_plugins(source).context("Eclipse 已更新，插件同步尚未完成")?;
+    }
+    Ok(())
 }
 fn console_owner(session: u32) -> Result<String> {
     fn field(session: u32, kind: WTS_INFO_CLASS) -> Result<Vec<u16>> {
@@ -597,12 +605,17 @@ pub fn import_plugins(source: PathBuf) -> Result<()> {
     let config=Config{data_dir:source.clone(),state_dir:source.join("state"),signaling_host:String::new()};
     let preferences=uu_core::plugins::Preferences::load(&config)?;
     let source_program=std::env::current_exe()?.parent().context("missing application directory")?.to_owned();
-    let found=uu_plugin_sdk::loader::discover(&source_program.join("plugins"));
-    ensure!(found.errors.is_empty(),"插件清单无效：{}",found.errors.join("; "));
+    // Disabled extensions do not participate in a service update. In
+    // particular, an empty opt-in set must not surface SDK/discovery failures.
+    let selected=if preferences.plugins.values().any(|p|p.enabled) {
+        let found=uu_plugin_sdk::loader::discover(&source_program.join("plugins"));
+        ensure!(found.errors.is_empty(),"插件清单无效：{}",found.errors.join("; "));
+        found.installed
+    }else{Vec::new()};
     let mut writes:Vec<(PathBuf,Vec<u8>)>=Vec::new();
     let mut directories=vec![target_program.join("plugins"),paths.config().at("plugins")];
     let mut total=0usize;
-    for plugin in found.installed.into_iter().filter(|p|preferences.get(&p.manifest.id).enabled) {
+    for plugin in selected.into_iter().filter(|p|preferences.get(&p.manifest.id).enabled) {
         ensure!(plugin.compatible(),"插件 {} 与当前程序 SDK 不匹配",plugin.manifest.id);
         for directory in [source.join("plugins"),source.join("plugins").join(&plugin.manifest.id),source_program.join("plugins"),plugin.directory.clone()] {
             let meta=fs::symlink_metadata(directory)?;
