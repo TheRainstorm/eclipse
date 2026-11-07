@@ -1,4 +1,6 @@
 {
+  "无法启动视频编码（{}）。可用格式均已尝试，请降低分辨率或帧率，或关闭一路串流后重试；详细原因见主机日志。": "Video encoding could not start ({}). All available formats were tried. Lower the resolution or frame rate, or close one stream and retry. Details are in the host log.",
+  "优先设置暂不可用，已自动使用 {} / {}": "Preferred settings are currently unavailable. Automatically using {} / {}",
   "PIN 码配对": "Pair with PIN",
   "临时 PIN 码": "Temporary PIN",
   "控制端首次连接时选择“配对码”，会显示 8 位 PIN。请在本机收到的配对请求中输入该 PIN，选择权限并批准；以后连接无需再次输入。": "On the connecting device, choose Pairing code to display an 8-digit PIN. Enter it in the pairing request on this host, choose permissions and approve. Future connections will use the saved authorization.",

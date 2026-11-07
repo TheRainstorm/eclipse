@@ -192,18 +192,18 @@ async fn unified_device_wss_listener_republishes_and_reconnects_with_the_same_gr
         .await
         .unwrap();
         if attempt == 1 {
-            // An advertised decoder must not turn an unsupported explicit host
-            // encoder into either silent H.264 fallback or a leaked session.
+            // Fallback never bypasses the host allowlist, even when the
+            // receiver advertises a decoder for the requested format.
             let rejected = Arc::new(crate::media::MediaStats::default());
-            rejected.native_codec_capabilities.set(vec![native::VideoCodec::H264,native::VideoCodec::Av1]).unwrap();
+            rejected.native_codec_capabilities.set(vec![native::VideoCodec::H264,native::VideoCodec::Hevc]).unwrap();
             rejected.native_quality_request.set(crate::native_quality::Request {
-                fps:30,bounds:None,bitrate_kbps:Some(500),codec:Some(native::VideoCodec::Av1),
+                fps:30,bounds:None,bitrate_kbps:Some(500),codec:Some(native::VideoCodec::Hevc),
             }).unwrap();
             rejected.audio.output_enabled.store(false,Ordering::Release);
             let (frames,_received)=crate::media::frame_channel();
             let (_stop,rx)=watch::channel(false);
             let result=tokio::time::timeout(Duration::from_secs(8),internet::view(settings.clone(),cfg("viewer"),frames,rejected.clone(),rx,None)).await.unwrap();
-            assert!(result.is_err(),"software AV1 encoder must fail explicitly");
+            assert!(result.is_err(),"a disabled host format must fail explicitly");
             assert_eq!(rejected.decoded_total.load(Ordering::Acquire),0);
             tokio::time::timeout(Duration::from_secs(3),async {
                 while !access.sessions.sessions().is_empty() {tokio::time::sleep(Duration::from_millis(10)).await;}

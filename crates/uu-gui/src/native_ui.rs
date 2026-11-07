@@ -12,12 +12,27 @@ pub(super) struct NativeUi {
     path: String,
     notice: String,
     request_control:bool,
+    pub(super) fallback:Option<uu_core::native_quality::Fallback>,
+    pub(super) feedback:super::ui_feedback::Feedback,
+    rate_preference:Option<Option<uu_core::native_quality::RateMode>>,
 }
 impl Default for NativeUi {
-    fn default()->Self{Self{open:false,path:String::new(),notice:String::new(),request_control:true}}
+    fn default()->Self{Self{open:false,path:String::new(),notice:String::new(),request_control:true,fallback:None,feedback:Default::default(),rate_preference:None}}
+}
+impl NativeUi {
+    pub(super) fn live_rate(&mut self,requested:Option<uu_core::native_quality::RateMode>,initial:Option<uu_core::native_quality::RateMode>,response:uu_core::native_quality::RateResponse,current:Option<uu_core::native_quality::RateMode>)->uu_core::native_quality::RateMode {
+        let previous=self.rate_preference.replace(requested).unwrap_or(initial);
+        if previous!=requested {requested.unwrap_or(response.default)}else{current.unwrap_or(response.applied)}
+    }
+}
+pub(super) fn fallback_message(fallback:uu_core::native_quality::Fallback)->String {
+    let codec=match fallback.applied_codec {uu_core::native::VideoCodec::H264=>"H.264",uu_core::native::VideoCodec::Hevc=>"HEVC",uu_core::native::VideoCodec::Av1=>"AV1",uu_core::native::VideoCodec::Pyrowave=>"PyroWave"};
+    uu_i18n::format!("优先设置暂不可用，已自动使用 {} / {}",codec,fallback.applied_rate.label())
 }
 impl App {
     pub(super) fn client_stats(&mut self,transport:&str)->Arc<uu_core::media::MediaStats> {
+        self.native_ui.fallback=None;self.native_ui.feedback.clear();
+        self.native_ui.rate_preference=None;
         self.resolve_frame_rate();
         let stats = Arc::new(uu_core::media::MediaStats::default());
         let cursor_context=self.context.clone();
@@ -245,5 +260,20 @@ impl App {
             Ok(handle)=>self.attach_controller(handle),
             Err(error) => self.status = uu_i18n::format!("原生连接失败：{error}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uu_core::native_quality::{RateMode::{Cbr,Vbr},RateResponse};
+    #[test]
+    fn unrelated_quality_updates_keep_the_applied_fallback_rate_and_explicit_changes_retry() {
+        let mut ui=NativeUi::default();let response=RateResponse{default:Vbr,applied:Cbr};
+        assert_eq!(ui.live_rate(Some(Vbr),Some(Vbr),response,Some(Cbr)),Cbr);
+        assert_eq!(ui.live_rate(Some(Vbr),Some(Vbr),response,Some(Cbr)),Cbr);
+        assert_eq!(ui.live_rate(Some(Cbr),Some(Vbr),response,Some(Cbr)),Cbr);
+        assert_eq!(ui.live_rate(Some(Vbr),Some(Vbr),response,Some(Cbr)),Vbr);
+        assert_eq!(ui.live_rate(Some(Vbr),Some(Vbr),response,Some(Cbr)),Cbr);
     }
 }

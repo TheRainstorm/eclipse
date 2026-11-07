@@ -36,6 +36,7 @@ pub use uu_media::audio_capture::Source as AudioSource;
 pub use uu_media::encoder::Preference as EncoderPreference;
 pub use uu_proto::media::VideoCodec;
 mod encoded_capture;
+mod encoder_startup;
 pub use encoded_capture::{EncodedCapture, CapturedSample, CaptureOptions};
 
 pub fn hardware_encoding_compiled() -> bool {
@@ -698,12 +699,12 @@ fn ordered_codecs(codecs: &[VideoCodec]) -> Vec<VideoCodec> {
     values
 }
 
-fn codec_choices(allowed:&[VideoCodec],host:Option<VideoCodec>,client:Option<VideoCodec>)->Result<Vec<VideoCodec>> {
+fn codec_choices(allowed:&[VideoCodec],host:Option<VideoCodec>,client:Option<VideoCodec>,fallback:bool)->Result<Vec<VideoCodec>> {
     if let Some(codec)=client.or(host) {
         ensure!(allowed.contains(&codec),"{}", uu_i18n::format!("主机未允许 {:?} 编码，请选择允许的格式",codec));
-        // An explicit format is a requirement. Report backend failures instead
-        // of silently substituting H.264 while the UI still shows HEVC/AV1.
-        Ok(vec![codec])
+        let mut choices=vec![codec];
+        if fallback&&codec!=VideoCodec::Pyrowave {choices.extend(ordered_codecs(allowed).into_iter().filter(|c|*c!=codec&&*c!=VideoCodec::Pyrowave));}
+        Ok(choices)
     } else {
         Ok(ordered_codecs(allowed).into_iter().filter(|c|*c!=VideoCodec::Pyrowave).collect())
     }
@@ -730,6 +731,7 @@ async fn send_video(
         config.rate_control=mode.encoder(config.bitrate_kbps);
     }
     let request=crate::native_quality::Request::read(&offer.sdp)?;
+    let fallback=config.video_policy.is_some()&&crate::native_quality::get::<bool>(&offer.sdp,crate::native_quality::FALLBACK_REQUEST)?.unwrap_or(false);
     let policy=config.video_policy.clone();
     let request=if policy.is_some(){request}else{None};
     if let Some(request)=&request {
@@ -741,7 +743,7 @@ async fn send_video(
     }
     let allowed=policy.as_ref().map(|p|p.codecs.clone()).unwrap_or_else(||vec![config.codec]);
     let host_codec=policy.as_ref().map_or(Some(config.codec),|p|p.preferred_codec);
-    let mut choices=codec_choices(&allowed,host_codec,request.as_ref().and_then(|r|r.codec))?;
+    let mut choices=codec_choices(&allowed,host_codec,request.as_ref().and_then(|r|r.codec),fallback)?;
     choices.retain(|codec|crate::native_media::offers_codec(&offer.sdp,*codec));
     ensure!(!choices.is_empty(),"{}", uu_i18n::format!("两端没有共同可用的视频编码，请检查主机编码设置和客户端解码支持"));
     let hdr_codecs=crate::native_color::capture_codecs(&offer.sdp,&choices)?;
@@ -792,6 +794,7 @@ async fn send_video(
     let (fps,kbps,preference,rate_control)=(config.fps,config.bitrate_kbps,config.encoder,config.rate_control);
     let bounds=request.as_ref().and_then(|r|r.bounds);
     let automatic=request.as_ref().is_some_and(|r|r.bitrate_kbps.is_none());
+    let requested_codec=request.as_ref().and_then(|r|r.codec);
     struct CancelCaptureOpen(Arc<AtomicBool>);
     impl Drop for CancelCaptureOpen { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
     let capture_cancel = CancelCaptureOpen(Arc::new(AtomicBool::new(false)));
@@ -815,24 +818,15 @@ async fn send_video(
                 uu_media::encoder::Settings {hdr,source_hdr:source_metadata,tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps,preference}
             };
             let capture_us=elapsed_us(started);let started=Instant::now();
-            let mut selected=None;let mut last_error=None;
             let source_hdr=capture.hdr_metadata().is_some();
             let attempts=choices.iter().copied().filter(|c|source_hdr&&hdr_codecs.contains(c)).map(|c|(c,true))
                 .chain(choices.iter().copied().map(|c|(c,false))).collect::<Vec<_>>();
-            for (codec,hdr) in attempts {
-                ensure!(!cancel_open.load(Ordering::Acquire),"capture preparation cancelled");
-                let encoder=uu_media::encoder::create_with_device(settings(codec,hdr),capture.encoder_input_device());
-                ensure!(!cancel_open.load(Ordering::Acquire),"capture preparation cancelled");
-                match encoder {
-                    Ok(encoder) if !hdr || encoder.gpu_input()=>{selected=Some((codec,encoder,hdr));break;},
-                    Ok(_)=>last_error=Some(anyhow::anyhow!("{codec:?}: HDR source requires same-device GPU color conversion")),
-                    Err(error)=>{tracing::warn!(?codec,?preference,hdr,%error,"native codec initialization failed");last_error=Some(anyhow::anyhow!("{codec:?}: {error}"));},
-                }
-            }
-            let (codec,encoder,hdr)=selected.ok_or_else(||{
-                if let Some(error)=last_error {tracing::warn!(%error,"requested host encoders are unavailable");}
-                anyhow::anyhow!("{}",uu_i18n::format!("主机未能启动所选编码器（{}）。请改用自动或其它编码；详细原因已记录在主机日志。",choices.iter().map(|c|format!("{c:?}")).collect::<Vec<_>>().join(" / ")))
-            })?;
+            let (encoder,encoder_settings)=encoder_startup::select(capture.as_mut(),&attempts,settings,fallback&&requested_codec!=Some(VideoCodec::Pyrowave),&cancel_open)
+                .map_err(|error| {
+                    tracing::warn!(%error,"requested host encoders are unavailable");
+                    anyhow::anyhow!("{}",uu_i18n::format!("无法启动视频编码（{}）。可用格式均已尝试，请降低分辨率或帧率，或关闭一路串流后重试；详细原因见主机日志。",choices.iter().map(|c|format!("{c:?}")).collect::<Vec<_>>().join(" / ")))
+                })?;
+            let codec=encoder_settings.codec;
             anyhow::ensure!(!separate || encoder.backend_name().starts_with("amf"),"separate encode device requires native AMF; selected backend refused");
             let encoder_us=elapsed_us(started);
             // This reply describes the format initialized for this connection.
@@ -841,7 +835,7 @@ async fn send_video(
             // initialization against the same host allowlist.
             let available=vec![codec];
             let startup=crate::native_quality::Startup{capture_us,encoder_us,other_encoders_us:0,..Default::default()};
-            Ok((capture,encoder,codec,available,settings(codec,hdr),startup))
+            Ok((capture,encoder,codec,available,encoder_settings,startup))
         });
     let interrupted=async {tokio::select!{_=cancelled(&mut stop)=>{},_=stream.disconnected()=>{}}};
     let Some((capture,encoder,codec,available,encoder_settings,mut startup))=
@@ -894,6 +888,11 @@ async fn send_video(
         crate::native_quality::Response{dynamic,codecs:available,max_fps:if dynamic{crate::native_quality::MAX_FPS}else{60},max_bitrate_kbps:if dynamic{crate::native_quality::MAX_BITRATE_KBPS}else{100_000}}.add(&mut description)?;
         if rate_request.is_some() {
             crate::native_quality::put(&mut description,crate::native_quality::RATE_ATTRIBUTE,&crate::native_quality::RateResponse{default:default_rate,applied:crate::native_quality::RateMode::from_encoder(encoder_settings.rate_control)})?;
+        }
+        let requested_rate=rate_request.and_then(|r|r.selection);
+        let applied_rate=crate::native_quality::RateMode::from_encoder(encoder_settings.rate_control);
+        if fallback&&(requested_codec.is_some_and(|requested|requested!=codec)||requested_rate.is_some_and(|requested|requested!=applied_rate)) {
+            crate::native_quality::put(&mut description,crate::native_quality::FALLBACK_RESPONSE,&crate::native_quality::Fallback{requested_codec,applied_codec:codec,requested_rate,applied_rate})?;
         }
     }
     let answer = Answer {
@@ -1118,6 +1117,7 @@ async fn receive_session(
         request
     });
     if let Some(request)=rate_request {crate::native_quality::put(&mut description,crate::native_quality::RATE_ATTRIBUTE,&request)?;}
+    crate::native_quality::put(&mut description,crate::native_quality::FALLBACK_REQUEST,&true)?;
     if let Some(codecs)=stats.native_hdr_codecs.get().filter(|codecs|!codecs.is_empty()) {
         crate::native_color::Request{codecs:codecs.clone()}.add(&mut description)?;
     }
@@ -1159,10 +1159,17 @@ async fn receive_session(
         stats.diagnostics.record(serde_json::json!({"event":"native_display_names_invalid"}));
     }
     let rate:Option<crate::native_quality::RateResponse>=crate::native_quality::get(&answer.sdp,crate::native_quality::RATE_ATTRIBUTE)?;
+    let fallback:Option<crate::native_quality::Fallback>=crate::native_quality::get(&answer.sdp,crate::native_quality::FALLBACK_RESPONSE)?;
+    if let Some(fallback)=fallback {
+        ensure!(fallback.requested_codec==quality_request.as_ref().and_then(|r|r.codec)
+            &&fallback.requested_rate==rate_request.and_then(|r|r.selection)
+            &&fallback.applied_codec==answer.codec&&rate.is_none_or(|r|r.applied==fallback.applied_rate),"invalid encoder fallback result");
+    }
+    *stats.native_encoder_fallback.lock().unwrap()=fallback;
     ensure!(rate.is_none()||stats.native_rate_request.get().is_some(),"{}", uu_i18n::format!("主机返回未请求的码率模式"));
     if let Some(requested)=rate_request.and_then(|r|r.selection) {
         ensure!(rate.is_some(),"{}", uu_i18n::format!("此主机不支持客户端选择码率模式，请升级主机或选择跟随主机"));
-        ensure!(rate.is_some_and(|r|r.applied==requested),"{}", uu_i18n::format!("主机未应用请求的码率模式"));
+        ensure!(rate.is_some_and(|r|r.applied==requested)||fallback.is_some(),"{}", uu_i18n::format!("主机未应用请求的码率模式"));
     }
     *stats.native_rate_response.lock().unwrap()=rate;
     let hdr=crate::native_color::Response::read(&answer.sdp)?;
@@ -1178,7 +1185,7 @@ async fn receive_session(
     stats.native_cursor.reset(cursor_available);
     if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"{}", uu_i18n::format!("主机实际编码与能力回报不一致"));}
     stats.capabilities.enable(crate::capabilities::Capability::Quality,quality.is_some());
-    stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":quality_request,"host_capabilities":quality,"rate_control":rate}));
+    stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":quality_request,"host_capabilities":quality,"rate_control":rate,"fallback":fallback}));
     *stats.native_quality_response.lock().unwrap()=quality;
     // Complete dimension-dependent driver work before setting remote SDP can
     // start ICE/DTLS and release the first burst of video into the AU queue.
@@ -1476,20 +1483,24 @@ mod tests {
     fn codec_policy_prefers_explicit_client_then_host_default_and_enforces_allowlist() {
         use VideoCodec::*;
         let all=[H264,Hevc,Av1];
-        assert_eq!(codec_choices(&all,None,None).unwrap(),vec![Av1,Hevc,H264]);
-        assert_eq!(codec_choices(&[H264,Hevc,Av1,Pyrowave],None,None).unwrap(),vec![Av1,Hevc,H264]);
-        assert_eq!(codec_choices(&[H264,Hevc,Av1,Pyrowave],None,Some(Pyrowave)).unwrap(),vec![Pyrowave]);
+        assert_eq!(codec_choices(&all,None,None,false).unwrap(),vec![Av1,Hevc,H264]);
+        assert_eq!(codec_choices(&[H264,Hevc,Av1,Pyrowave],None,None,false).unwrap(),vec![Av1,Hevc,H264]);
+        assert_eq!(codec_choices(&[H264,Hevc,Av1,Pyrowave],None,Some(Pyrowave),false).unwrap(),vec![Pyrowave]);
         for codec in all {
-            assert_eq!(codec_choices(&all,None,Some(codec)).unwrap(),vec![codec]);
-            assert_eq!(codec_choices(&all,Some(codec),None).unwrap(),vec![codec]);
+            assert_eq!(codec_choices(&all,None,Some(codec),false).unwrap(),vec![codec]);
+            assert_eq!(codec_choices(&all,Some(codec),None,false).unwrap(),vec![codec]);
             for client in all {
-                assert_eq!(codec_choices(&all,Some(codec),Some(client)).unwrap(),vec![client]);
+                assert_eq!(codec_choices(&all,Some(codec),Some(client),false).unwrap(),vec![client]);
             }
         }
-        assert!(codec_choices(&[H264],None,Some(Hevc)).is_err());
-        assert!(codec_choices(&[H264],Some(Av1),None).is_err());
-        assert_eq!(codec_choices(&[H264],Some(Av1),Some(H264)).unwrap(),vec![H264]);
-        assert!(codec_choices(&[H264],Some(H264),Some(Av1)).is_err());
+        assert!(codec_choices(&[H264],None,Some(Hevc),false).is_err());
+        assert!(codec_choices(&[H264],Some(Av1),None,false).is_err());
+        assert_eq!(codec_choices(&[H264],Some(Av1),Some(H264),false).unwrap(),vec![H264]);
+        assert!(codec_choices(&[H264],Some(H264),Some(Av1),false).is_err());
+        assert_eq!(codec_choices(&all,Some(Av1),Some(Hevc),true).unwrap(),vec![Hevc,Av1,H264]);
+        assert_eq!(codec_choices(&[Hevc,H264],None,Some(Hevc),true).unwrap(),vec![Hevc,H264]);
+        assert_eq!(codec_choices(&[Hevc,H264,Pyrowave],None,Some(Pyrowave),true).unwrap(),vec![Pyrowave]);
+        assert!(codec_choices(&[H264],None,Some(Hevc),true).is_err());
     }
 
     #[test]

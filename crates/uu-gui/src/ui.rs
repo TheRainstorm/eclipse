@@ -196,6 +196,15 @@ impl App {
             ui.set_clip_rect(ui.max_rect());
             let rect=ui.available_rect_before_wrap();ui.allocate_rect(rect,Sense::hover());
             let chosen=(!self.displays.waiting_binding()&&self.textures.contains_key(&self.selected_track)).then_some(self.selected_track);
+            if chosen.is_some() {
+                let fallback=self.controller.as_ref().and_then(|h|*h.stats.native_encoder_fallback.lock().unwrap());
+                if fallback!=self.native_ui.fallback {
+                    self.native_ui.fallback=fallback;
+                    if let Some(fallback)=fallback {self.native_ui.feedback.report(super::ui_feedback::Scope::Stream,super::ui_feedback::Kind::Info,super::native_ui::fallback_message(fallback));}
+                    else {self.native_ui.feedback.clear();}
+                }
+                self.native_ui.feedback.expire(std::time::Instant::now());self.native_ui.feedback.tick(ctx);
+            }
             if let Some(track)=chosen {
                 let input_screen = self.input_screen(track);
                 let texture=&self.textures[&track];let size=texture.size_vec2();let scale=(rect.width()/size.x).min(rect.height()/size.y);
@@ -247,10 +256,12 @@ impl App {
                     }
                 }
             }
-            if chosen.is_some() && !self.displays.notice.is_empty() {
+            let notice=if !self.displays.notice.is_empty(){self.displays.notice.as_str()}else{self.native_ui.feedback.text()};
+            if chosen.is_some() && !notice.is_empty() {
                 let notice=Rect::from_center_size(rect.center_top()+egui::vec2(0.0,38.0),egui::vec2((rect.width()-40.0).clamp(1.0,480.0),44.0));
                 ui.painter().rect_filled(notice,6.0,C::from_black_alpha(160));
-                ui.put(notice,egui::Label::new(RichText::new(&self.displays.notice).color(C::WHITE)).wrap());
+                let text=if !self.displays.notice.is_empty(){self.displays.notice.as_str()}else{self.native_ui.feedback.text()};
+                ui.put(notice,egui::Label::new(RichText::new(text).color(C::WHITE)).wrap());
             }
             if self.preferences.show_input_status && chosen.is_some() && self.fullscreen && !ctx.input(|i|i.focused) {
                 let hint=Rect::from_center_size(rect.center_bottom()-egui::vec2(0.0,54.0),egui::vec2((rect.width()-40.0).clamp(1.0,360.0),40.0));

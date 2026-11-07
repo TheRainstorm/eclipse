@@ -130,6 +130,31 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor="multi_thread",worker_threads=4)]
+    async fn explicit_unavailable_format_falls_back_before_answer_and_reports_the_actual_format() {
+        let stats=Arc::new(MediaStats::default());
+        stats.decoder_preference.set(crate::media::DecoderKind::Software).unwrap();
+        stats.native_codec_capabilities.set(vec![VideoCodec::H264]).unwrap();
+        stats.native_quality_request.set(crate::native_quality::Request{fps:60,bounds:None,bitrate_kbps:Some(1000),codec:Some(VideoCodec::Hevc)}).unwrap();
+        stats.native_rate_request.set(crate::native_quality::RateRequest{selection:Some(crate::native_quality::RateMode::Cbr)}).unwrap();
+        let mut config=config();config.video_policy=Some(crate::native_quality::Policy{codecs:vec![VideoCodec::Hevc,VideoCodec::H264],preferred_codec:None});
+        let (frames,mut images)=crate::media::frame_channel();let (_commands,input)=crate::native_input::channel(false);
+        let (stop,rx)=watch::channel(false);let view_stats=stats.clone();
+        let viewing=tokio::spawn(view(config,frames,view_stats,rx,input));
+        let result=tokio::time::timeout(Duration::from_secs(10),async {
+            while stats.decoded_total.load(Ordering::Acquire)<5 {
+                while images.try_recv().is_ok(){}
+                if viewing.is_finished(){return false;}
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }true
+        }).await;
+        stop.send_replace(true);let stopped=viewing.await.unwrap();
+        assert!(result.unwrap());stopped.unwrap();
+        let fallback=stats.native_encoder_fallback.lock().unwrap().unwrap();
+        assert_eq!(fallback.requested_codec,Some(VideoCodec::Hevc));assert_eq!(fallback.applied_codec,VideoCodec::H264);
+        assert_eq!(fallback.applied_rate,crate::native_quality::RateMode::Cbr);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn generated_local_stream_is_read_only_and_releases_both_loopback_sockets() {
         let stats = Arc::new(MediaStats::default());

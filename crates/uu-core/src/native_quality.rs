@@ -18,6 +18,16 @@ pub const MAX_BITRATE_KBPS:u32=1_000_000;
 /// Separate attributes keep the original, strict quality request compatible
 /// with peers that do not understand client rate-control selection.
 pub const RATE_ATTRIBUTE:&str="x-eclipse-rate-v1";
+pub(crate) const FALLBACK_REQUEST:&str="x-eclipse-encoder-fallback-v1";
+pub(crate) const FALLBACK_RESPONSE:&str="x-eclipse-encoder-fallback-result-v1";
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fallback {
+    pub requested_codec:Option<VideoCodec>,
+    pub applied_codec:VideoCodec,
+    pub requested_rate:Option<RateMode>,
+    pub applied_rate:RateMode,
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="snake_case")]
 pub enum RateMode { Cbr, Vbr }

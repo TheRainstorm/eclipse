@@ -732,7 +732,9 @@ impl App {
                     if rate.is_none() && self.preferences.rate_control.is_some() {
                         self.settings_feedback=uu_i18n::text("此主机不支持客户端选择码率模式，请升级主机").into();return;
                     }
-                    let settings=uu_core::native_quality::Update{fps:request.fps,bitrate_kbps:request.bitrate_kbps,rate_control:rate.map(|r|self.preferences.rate_control.unwrap_or(r.default))};
+                    let current=*h.stats.native_quality_current.lock().unwrap();
+                    let applied_rate=rate.map(|r|self.native_ui.live_rate(self.preferences.rate_control,h.stats.native_rate_request.get().and_then(|r|r.selection),r,current.and_then(|s|s.rate_control)));
+                    let settings=uu_core::native_quality::Update{fps:request.fps,bitrate_kbps:request.bitrate_kbps,rate_control:applied_rate};
                     if h.stats.native_quality_current.lock().unwrap().as_ref()==Some(&settings){return;}
                     self.settings_seq=self.settings_seq.wrapping_add(1);
                     self.settings_feedback=match h.native_input.as_ref().ok_or(uu_i18n::text("画质控制通路未连接")).and_then(|input|input.set_quality(self.settings_seq,settings).map_err(|_|uu_i18n::text("画质请求队列已满或连接已关闭"))) {

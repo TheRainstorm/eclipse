@@ -601,6 +601,9 @@ impl super::App {
             &[(super::settings::CodecPreference::H264,"H.264"),(super::settings::CodecPreference::Hevc,uu_i18n::text("H.265 / HEVC（优先）"))]
         };
         let actual=self.controller.as_ref().map(|h|h.stats.codec.lock().unwrap().trim_start_matches("video/").to_owned()).filter(|v|!v.is_empty());
+        if let Some(fallback)=self.controller.as_ref().and_then(|h|*h.stats.native_encoder_fallback.lock().unwrap()) {
+            ui.label(super::native_ui::fallback_message(fallback));separator(ui);
+        }
         for (codec,label) in options {
             use uu_core::native::VideoCodec as V;
             let wire=match codec {super::settings::CodecPreference::Auto=>None,super::settings::CodecPreference::H264=>Some(V::H264),super::settings::CodecPreference::Hevc=>Some(V::Hevc),super::settings::CodecPreference::Av1=>Some(V::Av1),super::settings::CodecPreference::Pyrowave=>Some(V::Pyrowave)};
@@ -650,7 +653,6 @@ impl super::App {
     }
 
     fn audio_menu(&mut self,ui:&mut egui::Ui){
-        use std::sync::atomic::Ordering::Relaxed;
         let audio=self.audio_stats().map(|stats|stats.audio.clone());
         let playback=self.audio_playback();
         let (mut muted,mut volume)=(playback.muted,playback.volume);
