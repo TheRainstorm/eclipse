@@ -174,10 +174,19 @@ fn failed_virtual_tab_disconnect_button_preserves_the_other_stream_and_window() 
     let target=state.windows[0].sessions[0].app.stream_target.as_ref().unwrap().clone();
     let launch=virtual_launch(&target,uu_core::virtual_display::Spec::default()).unwrap();
     let failed=state.windows[0].record_launch(&launch,&mut state.next);
-    let platform=state.windows[0].platform.as_ref().unwrap().clone();
-    let mut app=App::new_session(&ctx,None,platform,Some(launch.target),false,None,false);
+    let (mut failed_state,_,_,_)=catalog_state(vec![generated_screen(0)],0);
+    let mut app=failed_state.windows[0].sessions.remove(0).app;
+    app.stream_target=Some(launch.target);
     app.displays.notice="stale preparation notice".into();
-    app.displays.connection_failed("generated virtual display preparation failure".into());
+    let (events,receiver)=std::sync::mpsc::channel();
+    let handle=app.controller.as_mut().unwrap();
+    handle.events=receiver;
+    handle.stopped.store(true,Ordering::Release);
+    events.send(uu_core::controller::ControllerEvent::Error("generated virtual display preparation failure".into())).unwrap();
+    app.poll_controller(&ctx);
+    assert!(app.controller.is_none(),"terminal controller must really retire");
+    let failure=app.displays.connection_error().expect("retirement preserves the failure").to_owned();
+    assert!(failure.contains("generated virtual display preparation failure"));
     app.status="late preparation status must not hide the error".into();
     app.connect_deferred=false;
     state.windows[0].sessions.push(Session{id:failed,activated:None,app});
@@ -191,14 +200,14 @@ fn failed_virtual_tab_disconnect_button_preserves_the_other_stream_and_window() 
     let mut output=render(vec![]);
     for _ in 0..2 {output=render(vec![]);}
     let texts=output.shapes.iter().filter_map(|shape|if let egui::Shape::Text(text)=&shape.shape {Some(text.galley.job.text.as_str())}else{None}).collect::<Vec<_>>();
-    assert!(texts.contains(&"generated virtual display preparation failure"));
+    assert!(texts.contains(&failure.as_str()));
     assert!(!texts.contains(&"late preparation status must not hide the error"));
     let copy_point=output.shapes.iter().find_map(|shape|if let egui::Shape::Text(text)=&shape.shape {
         (text.galley.job.text==uu_i18n::text("复制错误信息")).then_some(text.pos+text.galley.size()/2.)
     }else{None}).expect("copy error button");
     render(vec![egui::Event::PointerMoved(copy_point),egui::Event::PointerButton{pos:copy_point,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}]);
     output=render(vec![egui::Event::PointerButton{pos:copy_point,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}]);
-    assert_eq!(output.platform_output.copied_text,"generated virtual display preparation failure");
+    assert_eq!(output.platform_output.copied_text,failure);
     let point=output.shapes.iter().find_map(|shape|if let egui::Shape::Text(text)=&shape.shape {
         (text.galley.job.text==uu_i18n::text("断开此会话")).then_some(text.pos+text.galley.size()/2.)
     } else {None}).expect("failed tab disconnect button");

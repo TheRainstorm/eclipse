@@ -54,6 +54,11 @@ impl Displays {
         next.persistent_virtual=self.persistent_virtual;
         next
     }
+    pub(super) fn for_retirement(&self) -> Self {
+        let mut next = self.for_reconnect();
+        if let Some(error) = &self.connection_error { next.connection_failed(error.clone()); }
+        next
+    }
     fn for_connection(&self,connection:&super::sessions::ConnectionTarget)->Self {
         let mut next=self.for_reconnect();
         if connection.virtual_display().is_some() && !(next.persistent_virtual && next.fixed_display.is_some()) {
@@ -617,6 +622,9 @@ mod tests {
         view.confirm_initial_current(&catalog(1), true, true, true);
         view.frame(0);
         assert!(!view.ready() && view.waiting_binding());
+        let view = view.for_retirement();
+        assert_eq!(view.connection_error(), Some("generated capture failure"));
+        assert!(!view.preparing_initial_target() && view.notice.is_empty());
         let mut next = view.for_reconnect();
         assert!(next.connection_error().is_none() && next.preparing_initial_target());
         assert_eq!(next.fixed_display.as_ref().unwrap().source, "Source 1");

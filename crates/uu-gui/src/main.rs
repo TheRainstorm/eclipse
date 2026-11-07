@@ -672,7 +672,7 @@ impl App {
             self.fps.clear();
             self.settings_feedback.clear();
             self.cursor=cursor::Cursor::default();self.remote_cursor_active=false;
-            self.displays=if self.exit_requested {displays::Displays::default()} else {self.displays.for_reconnect()};
+            self.displays=if self.exit_requested {displays::Displays::default()} else {self.displays.for_retirement()};
             if std::mem::take(&mut self.output_reconnect_pending) && !self.exit_requested {
                 self.connect();
             }
