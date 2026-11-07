@@ -151,7 +151,8 @@ impl Response {
 #[derive(Clone,Debug)]
 pub struct Policy {
     pub codecs:Vec<VideoCodec>,
-    /// None lets an explicit client request choose; both automatic use AV1 > HEVC > H.264.
+    /// Default for an automatic client. Explicit client requests take priority;
+    /// both automatic use AV1 > HEVC > H.264 within the host allowlist.
     pub preferred_codec:Option<VideoCodec>,
 }
 impl Policy {

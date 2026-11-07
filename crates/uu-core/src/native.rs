@@ -679,7 +679,7 @@ fn ordered_codecs(codecs: &[VideoCodec]) -> Vec<VideoCodec> {
 }
 
 fn codec_choices(allowed:&[VideoCodec],host:Option<VideoCodec>,client:Option<VideoCodec>)->Result<Vec<VideoCodec>> {
-    if let Some(codec)=host.or(client) {
+    if let Some(codec)=client.or(host) {
         ensure!(allowed.contains(&codec),"{}", uu_i18n::format!("主机未允许 {:?} 编码，请选择允许的格式",codec));
         // An explicit format is a requirement. Report backend failures instead
         // of silently substituting H.264 while the UI still shows HEVC/AV1.
@@ -720,13 +720,11 @@ async fn send_video(
         }
     }
     let allowed=policy.as_ref().map(|p|p.codecs.clone()).unwrap_or_else(||vec![config.codec]);
-    let ordered=ordered_codecs(&allowed);
     let host_codec=policy.as_ref().map_or(Some(config.codec),|p|p.preferred_codec);
     let mut choices=codec_choices(&allowed,host_codec,request.as_ref().and_then(|r|r.codec))?;
     choices.retain(|codec|crate::native_media::offers_codec(&offer.sdp,*codec));
     ensure!(!choices.is_empty(),"{}", uu_i18n::format!("两端没有共同可用的视频编码，请检查主机编码设置和客户端解码支持"));
     let hdr_codecs=crate::native_color::capture_codecs(&offer.sdp,&choices)?;
-    let advertised:Vec<_>=ordered.into_iter().filter(|c|crate::native_media::offers_codec(&offer.sdp,*c)).collect();
     let audio_mode=if config.audio.is_some(){crate::native_media::offered_audio(&offer.sdp)?}else{None};
     let clipboard_images=crate::native_clipboard::images_offered(&offer.sdp);
     let typed_gamepads=crate::native_gamepad::typed_offered(&offer.sdp);
@@ -796,31 +794,29 @@ async fn send_video(
                 uu_media::encoder::Settings {hdr,source_hdr:source_metadata,tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps,preference}
             };
             let capture_us=elapsed_us(started);let started=Instant::now();
-            let mut selected=None;let mut last_error=None;let mut attempted=Vec::new();
+            let mut selected=None;let mut last_error=None;
             let source_hdr=capture.hdr_metadata().is_some();
             let attempts=choices.iter().copied().filter(|c|source_hdr&&hdr_codecs.contains(c)).map(|c|(c,true))
                 .chain(choices.iter().copied().map(|c|(c,false))).collect::<Vec<_>>();
             for (codec,hdr) in attempts {
-                if !attempted.contains(&codec){attempted.push(codec);}
                 match uu_media::encoder::create_with_device(settings(codec,hdr),capture.encoder_input_device()) {
                     Ok(encoder) if !hdr || encoder.gpu_input()=>{selected=Some((codec,encoder,hdr));break;},
                     Ok(_)=>last_error=Some(anyhow::anyhow!("{codec:?}: HDR source requires same-device GPU color conversion")),
                     Err(error)=>{tracing::warn!(?codec,?preference,hdr,%error,"native codec initialization failed");last_error=Some(anyhow::anyhow!("{codec:?}: {error}"));},
                 }
             }
-            let (codec,encoder,hdr)=selected.ok_or_else(||anyhow::anyhow!("主机无法初始化请求的编码器：{}",last_error.map(|e|e.to_string()).unwrap_or_default()))?;
+            let (codec,encoder,hdr)=selected.ok_or_else(||{
+                if let Some(error)=last_error {tracing::warn!(%error,"requested host encoders are unavailable");}
+                anyhow::anyhow!("{}",uu_i18n::format!("主机未能启动所选编码器（{}）。请改用自动或其它编码；详细原因已记录在主机日志。",choices.iter().map(|c|format!("{c:?}")).collect::<Vec<_>>().join(" / ")))
+            })?;
             anyhow::ensure!(!separate || encoder.backend_name().starts_with("amf"),"separate encode device requires native AMF; selected backend refused");
-            let encoder_us=elapsed_us(started);let started=Instant::now();
-            let mut available=vec![codec];
-            if policy.is_some(){
-                // Selection already tested the failed higher-ranked codecs at
-                // this geometry. Retrying them delays the answer and can report
-                // a different capability for the same preparation attempt.
-                for candidate in advertised.into_iter().filter(|c|!attempted.contains(c)) {
-                    if uu_media::encoder::create_with_device(settings(candidate,hdr&&hdr_codecs.contains(&candidate)),capture.encoder_input_device()).is_ok(){available.push(candidate);}
-                }
-            }
-            let startup=crate::native_quality::Startup{capture_us,encoder_us,other_encoders_us:elapsed_us(started),..Default::default()};
+            let encoder_us=elapsed_us(started);
+            // This reply describes the format initialized for this connection.
+            // Probing unrelated encoders here delayed even explicit H.264
+            // sessions by seconds. A later codec request performs its own
+            // initialization against the same host allowlist.
+            let available=vec![codec];
+            let startup=crate::native_quality::Startup{capture_us,encoder_us,other_encoders_us:0,..Default::default()};
             Ok((capture,encoder,codec,available,settings(codec,hdr),startup))
         })=>result??,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
@@ -1423,7 +1419,7 @@ mod tests {
         );
     }
     #[test]
-    fn codec_policy_distinguishes_host_auto_client_choice_and_host_override() {
+    fn codec_policy_prefers_explicit_client_then_host_default_and_enforces_allowlist() {
         use VideoCodec::*;
         let all=[H264,Hevc,Av1];
         assert_eq!(codec_choices(&all,None,None).unwrap(),vec![Av1,Hevc,H264]);
@@ -1433,11 +1429,13 @@ mod tests {
             assert_eq!(codec_choices(&all,None,Some(codec)).unwrap(),vec![codec]);
             assert_eq!(codec_choices(&all,Some(codec),None).unwrap(),vec![codec]);
             for client in all {
-                assert_eq!(codec_choices(&all,Some(codec),Some(client)).unwrap(),vec![codec]);
+                assert_eq!(codec_choices(&all,Some(codec),Some(client)).unwrap(),vec![client]);
             }
         }
         assert!(codec_choices(&[H264],None,Some(Hevc)).is_err());
         assert!(codec_choices(&[H264],Some(Av1),None).is_err());
+        assert_eq!(codec_choices(&[H264],Some(Av1),Some(H264)).unwrap(),vec![H264]);
+        assert!(codec_choices(&[H264],Some(H264),Some(Av1)).is_err());
     }
 
     #[test]

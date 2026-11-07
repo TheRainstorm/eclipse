@@ -24,7 +24,7 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
         });
         ui.add_space(10.);
         ui.horizontal_wrapped(|ui| {
-            ui.label(uu_i18n::text("编码优先级"));
+            ui.label(uu_i18n::text("默认编码"));
             crate::theme::Select::from_id_salt("server-codec").selected_text(match s.codec{None=>uu_i18n::text("自动协商"),Some(VideoCodec::H264)=>"H.264",Some(VideoCodec::Hevc)=>"HEVC",Some(VideoCodec::Av1)=>"AV1",Some(VideoCodec::Pyrowave)=>uu_i18n::text("PyroWave（实验性 / SDR）")}).show_ui(ui,|ui| {
                 for (codec,label) in [(None,uu_i18n::text("自动协商")),(Some(VideoCodec::H264),"H.264"),(Some(VideoCodec::Hevc),"HEVC"),(Some(VideoCodec::Av1),"AV1"),(Some(VideoCodec::Pyrowave),uu_i18n::text("PyroWave（实验性 / SDR）"))] {crate::theme::selectable_value(ui,&mut s.codec,codec,label);}
             });
@@ -33,7 +33,7 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
                 crate::theme::selectable_value(ui,&mut s.rate_control,RateMode::Cbr,"CBR");crate::theme::selectable_value(ui,&mut s.rate_control,RateMode::Vbr,"VBR");
             });
         });
-        ui.weak(uu_i18n::text("服务端明确选择时优先；服务端自动时使用客户端选择，双方自动按 AV1 → HEVC → H.264 协商。"));
+        ui.weak(uu_i18n::text("优先使用客户端明确选择的编码；客户端自动时使用此默认值，双方自动按 AV1 → HEVC → H.264 协商。允许的编码始终限制可选范围。"));
         ui.weak(uu_i18n::text("PyroWave 需客户端明确选择，当前支持 SDR 与 CBR 帧预算，建议使用有线网络；不加入默认自动编码列表。"));
         ui.weak(uu_i18n::text("码率模式默认由主机提供；客户端可为当前串流切换 CBR / VBR，不改写主机配置。VBR 峰值随客户端目标码率调整为两倍。"));
         ui.add_space(10.);

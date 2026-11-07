@@ -1,4 +1,7 @@
 {
+  "默认编码": "Default codec",
+  "优先使用客户端明确选择的编码；客户端自动时使用此默认值，双方自动按 AV1 → HEVC → H.264 协商。允许的编码始终限制可选范围。": "An explicit client codec takes priority. This default applies when the client uses Auto. Both Auto negotiate AV1 → HEVC → H.264 within the allowed codecs.",
+  "主机未能启动所选编码器（{}）。请改用自动或其它编码；详细原因已记录在主机日志。": "The host could not start the selected encoder ({}). Choose Auto or another codec; details are recorded in the host log.",
   "临时屏随所属串流或服务退出回收；持久屏保留并在开机恢复。": "Temporary displays are reclaimed when their stream or service exits. Persistent displays are kept and restored at startup.",
   "保存上限": "Save limit",
   "持久：{persistent} · 临时：{temporary}": "Persistent: {persistent} · Temporary: {temporary}",
