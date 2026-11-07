@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-07T20:57:23Z",
+  "updated_at": "2026-11-07T21:00:54Z",
   "files": {
     ".cargo/config.toml": {
       "role": "index",
@@ -1709,9 +1709,9 @@
     },
     "crates/uu-gui/src/stream_menu.rs": {
       "role": "index",
-      "sha256": "d4babaa941e04287ac8ae1fd4009ba34959da9b391020763ff06feef81166cf2",
-      "size": 87950,
-      "normalized_sha256": "d4babaa941e04287ac8ae1fd4009ba34959da9b391020763ff06feef81166cf2"
+      "sha256": "311962edbb282887282ef499dd3110b57507c7162d5a90a783e01e8c90fd127f",
+      "size": 88000,
+      "normalized_sha256": "311962edbb282887282ef499dd3110b57507c7162d5a90a783e01e8c90fd127f"
     },
     "crates/uu-gui/src/stream_tabs_ui.rs": {
       "role": "index",
