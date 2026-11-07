@@ -156,7 +156,7 @@ fn hardware(settings: Settings, input:Option<InputDevice>) -> Result<Box<dyn Vid
     if matches!(settings.preference,Preference::Auto|Preference::Hardware|Preference::Amd) {
         // Cross-adapter encoding still uses the established CPU fallback.
         // Only bind AMF to a capture device belonging to AMD itself.
-        let input=input.filter(|device|device.vendor==0x1002);
+        let input=input.clone().filter(|device|device.vendor==0x1002);
         match worker::Worker::spawn(move||amf::Driver::open_with_device(settings,input)) {
             Ok(encoder)=>return Ok(Box::new(encoder)),
             Err(reason) if settings.preference==Preference::Amd=>return Err(reason),
@@ -178,7 +178,7 @@ fn hardware(settings: Settings, input:Option<InputDevice>) -> Result<Box<dyn Vid
     }
     #[cfg(all(windows,feature="mf-encode"))]
     if settings.preference!=Preference::Intel || settings.hdr || settings.source_hdr.is_some() {
-        match worker::Worker::spawn(move||mf::Driver::open(settings)) {
+        match worker::Worker::spawn(move||mf::Driver::open(settings,input)) {
             Ok(encoder)=>return Ok(Box::new(encoder)),
             Err(mf_error)=>{
                 #[cfg(feature="intel-vpl")]
@@ -206,7 +206,7 @@ fn hardware(settings: Settings, input:Option<InputDevice>) -> Result<Box<dyn Vid
     })?));
     #[cfg(all(windows, feature = "mf-encode"))]
     return Ok(Box::new(worker::Worker::spawn(move || {
-        mf::Driver::open(settings)
+        mf::Driver::open(settings,input)
     })?));
     #[cfg(not(any(
         all(target_os = "linux", feature = "vaapi"),

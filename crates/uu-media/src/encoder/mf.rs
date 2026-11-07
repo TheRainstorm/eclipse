@@ -158,11 +158,13 @@ pub(super) struct Driver {
     gpu:Option<super::gpu::Input>,
     gpu_capable:bool,
     gpu_frames:u64,
+    input_device:Option<(super::InputDevice,IMFDXGIDeviceManager)>,
     _runtime: Runtime,
 }
 impl Driver {
-    pub(super) fn open(settings: Settings) -> Result<Self, String> {
+    pub(super) fn open(settings: Settings,input:Option<super::InputDevice>) -> Result<Self, String> {
         let runtime = Runtime::start()?;
+        let input_device=input.map(|input|super::gpu::device_manager(&input.device).map(|manager|(input,manager))).transpose().map_err(reason)?;
         let activations = Activations::hardware(settings.codec)?;
         let mut failures = Vec::new();
         for activation in activations.entries().iter().flatten() {
@@ -170,7 +172,7 @@ impl Driver {
             if settings.preference.vendor_id().is_some_and(|id|vendor(activation)!=Some(id)) {
                 continue;
             }
-            match unsafe { Self::activate(settings, activation,None) } {
+            match unsafe { Self::activate(settings, activation,input_device.as_ref().map(|(_,manager)|manager)) } {
                 Ok((transform, events, codec, input_id, output_id)) => {
                     let gpu_capable=unsafe{transform.GetAttributes().ok().and_then(|a|a.GetUINT32(&MF_SA_D3D11_AWARE).ok())==Some(1)};
                     return Ok(Self {
@@ -194,7 +196,7 @@ impl Driver {
                             if vendor(activation)==Some(0x10de) {settings.tuning.nvidia_quality_vs_speed.map(|v|format!(", quality/speed={v}")).unwrap_or_default()}else{String::new()}
                         ),
                         profile: std::env::var_os("UU_ENCODE_PROFILE").map(|_| [0; 4]),
-                        gpu:None,gpu_capable,gpu_frames:0,
+                        gpu:None,gpu_capable,gpu_frames:0,input_device,
                         _runtime: runtime,
                     });
                 }
@@ -224,7 +226,7 @@ impl Driver {
                 .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
                 .map_err(reason)?;
             let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
-            if let Some(manager)=manager {
+            if let Some(manager)=manager.filter(|_|attributes.GetUINT32(&MF_SA_D3D11_AWARE).unwrap_or(0)==1) {
                 transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER,manager.as_raw() as usize).map_err(reason)?;
             }
             let codec: ICodecAPI = transform.cast().map_err(reason)?;
@@ -355,13 +357,19 @@ impl Driver {
             let sample = if frame.gpu {
                 if !self.gpu_capable {return Err("hardware MFT has no D3D11 input support".into());}
                 if self.gpu.is_none() {
-                    let gpu=super::gpu::Input::new(frame,self.settings)?;
+                    let gpu=super::gpu::Input::with_manager(frame,self.settings,self.input_device.as_ref().map(|(_,manager)|manager.clone()))?;
                     // Bind the capture device before negotiating input types.
                     // No CPU samples have been submitted on this GPU session.
-                    self.activation.ShutdownObject().map_err(reason)?;
-                    let (transform,events,codec,input_id,output_id)=Self::activate(self.settings,&self.activation,Some(&gpu.manager))?;
-                    self.transform=transform;self.events=events;self.codec=codec;
-                    self.input_id=input_id;self.output_id=output_id;self.input_credit=0;
+                    if let Some((input,_))=&self.input_device {
+                        if gpu.device_identity()?!=input.identity().map_err(reason)? {return Err("MFT input device changed after initialization".into());}
+                    }else {
+                        // Callers without an initial capture device retain the
+                        // late-bind path. Desktop sessions bind once in open().
+                        self.activation.ShutdownObject().map_err(reason)?;
+                        let (transform,events,codec,input_id,output_id)=Self::activate(self.settings,&self.activation,Some(&gpu.manager))?;
+                        self.transform=transform;self.events=events;self.codec=codec;
+                        self.input_id=input_id;self.output_id=output_id;self.input_credit=0;
+                    }
                     self.gpu=Some(gpu);
                 }
                 self.gpu_frames+=1;

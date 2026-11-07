@@ -61,9 +61,12 @@ impl Input {
         if let Some(guard)=guard{guard.finish()?;}output
     }
     pub fn new(frame:&RawFrame,settings:Settings)->Result<Self,String> {
-        Self::create(frame,settings).map_err(|e|format!("GPU encoder input: {e}"))
+        Self::with_manager(frame,settings,None)
     }
-    fn create(frame:&RawFrame,settings:Settings)->windows::core::Result<Self> {
+    pub fn with_manager(frame:&RawFrame,settings:Settings,manager:Option<IMFDXGIDeviceManager>)->Result<Self,String> {
+        Self::create(frame,settings,manager).map_err(|e|format!("GPU encoder input: {e}"))
+    }
+    fn create(frame:&RawFrame,settings:Settings,manager:Option<IMFDXGIDeviceManager>)->windows::core::Result<Self> {
         unsafe {
             let surface=frame.d3d11.as_ref().ok_or_else(windows::core::Error::empty)?;
             let (texture,device)=surface.capture_texture().map_err(|_|windows::core::Error::empty())?;
@@ -105,10 +108,7 @@ impl Input {
                 v1.VideoProcessorSetStreamColorSpace1(&processor,0,DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
                 v1.VideoProcessorSetOutputColorSpace1(&processor,DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601);
             }
-            let mut token=0;let mut manager=None;
-            MFCreateDXGIDeviceManager(&mut token,&mut manager)?;
-            let manager=manager.ok_or_else(windows::core::Error::empty)?;
-            manager.ResetDevice(&device,token)?;
+            let manager=match manager {Some(manager)=>manager,None=>device_manager(&device)?};
             Ok(Self{device,context,video,video_context,enumerator,processor,manager,source,source_format:desc.Format,pixel_format:frame.format,profile:std::env::var_os("UU_ENCODE_PROFILE").map(|_|VpProfile::default()),settings,color})
         }
     }
@@ -193,6 +193,16 @@ impl Input {
         let target=self.video_target()?;
         let output=self.video_convert_into(frame,&target,false)?;
         unsafe{make_sample(&output,frame,self.settings.fps)}
+    }
+}
+
+pub(super) fn device_manager(device:&ID3D11Device)->windows::core::Result<IMFDXGIDeviceManager> {
+    unsafe {
+        let mut token=0;let mut manager=None;
+        MFCreateDXGIDeviceManager(&mut token,&mut manager)?;
+        let manager=manager.ok_or_else(windows::core::Error::empty)?;
+        manager.ResetDevice(device,token)?;
+        Ok(manager)
     }
 }
 impl Drop for Input {fn drop(&mut self){
