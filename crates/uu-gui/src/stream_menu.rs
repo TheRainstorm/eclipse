@@ -653,6 +653,7 @@ impl super::App {
     }
 
     fn audio_menu(&mut self,ui:&mut egui::Ui){
+        use std::sync::atomic::Ordering::Relaxed;
         let audio=self.audio_stats().map(|stats|stats.audio.clone());
         let playback=self.audio_playback();
         let (mut muted,mut volume)=(playback.muted,playback.volume);
