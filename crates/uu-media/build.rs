@@ -51,5 +51,6 @@ fn main() {
     }
     if target == "windows" {
         println!("cargo:rustc-link-lib=winmm");
+        println!("cargo:rustc-link-lib=dxgi");
     }
 }

@@ -8,8 +8,10 @@
 #include <stdio.h>
 #include <string.h>
 #ifdef _WIN32
+#define COBJMACROS
 #include <windows.h>
 #include <timeapi.h>
+#include <dxgi1_2.h>
 typedef HMODULE Module;
 static Module module_open(const char *name) { return LoadLibraryExA(name, NULL, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS); }
 static void *module_symbol(Module m,const char *name) {return (void *)GetProcAddress(m,name);}
@@ -34,6 +36,9 @@ typedef mfxConfig (MFX_CDECL *ConfigFn)(mfxLoader);
 typedef mfxStatus (MFX_CDECL *FilterFn)(mfxConfig,const mfxU8 *,mfxVariant);
 typedef struct {
     Module module; mfxLoader loader; UnloadFn unload; int decoder; int configured;
+#ifdef _WIN32
+    unsigned adapters[16],adapter_count; int fast,need_full; mfxConfig adapter_filter;
+#endif
     mfxStatus (MFX_CDECL *close)(mfxSession);
     mfxStatus (MFX_CDECL *query_impl)(mfxSession,mfxIMPL *);
     mfxStatus (MFX_CDECL *query)(mfxSession,mfxVideoParam *,mfxVideoParam *);
@@ -57,6 +62,33 @@ typedef struct {
     uint8_t *pixels,*bits; size_t pixel_size,bit_size;
     uint32_t frame_order,peak_kbps; int vbr;
 } Encoder;
+#ifdef _WIN32
+/* The codec-description filter forces the dispatcher to query every runtime's
+ * complete capabilities before creating even an unsupported AV1 session. Use
+ * its low-latency hardware path on each real Intel adapter, then validate the
+ * requested codec with ENCODE_Query/Init/GetVideoParam below. Keep the original
+ * full search if an adapter or runtime cannot initialize through this API.
+ * Contract: intel/libvpl 674d015b, CheckLowLatencyConfig / DXGIAdapterIndex. */
+static void encoder_adapters(Runtime *rt){
+    const GUID factory_id={0x770aae78,0xf26f,0x4dba,{0xa8,0x29,0x25,0x3c,0x83,0xd1,0xb3,0x87}};
+    IDXGIFactory1 *factory=NULL;
+    if(FAILED(CreateDXGIFactory1(&factory_id,(void **)&factory))){rt->need_full=1;return;}
+    rt->fast=1;
+    for(unsigned index=0;index<64;++index){
+        IDXGIAdapter1 *adapter=NULL;HRESULT status=IDXGIFactory1_EnumAdapters1(factory,index,&adapter);
+        if(status==DXGI_ERROR_NOT_FOUND)break;
+        if(FAILED(status)){rt->need_full=1;break;}
+        DXGI_ADAPTER_DESC1 desc;
+        if(FAILED(IDXGIAdapter1_GetDesc1(adapter,&desc)))rt->need_full=1;
+        else if(desc.VendorId==0x8086 && !(desc.Flags&DXGI_ADAPTER_FLAG_SOFTWARE)){
+            if(rt->adapter_count<16)rt->adapters[rt->adapter_count++]=index;
+            else rt->need_full=1;
+        }
+        IDXGIAdapter1_Release(adapter);
+    }
+    IDXGIFactory1_Release(factory);
+}
+#endif
 static int failed(char *error,size_t capacity,const char *operation,int status){
     if(capacity)snprintf(error,capacity,"Intel VPL %s failed (status %d)",operation,status);
     return -1;
@@ -83,7 +115,12 @@ static int runtime_open(Runtime *rt,int decoder,char *error,size_t capacity){
         RESOLVE(header,"MFXVideoDECODE_DecodeHeader");RESOLVE(surfaces,"MFXVideoDECODE_QueryIOSurf");RESOLVE(decode,"MFXVideoDECODE_DecodeFrameAsync");
         RESOLVE(sync,"MFXVideoCORE_SyncOperation");
 #undef RESOLVE
-        if(rt->close&&rt->query_impl&&rt->query&&rt->init&&rt->reset&&rt->get&&rt->encode_close&&rt->sync&&(!decoder?rt->encode!=NULL:(rt->header&&rt->surfaces&&rt->decode)))return 0;
+        if(rt->close&&rt->query_impl&&rt->query&&rt->init&&rt->reset&&rt->get&&rt->encode_close&&rt->sync&&(!decoder?rt->encode!=NULL:(rt->header&&rt->surfaces&&rt->decode))){
+#ifdef _WIN32
+            if(!decoder)encoder_adapters(rt);
+#endif
+            return 0;
+        }
         runtime_close(rt);
     }
     return failed(error,capacity,"runtime unavailable; install Intel VPL dispatcher and GPU runtime",MFX_ERR_NOT_FOUND);
@@ -104,6 +141,14 @@ static int session_open(Runtime *rt,mfxSession *session,unsigned index,mfxU32 co
     FilterFn filter=(FilterFn)module_symbol(rt->module,"MFXSetConfigFilterProperty");
     rt->unload=(UnloadFn)module_symbol(rt->module,"MFXUnload");
     if(!load||!create||!config||!filter||!rt->unload)return MFX_ERR_UNSUPPORTED;
+#ifdef _WIN32
+    int fast=rt->fast && index<rt->adapter_count;
+    if(rt->fast && !fast){
+        if(!rt->need_full)return MFX_ERR_NOT_FOUND;
+        index-=rt->adapter_count;
+        if(rt->configured==2){rt->unload(rt->loader);rt->loader=NULL;rt->configured=0;rt->adapter_filter=NULL;}
+    }
+#endif
     if(!rt->loader)rt->loader=load();
     if(!rt->loader)return MFX_ERR_NOT_INITIALIZED;
     if(!rt->configured){
@@ -112,15 +157,46 @@ static int session_open(Runtime *rt,mfxSession *session,unsigned index,mfxU32 co
         mfxConfig impl=config(rt->loader);mfxConfig format=config(rt->loader);
         if(!impl||!format)return MFX_ERR_NOT_INITIALIZED;
         mfxStatus status=filter(impl,(const mfxU8 *)"mfxImplDescription.Impl",value);if(status<0)return status;
+#ifdef _WIN32
+        if(fast){
+            value.Data.U32=0x8086;
+            status=filter(format,(const mfxU8 *)"mfxImplDescription.VendorID",value);
+            mfxConfig mode=config(rt->loader),name=config(rt->loader);
+            if(!mode || !name)status=MFX_ERR_NOT_INITIALIZED;
+            if(status>=0){value.Data.U32=MFX_ACCEL_MODE_VIA_D3D11;status=filter(mode,(const mfxU8 *)"mfxImplDescription.AccelerationMode",value);}
+            if(status>=0){value.Type=MFX_VARIANT_TYPE_PTR;value.Data.Ptr=(mfxHDL)"mfx-gen";status=filter(name,(const mfxU8 *)"mfxImplDescription.ImplName",value);}
+            rt->adapter_filter=config(rt->loader);
+            if(status<0 || !rt->adapter_filter){rt->need_full=1;rt->unload(rt->loader);rt->loader=NULL;return MFX_ERR_UNSUPPORTED;}
+            rt->configured=2;
+        }else
+#endif
+        {
         value.Data.U32=codec;
         status=filter(format,(const mfxU8 *)(rt->decoder?"mfxImplDescription.mfxDecoderDescription.decoder.CodecID":"mfxImplDescription.mfxEncoderDescription.encoder.CodecID"),value);
         if(status<0)return status;
         rt->configured=1;
+        }
     }
+#ifdef _WIN32
+    if(fast){
+        mfxVariant value;memset(&value,0,sizeof(value));value.Version.Version=MFX_VARIANT_VERSION;value.Type=MFX_VARIANT_TYPE_U32;value.Data.U32=rt->adapters[index];
+        mfxStatus status=filter(rt->adapter_filter,(const mfxU8 *)"DXGIAdapterIndex",value);
+        if(status<0){rt->need_full=1;return MFX_ERR_UNSUPPORTED;}
+        index=0;
+    }
+#endif
     mfxStatus status=create(rt->loader,index,session);
-    if(status<0)return status;
+    if(status<0){
+#ifdef _WIN32
+        if(fast){rt->need_full=1;return MFX_ERR_UNSUPPORTED;}
+#endif
+        return status;
+    }
     mfxIMPL implementation=0;status=rt->query_impl(*session,&implementation);
     if(status<0 || !((implementation&0x0f)==MFX_IMPL_HARDWARE || (implementation&0x0f)==MFX_IMPL_HARDWARE2 || (implementation&0x0f)==MFX_IMPL_HARDWARE3 || (implementation&0x0f)==MFX_IMPL_HARDWARE4)){
+#ifdef _WIN32
+        if(fast)rt->need_full=1;
+#endif
         rt->close(*session);*session=NULL;return MFX_ERR_UNSUPPORTED;
     }
     return 0;
@@ -151,7 +227,11 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
     mfxU32 id=codec==0?MFX_CODEC_AVC:codec==1?MFX_CODEC_HEVC:codec==2?MFX_CODEC_AV1:0;
     if(!id){eclipse_vpl_encoder_close(e);return failed(error,capacity,"unknown codec",MFX_ERR_UNSUPPORTED);}
     mfxStatus status=MFX_ERR_NOT_FOUND,last_error=MFX_ERR_NOT_FOUND;
-    for(unsigned index=0;index<16;++index){
+    unsigned candidates=16;
+#ifdef _WIN32
+    candidates+=e->rt.adapter_count;
+#endif
+    for(unsigned index=0;index<candidates;++index){
         status=session_open(&e->rt,&e->session,index,id);if(status<0){if(status==MFX_ERR_NOT_FOUND)break;last_error=status;continue;}
         /* Prefer Intel's fixed-function low-power encoder (as used for
          * interactive streaming); retain the driver's general engine when
