@@ -19,6 +19,16 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 pub const ALL_MONITORS: &str = "*";
 const MAX_DISPLAYS: usize = 16;
+fn sort_monitors(monitors: &mut [CaptureMonitor]) {
+    monitors.sort_by(|a,b| {
+        match (crate::screen_control::windows_display_number(&a.name),crate::screen_control::windows_display_number(&b.name)) {
+            (Some(a),Some(b)) => a.cmp(&b),
+            (Some(_),None) => std::cmp::Ordering::Less,
+            (None,Some(_)) => std::cmp::Ordering::Greater,
+            (None,None) => a.name.cmp(&b.name),
+        }
+    });
+}
 mod names;
 const INITIAL_REQUEST:&str="x-eclipse-initial-display-client";
 const INITIAL_REPLY:&str="x-eclipse-initial-display-host";
@@ -192,7 +202,7 @@ impl Host {
     fn prepare_initial_monitors(&self, request: &InitialRequest, mut monitors: Vec<CaptureMonitor>) -> Result<CaptureSource> {
         request.validate()?;
         let InitialRequest::Existing {id,source}=request else {anyhow::bail!("virtual target must be created before source selection")};
-        monitors.sort_by(|a,b|a.name.cmp(&b.name));
+        sort_monitors(&mut monitors);
         let name=if source.is_empty() {
             let state=self.state.lock().unwrap();
             if state.names.is_empty() {monitors.iter().take(MAX_DISPLAYS).nth(*id as usize).map(|m|m.name.clone())}
@@ -226,7 +236,7 @@ impl Host {
     }
     fn prepare_monitors(&self, mut monitors: Vec<CaptureMonitor>) -> anyhow::Result<CaptureSource> {
         anyhow::ensure!(!monitors.is_empty(), "{}", uu_i18n::format!("当前没有可共享的显示器"));
-        monitors.sort_by(|a, b| a.name.cmp(&b.name));
+        sort_monitors(&mut monitors);
         let mut state = self.state.lock().unwrap();
         if let Some(index)=state.selected.as_ref().and_then(|name|monitors.iter().position(|m|&m.name==name)) {
             if index>=MAX_DISPLAYS {monitors.swap(index,MAX_DISPLAYS-1);}
@@ -334,7 +344,7 @@ impl Host {
         let current=state.catalog.current_id;
         let name=state.names.get(current as usize).cloned().ok_or_else(||anyhow::anyhow!("current capture source is not prepared"))?;
         let previous=state.catalog.screens.iter().find(|screen|screen.id==current).cloned().ok_or_else(||anyhow::anyhow!("current capture catalog is unavailable"))?;
-        monitors.sort_by(|a,b|a.name.cmp(&b.name));
+        sort_monitors(&mut monitors);
         let active=monitors.iter().position(|monitor|monitor.name==name).ok_or_else(||anyhow::anyhow!("current capture source disappeared; reconnect before changing virtual displays"))?;
         if active>=MAX_DISPLAYS {monitors.swap(active,MAX_DISPLAYS-1);}
         monitors.truncate(MAX_DISPLAYS);
@@ -543,6 +553,16 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_catalog_uses_system_number_order_and_preserves_exact_source_identity() {
+        let host=Host::default();
+        let source=host.prepare_monitors(vec![monitor(r"\\.\DISPLAY17",false),monitor(r"\\.\DISPLAY2",false),monitor(r"\\.\DISPLAY1",true)]).unwrap();
+        assert_eq!(source,CaptureSource::Monitor(r"\\.\DISPLAY1".into()));
+        assert_eq!(host.catalog().screens.iter().map(|s|s.display_name.as_str()).collect::<Vec<_>>(),[r"\\.\DISPLAY1",r"\\.\DISPLAY2",r"\\.\DISPLAY17"]);
+        // Source identity wins over an ID saved before natural ordering.
+        assert_eq!(host.prepare_initial_monitors(&InitialRequest::Existing{id:2,source:r"\\.\DISPLAY2".into()},vec![monitor(r"\\.\DISPLAY17",false),monitor(r"\\.\DISPLAY2",false),monitor(r"\\.\DISPLAY1",true)]).unwrap(),CaptureSource::Monitor(r"\\.\DISPLAY2".into()));
+        assert_eq!(host.catalog().current_id,1);
+    }
     fn description()->RTCSessionDescription {
         RTCSessionDescription::offer("v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H264/90000\r\na=recvonly\r\n".into()).unwrap()
     }

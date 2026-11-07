@@ -431,7 +431,8 @@ impl super::App {
     pub(super) fn display_label(&self) -> String {
         self.displays
             .selected
-            .and_then(|id| self.displays.layout.number(id))
+            .and_then(|id| self.remote_screens().screens.into_iter().find(|screen|screen.id==id))
+            .map(|screen| self.displays.layout.number_for(&screen))
             .map(|number| uu_i18n::format!("显示屏 {number}"))
             .unwrap_or_else(|| uu_i18n::text("显示器").into())
     }

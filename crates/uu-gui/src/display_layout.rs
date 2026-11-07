@@ -1,4 +1,4 @@
-//! Local tab order and stable local numbers, independent of capture/OS layout.
+//! Local tab order, remote Windows numbering and fallback numbers for other sources.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -84,11 +84,16 @@ impl DisplayLayout {
     pub fn number(&self, id: i32) -> Option<usize> {
         self.numbers.iter().position(|v| *v == id).map(|i| i + 1)
     }
+    pub fn number_for(&self, screen: &RemoteScreen) -> usize {
+        uu_core::screen_control::windows_display_number(&screen.display_name)
+            .or_else(|| self.number(screen.id))
+            .unwrap_or_else(|| screen.id.max(0) as usize + 1)
+    }
     pub fn label(&self, screen: &RemoteScreen) -> String {
         self.label_named(screen,&screen.display_name)
     }
     pub fn label_named(&self,screen:&RemoteScreen,name:&str)->String {
-        let number=self.number(screen.id).unwrap_or_else(||screen.id.max(0) as usize+1);
+        let number=self.number_for(screen);
         let name=name.strip_prefix(r"\\.\").unwrap_or(name).trim();
         let name=if name.is_empty(){uu_i18n::text("显示器")}else{name};
         format!("{number}:{name}")
@@ -159,9 +164,26 @@ mod tests {
         let mut layout=DisplayLayout::default();let mut monitor=screen(42);
         monitor.display_name=r"\\.\DISPLAY4".into();
         layout.sync(&[monitor.clone()]);
-        assert_eq!(layout.label_named(&monitor,"Zako HDR"),"1:Zako HDR");
-        assert_eq!(layout.label(&monitor),"1:DISPLAY4");
+        assert_eq!(layout.label_named(&monitor,"Zako HDR"),"4:Zako HDR");
+        assert_eq!(layout.label(&monitor),"4:DISPLAY4");
         assert_eq!(monitor.display_name,r"\\.\DISPLAY4");
+    }
+    #[test]
+    fn windows_numbers_ignore_old_local_numbers_and_user_tab_order() {
+        // A saved layout from the lexical DISPLAY1/17/2 catalog must not
+        // relabel Windows display 2 as display 3 after upgrade.
+        let mut layout: DisplayLayout = serde_json::from_str(r#"{"numbers":[0,1,2],"order":[2,0,1]}"#).unwrap();
+        let mut screens = vec![screen(0), screen(1), screen(2)];
+        for (screen, name) in screens.iter_mut().zip([r"\\.\DISPLAY1",r"\\.\DISPLAY17",r"\\.\DISPLAY2"]) {
+            screen.display_name = name.into();
+        }
+        assert_eq!(layout.label_named(&screens[2], "27E1"), "2:27E1");
+        assert_eq!(layout.number_for(&screens[1]), 17);
+        assert!(layout.move_tab(1, 2, false));
+        layout.sort(&mut screens);
+        assert_eq!(screens.iter().map(|s|layout.number_for(s)).collect::<Vec<_>>(), [17,2,1]);
+        assert_eq!(screens[1].display_name,r"\\.\DISPLAY2");
+        assert_eq!(screens[1].id,2);
     }
     #[test]
     fn saved_layout_restores_order_independently_of_global_preferences() {

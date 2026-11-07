@@ -1,6 +1,15 @@
 //! Provider-neutral remote displays and presentation preferences.
 /// A desktop-portal choice is an authorization action, not another monitor.
 pub const PORTAL_CHOICE_KIND:u32=4;
+
+/// The number in a Windows GDI source is the remote system's display number.
+/// It is presentation metadata, never a replacement for the exact source or
+/// this connection's control ID. Other platforms keep their existing labels.
+pub fn windows_display_number(source: &str) -> Option<usize> {
+    let digits = source.strip_prefix(r"\\.\DISPLAY")?;
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) { return None; }
+    digits.parse::<usize>().ok().filter(|number| *number > 0)
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteScreens {
