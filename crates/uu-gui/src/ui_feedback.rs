@@ -7,6 +7,7 @@ pub(super) enum Scope {
     Devices,
     DeviceDetails(String),
     Services(u8),
+    VirtualDisplays,
     Compatibility,
 }
 
@@ -15,6 +16,7 @@ pub(super) enum Kind {
     Info,
     Success,
     Error,
+    Progress,
 }
 
 #[derive(Clone, Debug)]
@@ -26,12 +28,15 @@ pub(super) struct Message {
 }
 
 impl Message {
-    fn visible(&self, now: Instant) -> bool {
+    fn expires_at(&self) -> Option<Instant> {
         match self.kind {
-            Kind::Error => true,
-            Kind::Success => now.duration_since(self.shown_at) < Duration::from_secs(2),
-            Kind::Info => now.duration_since(self.shown_at) < Duration::from_secs(4),
+            Kind::Success => Some(self.shown_at + Duration::from_secs(2)),
+            Kind::Info => Some(self.shown_at + Duration::from_secs(4)),
+            Kind::Error | Kind::Progress => None,
         }
+    }
+    fn visible(&self, now: Instant) -> bool {
+        self.expires_at().is_none_or(|deadline| now < deadline)
     }
 }
 
@@ -69,6 +74,15 @@ impl Feedback {
         }
     }
 
+    pub fn expire(&mut self, now: Instant) -> bool {
+        if self.message.as_ref().is_some_and(|message| !message.visible(now)) {
+            self.message = None;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn current(&self, scope: &Scope) -> Option<&Message> {
         self.message
             .as_ref()
@@ -91,7 +105,7 @@ impl Feedback {
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new(&message.text).color(match message.kind {
-                    Kind::Info => super::theme::palette(ui.visuals()).muted,
+                    Kind::Info | Kind::Progress => super::theme::palette(ui.visuals()).muted,
                     Kind::Success => super::theme::palette(ui.visuals()).success,
                     Kind::Error => super::theme::palette(ui.visuals()).danger,
                 }),
@@ -107,11 +121,9 @@ impl Feedback {
     }
 
     pub fn tick(&self, ctx: &egui::Context) {
-        if self.message.as_ref().is_some_and(|message| {
-            message.kind == Kind::Info
-                || message.kind == Kind::Success
-        }) {
-            ctx.request_repaint_after(Duration::from_millis(100));
+        let now = Instant::now();
+        if let Some(deadline) = self.message.as_ref().and_then(Message::expires_at).filter(|at| *at > now) {
+            ctx.request_repaint_after(deadline.duration_since(now));
         }
     }
 }
@@ -135,7 +147,11 @@ mod tests {
         feedback.success(Scope::Devices, "saved");
         assert!(feedback.current(&Scope::Devices).is_some());
         assert!(feedback.current(&Scope::Services(0)).is_none());
+        assert!(feedback.expire(Instant::now()+Duration::from_secs(3)));
+        assert!(feedback.current(&Scope::Devices).is_none());
+        assert!(!feedback.expire(Instant::now()+Duration::from_secs(4)));
         feedback.report(Scope::Services(0), Kind::Error, "failed");
+        assert!(!feedback.expire(Instant::now()+Duration::from_secs(120)));
         assert!(feedback.current(&Scope::Devices).is_none());
         assert!(feedback.current(&Scope::Services(0)).is_some());
     }

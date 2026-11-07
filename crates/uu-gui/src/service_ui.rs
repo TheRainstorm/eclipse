@@ -334,6 +334,13 @@ impl Entry {
     }
 }
 fn section_card(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
+    section_frame(ui, |ui| {
+        ui.strong(title);
+        ui.add_space(8.);
+        contents(ui);
+    });
+}
+fn section_frame(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
     let frame = crate::theme::card(ui.visuals());
     let width = (ui.available_width()
         - frame.inner_margin.sum().x
@@ -343,8 +350,6 @@ fn section_card(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui:
     frame.show(ui, |ui| {
         ui.set_width(width);
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-        ui.strong(title);
-        ui.add_space(8.);
         contents(ui);
     });
     ui.add_space(12.);
@@ -1107,13 +1112,14 @@ impl Manager {
                 self.plugins_ui(ui, enabled);
             }
             6 => {
-                section_card(ui, uu_i18n::text("虚拟显示器"), |ui| {
+                section_frame(ui, |ui| {
                     if self.snapshot.is_some() {
                         let service_busy = self.busy;
                         ui.add_enabled_ui(!service_busy, |ui| {
                             self.virtual_display.show_background_inline(ui);
                         });
                     } else {
+                        ui.strong(uu_i18n::text("虚拟显示器"));
                         ui.weak(uu_i18n::text("启动服务后可在这里管理虚拟显示器。"));
                     }
                 });

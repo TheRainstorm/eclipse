@@ -204,7 +204,6 @@ fn spec_controls(ui:&mut egui::Ui,spec:&mut Spec,inline:bool) {
             crate::theme::number_input(ui,egui::DragValue::new(&mut spec.height).range(200..=16_384));
         }
     };
-    if inline {resolution(ui);} else {ui.horizontal_wrapped(resolution);}
     let mut refresh=|ui:&mut egui::Ui| {
         ui.label(uu_i18n::text("刷新率"));
         crate::theme::Select::from_id_salt("virtual-rate").width(88.).selected_text(format!("{} Hz",spec.refresh_millihz as f64/1000.)).show_ui(ui,|ui| {
@@ -219,7 +218,15 @@ fn spec_controls(ui:&mut egui::Ui,spec:&mut Spec,inline:bool) {
         }
         crate::theme::compact_switch(ui,&mut spec.hdr,"HDR");
     };
-    if inline {refresh(ui);} else {ui.horizontal_wrapped(refresh);}
+    if inline {
+        resolution(ui);
+        refresh(ui);
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            resolution(ui);
+            refresh(ui);
+        });
+    }
     ui.ctx().data_mut(|d|{d.insert_temp(size_id,size_custom);d.insert_temp(rate_id,rate_custom);});
 }
 pub fn editor(ui: &mut egui::Ui, presets: &mut Presets) {

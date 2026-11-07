@@ -2,6 +2,7 @@
 #[path = "virtual_display_preparation.rs"]
 mod preparation_ui;
 use eframe::egui;
+use crate::ui_feedback::{Feedback, Kind, Scope};
 use std::{
     collections::{BTreeMap,BTreeSet},
     sync::mpsc,
@@ -128,6 +129,8 @@ pub struct State {
     source_timed_out: bool,
     notice: String,
     notice_changed: bool,
+    feedback: Feedback,
+    forwarded_notice: String,
     details_open_requested: bool,
     details: String,
     preparation: Option<uu_core::virtual_display::preparation::Status>,
@@ -173,7 +176,7 @@ impl State {
         self.spec = spec;
         self.startup = Some(Startup::Waiting(Instant::now()));
         self.initial_timed_out = false;
-        self.message(uu_i18n::text(if persistent {"正在创建持久虚拟显示器…"}else{"正在创建临时虚拟副屏…"}).into());
+        self.message(Kind::Progress, uu_i18n::text(if persistent {"正在创建持久虚拟显示器…"}else{"正在创建临时虚拟副屏…"}).into());
     }
     fn poll_startup(&mut self) {
         let Some(Startup::Waiting(started)) = self.startup else {
@@ -183,12 +186,12 @@ impl State {
             && started.elapsed() > uu_core::native_virtual_display::OPERATION_TIMEOUT
         {
             self.initial_timed_out = true;
-            self.message(uu_i18n::text("虚拟副屏操作尚未确认，正在等待回执；确认前不能再次操作，断开连接仍会清理临时屏").into());
+            self.message(Kind::Progress, uu_i18n::text("虚拟副屏操作尚未确认，正在等待回执；确认前不能再次操作，断开连接仍会清理临时屏").into());
         }
     }
     pub(super) fn startup_failed(&mut self, message: String) {
         self.startup = Some(Startup::Finished);
-        self.message(message);
+        self.message(Kind::Error, message);
     }
     fn take_create_request(&mut self) -> bool {
         std::mem::take(&mut self.create_requested)
@@ -243,6 +246,8 @@ impl State {
         self.remote_refresh_requested = false;
         self.remote_refresh_attempted = false;
         self.notice.clear();
+        self.feedback.clear_scope(&Scope::VirtualDisplays);
+        self.forwarded_notice.clear();
         self.notice_changed = false;
         self.startup = None;
         self.initial_timed_out = false;
@@ -261,12 +266,29 @@ impl State {
         self.local_owner
             .is_some_and(|owner| self.uncertain_owners.contains(&owner))
     }
-    fn message(&mut self, message: String) {
+    fn message(&mut self, kind: Kind, message: String) {
+        self.feedback.report(Scope::VirtualDisplays, kind, &message);
         self.notice = message;
         self.notice_changed = true;
     }
+    fn expire_notice(&mut self, now: Instant) {
+        if self.feedback.expire(now) {
+            self.notice.clear();
+            self.notice_changed = true;
+        }
+    }
     pub fn take_notice(&mut self) -> Option<String> {
         std::mem::take(&mut self.notice_changed).then(|| self.notice.clone())
+    }
+    fn forward_notice(&mut self, target: &mut String) {
+        if let Some(notice) = self.take_notice() {
+            // Expiring this operation must not erase another component's newer
+            // stream notice. The legacy stream field still holds plain text.
+            if !notice.is_empty() || *target == self.forwarded_notice {
+                *target = notice.clone();
+            }
+            self.forwarded_notice = notice;
+        }
     }
     pub fn open_local_selector(&mut self) {
         self.open = true;
@@ -286,6 +308,7 @@ impl State {
             self.editors.clear();self.submitted_editor=None;self.limit_draft=None;self.next_inventory_check=None;
             self.slots.clear();
             self.notice.clear();
+            self.feedback.clear_scope(&Scope::VirtualDisplays);
             self.details.clear();
             self.preparation = None;
             self.next_preparation_check = None;
@@ -333,6 +356,7 @@ impl State {
         if !self.inspect_inflight {
             self.details.clear();
             self.message(
+                Kind::Progress,
                 if preparing {
                     uu_i18n::text("正在准备虚拟副屏，请等待本次操作完成。")
                 } else {
@@ -383,10 +407,10 @@ impl State {
                 if !inspect {
                     self.remote_refresh_attempted = false;
                     self.details.clear();
-                    self.message(uu_i18n::text("正在管理虚拟副屏…").into());
+                    self.message(Kind::Progress, uu_i18n::text("正在管理虚拟副屏…").into());
                 }
             }
-            Err(error) => self.message(error.to_string()),
+            Err(error) => self.message(Kind::Error, error.to_string()),
         }
     }
     pub fn open_remote(&mut self, client: &Client) {
@@ -457,7 +481,7 @@ impl State {
                 self.slots = slots;
                 self.next_inventory_check=Some(Instant::now()+Duration::from_secs(2));
                 if !self.inspect_inflight {
-                    self.message(String::new());
+                    self.message(Kind::Info, String::new());
                     self.details.clear();
                 }
             }
@@ -471,7 +495,7 @@ impl State {
                 }
                 self.displays.retain(|d| d.id != display.id);
                 self.displays.push(display);
-                self.message(uu_i18n::text("虚拟副屏已创建").into());
+                self.message(Kind::Success, uu_i18n::text("虚拟副屏已创建").into());
                 // Capacity changed. Ask explicitly before the next creation.
                 self.status = None;
                 self.preparation = None;
@@ -486,7 +510,7 @@ impl State {
                 self.preparation = None;
                 self.next_preparation_check = None;
                 self.details.clear();
-                self.message(uu_i18n::text("虚拟副屏已移除").into());
+                self.message(Kind::Success, uu_i18n::text("虚拟副屏已移除").into());
                 self.next_inventory_check=Some(Instant::now());
             }
             Response::Error { message } => {
@@ -503,11 +527,12 @@ impl State {
                 }
                 self.details = message;
                 self.details_open_requested = true;
-                self.message(uu_i18n::text("虚拟副屏操作未完成，请刷新确认当前状态。").into());
+                self.message(Kind::Error, uu_i18n::text("虚拟副屏操作未完成，请刷新确认当前状态。").into());
             }
         }
     }
     pub fn poll(&mut self, client: Option<&Client>) {
+        self.expire_notice(Instant::now());
         self.poll_startup();
         if let Some(receiver) = &self.worker {
             match receiver.try_recv() {
@@ -539,7 +564,7 @@ impl State {
                                     .then(|| Instant::now() + Duration::from_secs(1));
                                     self.preparation = Some(preparation);
                                 }
-                                self.message(error.message);
+                                self.message(Kind::Error, error.message);
                             }
                         }
                     }
@@ -556,7 +581,7 @@ impl State {
                         self.uncertain_owners.insert(owner);
                     }
                     if owner == self.local_owner {
-                        self.message(uu_i18n::text("虚拟副屏管理线程已停止").into());
+                        self.message(Kind::Error, uu_i18n::text("虚拟副屏管理线程已停止").into());
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
@@ -571,6 +596,7 @@ impl State {
         {
             self.worker_timed_out = true;
             self.message(
+                Kind::Progress,
                 uu_i18n::text(
                     "操作仍在等待后台确认，请保留本次请求；等待提示不会取消准备，也不会自动重试。",
                 )
@@ -590,6 +616,7 @@ impl State {
                 // and the admission gate until the late reply or disconnect.
                 self.pending_timed_out = true;
                 self.message(
+                    Kind::Progress,
                     uu_i18n::text(
                         "虚拟副屏操作尚未确认，正在等待回执；确认前不能再次操作，断开连接仍会清理临时屏",
                     )
@@ -607,17 +634,20 @@ impl State {
             if self.startup.is_some() {
                 // A late catalog may still confirm this exact created target.
                 self.message(
+                    Kind::Progress,
                     uu_i18n::text("仍在等待临时虚拟屏进入显示目录，可关闭此标签取消").into(),
                 );
             } else {
                 self.source = None;
                 self.message(
+                    Kind::Error,
                     uu_i18n::text("虚拟屏已创建，但显示目录尚未更新，请重新选择显示器").into(),
                 );
             }
         }
     }
     fn prepare_interaction(&mut self, ctx: &egui::Context, client: Option<&Client>) {
+        self.feedback.tick(ctx);
         if !self.busy() {
             if let Some(request) = self.deferred_request.take() {
                 if let Some(client) = client {
@@ -671,7 +701,7 @@ impl State {
             .id(egui::Id::new(("virtual-display-manager", ctx.viewport_id())))
             .open(&mut open)
             .collapsible(false)
-            .default_width(480.)
+            .default_width(760.)
             .show(ctx, |ui| self.contents(ui, ctx, client, false));
         self.open = open;
     }
@@ -698,6 +728,19 @@ impl State {
         let mut local_command = None;
         let mut selected_owner = None;
         let mut preparation_action = None;
+        ui.horizontal(|ui| {
+            ui.strong(uu_i18n::text("虚拟显示器"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add_enabled(!busy, crate::theme::secondary_button(uu_i18n::text("刷新"))).clicked() {
+                    command = Some(Request::Inspect);
+                }
+                if busy {
+                    ui.spinner();
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
+            });
+        });
+        ui.add_space(8.);
         if client.is_none() && self.local_selector && !embedded {
             ui.strong(uu_i18n::text("选择管理对象"));
             ui.horizontal_wrapped(|ui| {
@@ -711,7 +754,6 @@ impl State {
             ui.separator();
         }
         if client.is_some() {
-            ui.strong(uu_i18n::text("虚拟显示器"));
             ui.weak(uu_i18n::text("临时屏在所属串流断开时回收；持久屏保留并在开机恢复。"));
         } else if let Some(owner) = self.local_owner {
             if embedded {
@@ -723,7 +765,7 @@ impl State {
             if administrator_required(owner) {
                 ui.label(uu_i18n::text("请在服务管理中准备后台，再创建虚拟副屏；已有副屏不会因打开设置而断开。"));
                 if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("打开后台准备"))).clicked(){preparation_action=Some(preparation_ui::Action::BackgroundSetup);}
-                if !self.notice.is_empty() { ui.label(&self.notice); }
+                self.feedback.show(ui, Scope::VirtualDisplays);
                 return;
             }
         } else {
@@ -736,7 +778,11 @@ impl State {
         }
         if let Some(status)=&self.status {
             ui.horizontal_wrapped(|ui|{
-                ui.label(uu_i18n::text("虚拟显示器上限"));
+                let allocated=status.allocation_count();let limit=status.limit;
+                ui.weak(uu_i18n::format!("已创建：{allocated} / {limit}"));
+                ui.add_space(12.);
+                ui.label(uu_i18n::text("虚拟显示器上限"))
+                    .on_hover_text(uu_i18n::text("默认 2 个；临时和持久虚拟显示器共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。"));
                 let mut limit=self.limit_draft.unwrap_or(status.limit);
                 ui.add_enabled_ui(can_edit,|ui| {
                     if crate::theme::number_input(ui,egui::DragValue::new(&mut limit).range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT)).changed() {
@@ -748,47 +794,33 @@ impl State {
                 });
                 ui.weak(uu_i18n::format!("/ {} 个",uu_core::virtual_display::MAX_DISPLAY_LIMIT));
             });
-            ui.weak(uu_i18n::text("默认 2 个；临时和持久虚拟显示器共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。"));
-            let persistent=self.displays.iter().filter(|display|display.persistent).count();
-            let temporary=self.displays.len()-persistent;
-            let available=status.available_slots;
-            let allocated=status.allocation_count();let limit=status.limit;
-            let remaining=available.min(usize::from(limit).saturating_sub(allocated));
-            ui.horizontal_wrapped(|ui|{
-                ui.weak(uu_i18n::format!("已创建：{allocated} / {limit}"));
-                ui.weak(uu_i18n::format!("持久：{persistent} · 临时：{temporary}"));
-                ui.weak(uu_i18n::format!("可新建：{remaining}"));
-            });
         } else {
             ui.horizontal(|ui| {ui.label(uu_i18n::text("虚拟显示器上限"));ui.weak("—");});
         }
         ui.add_space(8.);
-        egui::CollapsingHeader::new(uu_i18n::text("创建设置")).id_salt("virtual-display-create").default_open(self.displays.is_empty()).show(ui,|ui| {
-            ui.add_enabled_ui(can_edit,|ui| {
-                egui::ScrollArea::horizontal().id_salt("virtual-display-create-row").show(ui,|ui|ui.horizontal(|ui| {
-                    crate::virtual_display_presets::display_spec_row(ui,&mut self.spec);
-                    if client.is_none() || self.status.as_ref().is_some_and(|s|s.supports_lifetimes) {
-                        crate::theme::compact_switch(ui,self.persistent_new.get_or_insert(client.is_none()),uu_i18n::text("持久保存，开机恢复"));
-                    }
-                }));
-            });
+        ui.separator();
+        ui.add_space(8.);
+        ui.strong(uu_i18n::text("创建设置"));
+        ui.add_enabled_ui(can_edit, |ui| {
+            crate::virtual_display_presets::spec_editor(ui, &mut self.spec);
         });
         ui.horizontal_wrapped(|ui| {
+            if client.is_none() || self.status.as_ref().is_some_and(|s|s.supports_lifetimes) {
+                ui.add_enabled_ui(can_edit, |ui| {
+                    crate::theme::compact_switch(ui,self.persistent_new.get_or_insert(client.is_none()),uu_i18n::text("持久保存，开机恢复"));
+                });
+            }
             let can_create=!busy && !mutations_blocked && !background_unavailable && (client.is_none() || self.remote_create_supported)
                 && self.status.as_ref().is_some_and(|s|s.supported && (!s.supports_lifetimes||s.allocation_count()<usize::from(s.limit)))
                 && preparation_ui::can_create(self.preparation.as_ref(),self.status.as_ref().map_or(0,|s|s.available_slots),self.local_owner==Some(LocalOwner::Foreground)&&client.is_none());
             if ui.add_enabled(can_create,crate::theme::primary_button(uu_i18n::text("新建虚拟显示器"))).clicked() {
                 command=Some(Request::Create{spec:self.spec});
             }
-            ui.weak(uu_i18n::text(if self.persistent_new.unwrap_or(client.is_none()) {"持久虚拟显示器"}else{"临时虚拟显示器"}));
-            if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("刷新"))).clicked() {command=Some(Request::Inspect);}
-            if busy {ui.spinner();ctx.request_repaint_after(Duration::from_millis(100));}
         });
         if let Some(preparation)=&self.preparation {
-            if self.status.as_ref().is_some_and(|s|s.available_slots>0)
-                && preparation_ui::can_create(Some(preparation),1,false)
-            {ui.weak(uu_i18n::text("已准备好空闲虚拟屏，可以创建；移除仅断开所属目标的桌面输出。"));}
-            else {ui.weak(uu_core::native_virtual_display::preparation_message(preparation));}
+            if preparation.phase != uu_core::virtual_display::preparation::Phase::Ready {
+                ui.weak(uu_core::native_virtual_display::preparation_message(preparation));
+            }
             if preparation_ui::active(preparation) {
                 ui.weak(uu_i18n::text("已登记的准备会在空闲时继续；无需重复点击，也不会中断正在使用的副屏。"));
                 if let Some(at)=self.next_preparation_check {ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));}
@@ -809,7 +841,7 @@ impl State {
                 }
             }
         } else if let Some(status) = &self.status {
-            ui.weak(if !status.supported {
+            let explanation = if !status.supported {
                 uu_i18n::text("虚拟副屏仅支持 Windows")
             } else if !status.driver_present {
                 uu_i18n::text("源机尚未安装支持的签名虚拟副屏驱动")
@@ -817,11 +849,8 @@ impl State {
                 uu_i18n::text("已达到创建上限；提高上限或删除已有显示器后可继续创建。")
             } else if status.available_slots == 0 {
                 uu_i18n::text("驱动没有可用虚拟屏，请在源机管理窗口准备驱动后重试")
-            } else {
-                uu_i18n::text(
-                    "已准备好空闲虚拟屏，可以创建；移除仅断开所属目标的桌面输出。",
-                )
-            });
+            } else { "" };
+            if !explanation.is_empty() { ui.weak(explanation); }
             if !status.driver_present {
                 ui.hyperlink_to(
                     uu_i18n::text("下载签名虚拟副屏驱动"),
@@ -867,7 +896,10 @@ impl State {
             };
             if ui.add_enabled(!busy,crate::theme::secondary_button(label)).clicked(){preparation_action=Some(if embedded {preparation_ui::Action::Prepare} else {preparation_ui::Action::BackgroundSetup});}
         }
+        self.feedback.show(ui, Scope::VirtualDisplays);
+        ui.add_space(8.);
         ui.separator();
+        ui.add_space(8.);
         ui.strong(uu_i18n::text("已创建的显示器"));
         if self.displays.is_empty() {
             ui.weak(uu_i18n::text("还没有由 Eclipse 创建的虚拟显示器。可以在上方创建持久或临时显示器。"));
@@ -935,9 +967,6 @@ impl State {
         if let Some(draft)=save_edit {
             self.submitted_editor=Some(draft.id);
             command=Some(Request::Configure{id:draft.id,name:draft.name,spec:draft.spec});
-        }
-        if !self.notice.is_empty() {
-            ui.label(&self.notice);
         }
         let provider_error=self.preparation.as_ref().and_then(|s|s.error.as_deref());
         // Typed preparation states already have localized explanations above.
@@ -1429,7 +1458,7 @@ mod tests {
     fn inventory_refresh_keeps_operation_errors_and_page_geometry() {
         let mut state=State{open:true,local_owner:Some(LocalOwner::Background),..Default::default()};
         state.receive(snapshot(vec![display()]),Some(LocalOwner::Background));
-        state.message("Generated operation failed".into());
+        state.message(Kind::Error, "Generated operation failed".into());
         state.details="Generated exact driver failure".into();
         let ctx=egui::Context::default();
         let before=inventory_frame(&mut state,&ctx,vec![],1280.);
@@ -1445,6 +1474,33 @@ mod tests {
             let rect=|texts:&Vec<(String,egui::Rect)>|texts.iter().find(|(s,_)|s==label).unwrap().1;
             assert_eq!(rect(&before),rect(&during),"refresh changed {label}");
             assert_eq!(rect(&before),rect(&after),"readback changed {label}");
+        }
+    }
+    #[test]
+    fn success_expires_across_inventory_refresh_without_clearing_a_newer_stream_notice() {
+        let mut state=State{local_owner:Some(LocalOwner::Background),..Default::default()};
+        state.receive(Response::Removed{id:display().id},Some(LocalOwner::Background));
+        let mut stream_notice=String::new();
+        state.forward_notice(&mut stream_notice);
+        assert_eq!(stream_notice,uu_i18n::text("虚拟副屏已移除"));
+        state.inspect_inflight=true;
+        state.receive(snapshot(vec![]),Some(LocalOwner::Background));
+        state.expire_notice(Instant::now()+Duration::from_secs(3));
+        state.forward_notice(&mut stream_notice);
+        assert!(state.notice.is_empty() && stream_notice.is_empty());
+
+        state.message(Kind::Success,"Created fixture".into());
+        state.forward_notice(&mut stream_notice);
+        stream_notice="New connection failure".into();
+        state.expire_notice(Instant::now()+Duration::from_secs(3));
+        state.forward_notice(&mut stream_notice);
+        assert_eq!(stream_notice,"New connection failure");
+
+        for kind in [Kind::Error,Kind::Progress] {
+            state.message(kind,"Unconfirmed operation".into());
+            state.expire_notice(Instant::now()+Duration::from_secs(120));
+            assert_eq!(state.notice,"Unconfirmed operation");
+            assert!(state.feedback.current(&Scope::VirtualDisplays).is_some());
         }
     }
     #[test]
@@ -1467,13 +1523,15 @@ mod tests {
             let (_send,receive)=mpsc::channel();state.worker=Some(receive);state.inspect_inflight=true;
             let ctx=egui::Context::default();
             let texts=inventory_frame(&mut state,&ctx,vec![],width);
+            let rows_start=texts.iter().find(|(text,_)|text=="已创建的显示器").unwrap().1.bottom();
+            let rows:Vec<_>=texts.iter().filter(|(_,rect)|rect.center().y>rows_start).collect();
             let labels=["名称","分辨率","刷新率","HDR","持久","保存","删除"];
             if width>=1000. {
                 for label in labels {
-                    assert_eq!(texts.iter().filter(|(text,_)|text==label).count(),2,"{label} at {width}: {texts:?}");
+                    assert_eq!(rows.iter().filter(|(text,_)|text==label).count(),2,"{label} at {width}: {texts:?}");
                 }
                 for row in 0..2 {
-                    let centers:Vec<_>=labels.iter().map(|label|texts.iter().filter(|(text,_)|text==label).nth(row).unwrap().1.center().y).collect();
+                    let centers:Vec<_>=labels.iter().map(|label|rows.iter().filter(|(text,_)|text==label).nth(row).unwrap().1.center().y).collect();
                     let top=centers.iter().copied().fold(f32::INFINITY,f32::min);
                     let bottom=centers.iter().copied().fold(f32::NEG_INFINITY,f32::max);
                     assert!(bottom-top<10.,"one horizontal property row per display: {centers:?}");
@@ -1870,12 +1928,11 @@ impl crate::App {
             }
         }
         if self.stream_target.is_some() {
-            if let Some(notice) = self.virtual_display.take_notice() {
-                self.displays.notice = notice;
-            }
+            self.virtual_display.forward_notice(&mut self.displays.notice);
         }
     }
     pub(super) fn poll_virtual_displays(&mut self, ctx: &egui::Context) {
+        self.virtual_display.feedback.tick(ctx);
         self.poll_virtual_display_state();
         let stats = self.controller.as_ref().map(|handle| handle.stats.clone());
         self.virtual_display
