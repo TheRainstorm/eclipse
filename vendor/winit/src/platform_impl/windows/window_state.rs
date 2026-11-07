@@ -52,6 +52,8 @@ pub(crate) struct WindowState {
 
     // Flag whether redraw was requested.
     pub redraw_requested: bool,
+    // One queued application redraw notification per window, visible or hidden.
+    pub redraw_message_pending: bool,
 
     pub dragging: bool,
 
@@ -173,6 +175,7 @@ impl WindowState {
             is_active: false,
             is_focused: false,
             redraw_requested: false,
+            redraw_message_pending: false,
 
             dragging: false,
 

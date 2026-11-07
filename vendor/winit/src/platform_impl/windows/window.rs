@@ -149,10 +149,21 @@ impl Window {
 
     #[inline]
     pub fn request_redraw(&self) {
-        // NOTE: mark that we requested a redraw to handle requests during `WM_PAINT` handling.
-        self.window_state.lock().unwrap().redraw_requested = true;
-        unsafe {
-            RedrawWindow(self.hwnd(), ptr::null(), 0, RDW_INTERNALPAINT);
+        let post = {
+            let mut state = self.window_state.lock().unwrap();
+            !mem::replace(&mut state.redraw_message_pending, true)
+        };
+        if post {
+            // Coalesce requests without depending on low-priority WM_PAINT or
+            // running application drawing from the notification's producer.
+            let posted = unsafe {
+                PostMessageW(self.hwnd(), super::event_loop::REDRAW_MSG_ID.get(), 0, 0)
+            };
+            if posted == 0 {
+                self.window_state.lock().unwrap().redraw_message_pending = false;
+                // Preserve a redraw if Windows cannot queue another message.
+                unsafe { RedrawWindow(self.hwnd(), ptr::null(), 0, RDW_INTERNALPAINT); }
+            }
         }
     }
 

@@ -11,7 +11,16 @@ This vendored winit retains its upstream license. Local platform changes:
   launched stream processes with `AllowSetForegroundWindow` and records native
   activation results. Windows can still refuse activation; no input is injected
   to bypass that decision.
+- Windows: coalesce application redraw requests into one posted notification per
+  window, including hidden coordinators. Drawing runs through `RedrawRequested`
+  instead of a repaint producer or low-priority `WM_PAINT`; OS exposure and
+  resize paints still use their native path. Reentrant redraws are buffered and
+  deduplicated, buffered work wakes the loop without changing its idle policy,
+  and each buffer drain yields after a redraw. Hardware input is dispatched
+  before posted frame messages so animation cannot indefinitely precede it.
 
 Windows API contracts:
 [SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow),
 [AllowSetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-allowsetforegroundwindow).
+[PostMessage](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postmessagew),
+[PeekMessage](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-peekmessagew).

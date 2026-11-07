@@ -48,7 +48,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     RegisterClassExW, RegisterWindowMessageA, SetCursor, SetWindowPos, TranslateMessage,
     CREATESTRUCTW, GIDC_ARRIVAL, GIDC_REMOVAL, GWL_STYLE, GWL_USERDATA, HTCAPTION, HTCLIENT,
     MINMAXINFO, MNC_CLOSE, MSG, MWMO_INPUTAVAILABLE, NCCALCSIZE_PARAMS, PM_REMOVE, PT_PEN,
-    PT_TOUCH, QS_ALLINPUT, RI_MOUSE_HWHEEL, RI_MOUSE_WHEEL, SC_MINIMIZE, SC_RESTORE,
+    PT_TOUCH, QS_ALLINPUT, QS_INPUT, RI_MOUSE_HWHEEL, RI_MOUSE_WHEEL, SC_MINIMIZE, SC_RESTORE,
     SIZE_MAXIMIZED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WHEEL_DELTA, WINDOWPOS,
     WMSZ_BOTTOM, WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT, WMSZ_LEFT, WMSZ_RIGHT, WMSZ_TOP, WMSZ_TOPLEFT,
     WMSZ_TOPRIGHT, WM_CAPTURECHANGED, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
@@ -380,7 +380,8 @@ impl<T: 'static> EventLoop<T> {
         // `MsgWaitForMultipleObjectsEx`.
         //
         runner.prepare_wait();
-        wait_for_messages_impl(&mut self.high_resolution_timer, runner.control_flow(), timeout);
+        let flow = if runner.has_buffered_events() { ControlFlow::Poll } else { runner.control_flow() };
+        wait_for_messages_impl(&mut self.high_resolution_timer, flow, timeout);
         // Before we potentially exit, make sure to consistently emit an event for the wake up
         runner.wakeup();
     }
@@ -402,6 +403,23 @@ impl<T: 'static> EventLoop<T> {
         // API) and there's no API to construct or initialize a `MSG`. This
         // is the simplest way avoid uninitialized memory in Rust
         let mut msg: MSG = unsafe { mem::zeroed() };
+
+        // Posted render/wakeup messages must not indefinitely precede hardware
+        // keyboard/mouse input. Use the same native dispatch path for the whole
+        // input category, without synthesizing or recognizing individual keys.
+        unsafe {
+            if PeekMessageW(&mut msg, 0, 0, 0, PM_REMOVE | (QS_INPUT << 16)) != 0 {
+                let handled = self.msg_hook.as_deref_mut().is_some_and(|hook| {
+                    hook(&mut msg as *mut _ as *mut _)
+                });
+                if !handled { TranslateMessage(&msg); DispatchMessageW(&msg); }
+            }
+        }
+        if let Err(payload) = runner.take_panic_error() {
+            runner.reset_runner();
+            panic::resume_unwind(payload);
+        }
+        if runner.exit_code().is_some() || runner.interrupt_msg_dispatch.get() { return; }
 
         loop {
             unsafe {
@@ -890,6 +908,8 @@ impl LazyMessageId {
 // Message sent by the `EventLoopProxy` when we want to wake up the thread.
 // WPARAM and LPARAM are unused.
 static USER_EVENT_MSG_ID: LazyMessageId = LazyMessageId::new("Winit::WakeupMsg\0");
+// Coalesced application redraw; unlike WM_PAINT this also reaches hidden windows.
+pub(crate) static REDRAW_MSG_ID: LazyMessageId = LazyMessageId::new("Winit::RedrawMsg\0");
 // Message sent when we want to execute a closure in the thread.
 // WPARAM contains a Box<Box<dyn FnMut()>> that must be retrieved with `Box::from_raw`,
 // and LPARAM is unused.
@@ -1275,6 +1295,17 @@ unsafe fn public_window_callback_inner(
         WM_NCDESTROY => {
             unsafe { super::set_window_long(window, GWL_USERDATA, 0) };
             userdata.userdata_removed.set(true);
+            result = ProcResult::Value(0);
+        },
+
+        _ if msg == REDRAW_MSG_ID.get() => {
+            let pending = mem::take(&mut userdata.window_state_lock().redraw_message_pending);
+            if pending {
+                userdata.send_event(Event::WindowEvent {
+                    window_id: RootWindowId(WindowId(window)),
+                    event: WindowEvent::RedrawRequested,
+                });
+            }
             result = ProcResult::Value(0);
         },
 

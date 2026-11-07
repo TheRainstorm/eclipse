@@ -113,13 +113,14 @@ impl<T> EventLoopRunner<T> {
             exit,
             last_events_cleared: _,
             event_handler,
-            event_buffer: _,
+            event_buffer,
         } = self;
         interrupt_msg_dispatch.set(false);
         runner_state.set(RunnerState::Uninitialized);
         panic_error.set(None);
         exit.set(None);
         event_handler.set(None);
+        event_buffer.borrow_mut().clear();
     }
 }
 
@@ -162,6 +163,10 @@ impl<T> EventLoopRunner<T> {
         let should_buffer = handler.is_none();
         self.event_handler.set(handler);
         should_buffer
+    }
+
+    pub fn has_buffered_events(&self) -> bool {
+        !self.event_buffer.borrow().is_empty()
     }
 }
 
@@ -206,16 +211,23 @@ impl<T> EventLoopRunner<T> {
     }
 
     pub(crate) fn send_event(&self, event: Event<T>) {
-        if let Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } = event {
+        if self.should_buffer() {
+            let mut buffer = self.event_buffer.borrow_mut();
+            if let Event::WindowEvent { window_id, event: WindowEvent::RedrawRequested } = &event {
+                if buffer.iter().any(|pending| matches!(pending,
+                    BufferedEvent::Event(Event::WindowEvent {window_id: id, event: WindowEvent::RedrawRequested}) if id == window_id)) {
+                    return;
+                }
+            }
+            // GL/native modal processing can re-enter the window procedure.
+            // Redraws follow the same buffering rule as other window events.
+            buffer.push_back(BufferedEvent::from_event(event));
+        } else if let Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } = event {
             self.call_event_handler(event);
             // As a rule, to ensure that `pump_events` can't block an external event loop
             // for too long, we always guarantee that `pump_events` will return control to
             // the external loop asap after a `RedrawRequested` event is dispatched.
             self.interrupt_msg_dispatch.set(true);
-        } else if self.should_buffer() {
-            // If the runner is already borrowed, we're in the middle of an event loop invocation.
-            // Add the event to a buffer to be processed later.
-            self.event_buffer.borrow_mut().push_back(BufferedEvent::from_event(event))
         } else {
             self.call_event_handler(event);
             self.dispatch_buffered_events();
@@ -247,9 +259,14 @@ impl<T> EventLoopRunner<T> {
             // `process_event` will fail.
             let buffered_event_opt = self.event_buffer.borrow_mut().pop_front();
             match buffered_event_opt {
-                Some(e) => e.dispatch_event(|e| self.call_event_handler(e)),
+                Some(e) => e.dispatch_event(|e| {
+                    let redraw = matches!(&e, Event::WindowEvent {event: WindowEvent::RedrawRequested, ..});
+                    self.call_event_handler(e);
+                    if redraw { self.interrupt_msg_dispatch.set(true); }
+                }),
                 None => break,
             }
+            if self.interrupt_msg_dispatch.get() { break; }
         }
     }
 
