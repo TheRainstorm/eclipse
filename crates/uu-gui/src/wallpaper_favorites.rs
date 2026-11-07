@@ -1,4 +1,5 @@
 //! An executable-local, bounded wallpaper collection. IO and decode run off UI.
+use super::ui_feedback::{Feedback,Scope,Kind};
 use super::wallpapers;
 use anyhow::Context as _;
 use eframe::egui;
@@ -332,7 +333,7 @@ pub(super) struct Favorites {
     pub items: Vec<Item>,
     worker: Option<mpsc::Receiver<Result<Loaded, String>>>,
     pub loaded: bool,
-    pub notice: String,
+    pub notice: Feedback,
     pending_save: std::collections::VecDeque<Arc<Vec<u8>>>,
 }
 impl Default for Favorites {
@@ -342,7 +343,7 @@ impl Default for Favorites {
             items: vec![],
             worker: None,
             loaded: false,
-            notice: String::new(),
+            notice: Feedback::default(),
             pending_save: Default::default(),
         }
     }
@@ -363,7 +364,7 @@ impl Favorites {
             if self.pending_save.len() < CAPACITY {
                 self.pending_save.push_back(bytes);
             } else {
-                self.notice = uu_i18n::text("收藏队列已满，请稍后重试").into();
+                self.notice.error(Scope::Wallpaper,uu_i18n::text("收藏队列已满，请稍后重试"));
             }
             return;
         }
@@ -373,17 +374,16 @@ impl Favorites {
         let store = match &self.store {
             Ok(store) => store.clone(),
             Err(error) => {
-                self.notice = uu_i18n::format!("无法读取壁纸收藏：{error}");
+                self.notice.error(Scope::Wallpaper,uu_i18n::format!("无法读取壁纸收藏：{error}"));
                 self.loaded = true;
                 return;
             }
         };
-        self.notice = uu_i18n::text(if bytes.is_some() {
+        self.notice.report(Scope::Wallpaper,Kind::Progress,uu_i18n::text(if bytes.is_some() {
             "正在收藏当前壁纸…"
         } else {
             "正在读取收藏壁纸…"
-        })
-        .into();
+        }));
         let (tx, rx) = mpsc::channel();
         self.worker = Some(rx);
         let context = ctx.clone();
@@ -411,7 +411,7 @@ impl Favorites {
         if let Err(error) = spawned {
             self.worker = None;
             self.loaded = true;
-            self.notice = uu_i18n::format!("壁纸收藏操作失败：{error}");
+            self.notice.error(Scope::Wallpaper,uu_i18n::format!("壁纸收藏操作失败：{error}"));
         }
     }
     pub fn poll(&mut self, ctx: &egui::Context) {
@@ -442,13 +442,13 @@ impl Favorites {
                             encoded: Arc::new(image.encoded),
                         })
                         .collect();
-                    self.notice = match loaded.saved {
-                        Some((_, true)) => uu_i18n::text("已收藏当前壁纸").into(),
-                        Some((_, false)) => uu_i18n::text("这张壁纸已在收藏中").into(),
-                        None => String::new(),
-                    };
+                    match loaded.saved {
+                        Some((_, true)) => self.notice.success(Scope::Wallpaper,uu_i18n::text("已收藏当前壁纸")),
+                        Some((_, false)) => self.notice.report(Scope::Wallpaper,Kind::Info,uu_i18n::text("这张壁纸已在收藏中")),
+                        None => self.notice.clear(),
+                    }
                 }
-                Err(error) => self.notice = uu_i18n::format!("壁纸收藏操作失败：{error}"),
+                Err(error) => self.notice.error(Scope::Wallpaper,uu_i18n::format!("壁纸收藏操作失败：{error}")),
             }
             if let Some(bytes) = self.pending_save.pop_front() {
                 self.start(Some(bytes), ctx);

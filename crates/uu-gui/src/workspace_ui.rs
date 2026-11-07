@@ -2363,7 +2363,7 @@ impl super::App {
                         }
                     });
                     if wallpaper_root && !self.background.notice.is_empty() {
-                        muted(ui, &self.background.notice);
+                        self.background.notice.show(ui,super::ui_feedback::Scope::Wallpaper);
                     }
                 });
             });

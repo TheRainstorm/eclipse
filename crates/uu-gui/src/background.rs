@@ -1,6 +1,7 @@
 //! Optional background. Cached artwork and refresh failures never gate devices.
 use super::{settings::{Settings,WallpaperSource},wallpapers,wallpaper_favorites};
 use eframe::egui;
+use super::ui_feedback::{Feedback,Scope,Kind};
 use std::{path::PathBuf,sync::{mpsc,Arc},time::{Duration,Instant}};
 
 const CACHE_MAGIC:&[u8]=b"Eclipse-wallpaper-original-1\n";
@@ -31,7 +32,7 @@ fn read_cache(path:&std::path::Path,source:&str,side:usize)->anyhow::Result<(wal
 #[derive(Default)]
 pub(super) struct Background {
     pub texture:Option<egui::TextureHandle>,
-    pub notice:String,
+    pub notice:Feedback,
     worker:Option<wallpapers::Worker>,
     cache_rx:Option<mpsc::Receiver<Option<(wallpapers::Thumbnail,bool)>>>,
     source:String,
@@ -44,7 +45,7 @@ pub(super) struct Background {
     retry_at:Option<Instant>,
     favorites:wallpaper_favorites::Favorites,
     favorites_mode:bool,
-    favorite_notice:String,
+    favorite_notice:Feedback,
     current_encoded:Option<Arc<Vec<u8>>>,
     original:Option<wallpapers::Original>,
     painted_original:std::cell::RefCell<Option<wallpapers::Original>>,
@@ -72,7 +73,6 @@ impl Background {
                 }
             }else if self.favorites.loaded {
                 self.texture=None;self.current_encoded=None;self.original=None;self.cache_rx=None;
-                self.notice=if self.favorites.notice.is_empty(){uu_i18n::text("还没有收藏壁纸；先从其它来源收藏一张图片。").into()}else{self.favorites.notice.clone()};
             }
             self.poll(ctx);return;
         }
@@ -106,17 +106,18 @@ impl Background {
                 Ok(image)=>{self.received=true;self.failure=None;self.set(image,ctx,true);},
                 Err(failure) if failure.device_id=="background" && failure.url==self.source => {
                     self.failure=Some(failure.error.clone());
-                    self.notice=uu_i18n::format!("壁纸加载失败：{e}",e=failure.error);
+                    self.notice.error(Scope::Wallpaper,uu_i18n::format!("壁纸加载失败：{e}",e=failure.error));
                 },
                 Err(_)=>{},
             }
         }
         if self.worker.as_ref().is_some_and(|w|w.finished()) {
             self.worker=None;
-            if !self.received && self.failure.is_none() {self.notice=if self.texture.is_some(){uu_i18n::text("壁纸更新失败，继续使用已有图片")}else{uu_i18n::text("图片暂时无法获取，正在使用内置背景；可在应用设置中刷新")}.into();}
+            if !self.received && self.failure.is_none() {self.notice.error(Scope::Wallpaper,if self.texture.is_some(){uu_i18n::text("壁纸更新失败，继续使用已有图片")}else{uu_i18n::text("图片暂时无法获取，正在使用内置背景；可在应用设置中刷新")});}
         }
         let previous=self.download.notice.clone();
         if self.download.poll(ctx) && (!self.download.notice.is_empty() || self.notice==previous) {self.notice=self.download.notice.clone();}
+        self.notice.expire(Instant::now());self.notice.tick(ctx);
         if self.worker.is_some()||self.cache_rx.is_some(){ctx.request_repaint_after(Duration::from_millis(100));}
     }
     fn set(&mut self,mut image:wallpapers::Thumbnail,ctx:&egui::Context,cache:bool) {
@@ -144,7 +145,7 @@ impl Background {
     pub fn favorite(&mut self,ctx:&egui::Context) {
         let displayed=self.painted_encoded.borrow().clone().or_else(||self.current_encoded.clone());
         if let Some(bytes)=displayed {self.favorites.save(bytes,ctx);self.notice=self.favorites.notice.clone();}
-        else {self.notice=uu_i18n::text("当前没有可收藏的壁纸").into();}
+        else {self.notice.report(Scope::Wallpaper,Kind::Info,uu_i18n::text("当前没有可收藏的壁纸"));}
     }
     pub fn favorites_editor(&mut self,ui:&mut egui::Ui,s:&mut Settings)->bool {
         if s.wallpaper_source!=WallpaperSource::Favorites {return false;}
@@ -160,7 +161,6 @@ impl Background {
                 if ui.add(button).on_hover_text(uu_i18n::format!("收藏壁纸 {}",index+1)).clicked(){s.wallpaper_favorite=Some(item.id.clone());changed=true;}
             }
         });
-        if !self.favorites.notice.is_empty(){ui.label(&self.favorites.notice);}
         if changed {self.sync(s,ui.ctx());}
         changed
     }
@@ -173,7 +173,7 @@ impl Background {
         // cached image from replacing a successfully downloaded texture.
         self.worker=None;self.received=false;self.failure=None;
         match wallpapers::Worker::start_wallpaper(wallpapers::Request{device_id:"background".into(),url:self.source.clone()},ctx.clone()) {
-            Ok(worker)=>{self.worker=Some(worker);self.notice=uu_i18n::text("正在更新壁纸…").into();},Err(e)=>self.notice=uu_i18n::format!("壁纸加载失败：{e}")
+            Ok(worker)=>{self.worker=Some(worker);self.notice.report(Scope::Wallpaper,Kind::Progress,uu_i18n::text("正在更新壁纸…"));},Err(e)=>self.notice.error(Scope::Wallpaper,uu_i18n::format!("壁纸加载失败：{e}"))
         }
     }
     pub fn paint_background(&self, ctx: &egui::Context, rect: egui::Rect) {
@@ -213,6 +213,26 @@ impl Background {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_feedback_keeps_its_deadline_when_mirrored_and_does_not_reappear() {
+        let ctx=egui::Context::default();let mut background=Background::new(None);
+        background.favorites.notice.success(Scope::Wallpaper,"generated saved image");
+        background.poll(&ctx);
+        assert_eq!(background.notice.text(),"generated saved image");
+        assert!(background.notice.expire(Instant::now()+Duration::from_secs(3)));
+        background.poll(&ctx);assert!(background.notice.is_empty());
+        // The same text from a later operation owns a fresh deadline.
+        background.favorites.notice.success(Scope::Wallpaper,"generated saved image");
+        background.poll(&ctx);assert_eq!(background.notice.text(),"generated saved image");
+        background.favorites.notice.error(Scope::Wallpaper,"generated save failure");
+        background.poll(&ctx);
+        assert!(!background.notice.expire(Instant::now()+Duration::from_secs(30)));
+        let (tx,rx)=mpsc::channel();background.download.test_worker(rx);
+        tx.send(Ok(Some(PathBuf::from("generated-original.webp")))).unwrap();
+        background.poll(&ctx);assert!(background.notice.text().contains("generated-original.webp"));
+        assert!(background.notice.expire(Instant::now()+Duration::from_secs(3)));
+        background.poll(&ctx);assert!(background.notice.is_empty());
+    }
     #[test]
     fn original_cache_is_atomic_source_bound_and_legacy_preview_is_not_exported() {
         let root=std::env::temp_dir().join(format!("eclipse-original-wallpaper-{}",uuid::Uuid::new_v4()));
@@ -280,7 +300,7 @@ mod tests {
         let deadline=Instant::now()+Duration::from_secs(5);
         while background.worker.is_some(){background.poll(&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
         assert_eq!(background.texture.as_ref().unwrap().id(),texture);
-        assert!(background.notice.contains("403"));assert!(background.failure.is_some());
+        assert!(background.notice.text().contains("403"));assert!(background.failure.is_some());
         server.join().unwrap();
     }
 
@@ -315,11 +335,11 @@ mod tests {
         }
         assert_eq!(background.texture.as_ref().unwrap().size(),[64,36]);
         assert_eq!(background.texture_source,source);
-        assert!(background.notice.contains("403"));
+        assert!(background.notice.text().contains("403"));
         // Explicitly cover the opposite completion order as well: a late cache
         // publish cannot clear a network error already shown to the user.
         background.set(wallpapers::decode(wallpapers::Request{device_id:"background".into(),url:source},bytes).unwrap(),&ctx,false);
-        assert!(background.notice.contains("403"));
+        assert!(background.notice.text().contains("403"));
         server.join().unwrap();std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -1,20 +1,22 @@
 //! Save the displayed original bytes; dialogs and file IO stay off the UI thread.
-use super::wallpapers::Original;
+use super::{wallpapers::Original,ui_feedback::{Feedback,Scope,Kind}};
 use eframe::egui;
 use std::{path::PathBuf, sync::{mpsc, Arc}};
 
 #[derive(Default)]
 pub(super) struct Download {
     worker: Option<mpsc::Receiver<Result<Option<PathBuf>, String>>>,
-    pub notice: String,
+    pub notice: Feedback,
 }
 impl Download {
+    #[cfg(test)]
+    pub(super) fn test_worker(&mut self,worker:mpsc::Receiver<Result<Option<PathBuf>,String>>) {self.worker=Some(worker);}
     pub fn busy(&self) -> bool { self.worker.is_some() }
     pub fn start(&mut self, bytes:Arc<Vec<u8>>, original:Original, ctx:&egui::Context) {
         let parent=eframe::viewport_window(ctx);
         let mut dialog=rfd::AsyncFileDialog::new()
             .set_title(uu_i18n::text("下载壁纸"))
-            .set_file_name(format!("Eclipse-wallpaper-{}x{}.{}", original.width,original.height,original.extension()))
+            .set_file_name(format!("Eclipse-wallpaper-{}x{}-{}.{}", original.width,original.height,uuid::Uuid::new_v4(),original.extension()))
             .add_filter(original.extension().to_uppercase(), &[original.extension()]);
         if let Some(window)=&parent {dialog=dialog.set_parent(window.as_ref());}
         self.start_with(bytes, ctx, move || {
@@ -28,7 +30,7 @@ impl Download {
     fn start_with(&mut self, bytes:Arc<Vec<u8>>, ctx:&egui::Context,
         choose:impl FnOnce()->anyhow::Result<Option<PathBuf>> + Send + 'static) {
         if self.busy() {return;}
-        self.notice=uu_i18n::text("请选择壁纸保存位置…").into();
+        self.notice.report(Scope::Wallpaper,Kind::Progress,uu_i18n::text("请选择壁纸保存位置…"));
         let (tx,rx)=mpsc::channel();
         let context=ctx.clone();
         match std::thread::Builder::new().name("eclipse-wallpaper-save".into()).spawn(move || {
@@ -41,7 +43,7 @@ impl Download {
             context.request_repaint();
         }) {
             Ok(_)=>self.worker=Some(rx),
-            Err(error)=>self.notice=uu_i18n::format!("壁纸保存失败：{error}"),
+            Err(error)=>self.notice.error(Scope::Wallpaper,uu_i18n::format!("壁纸保存失败：{error}")),
         }
     }
     pub fn poll(&mut self,ctx:&egui::Context)->bool {
@@ -52,11 +54,11 @@ impl Download {
         });
         if let Some(result)=result {
             self.worker=None;
-            self.notice=match result {
-                Ok(Some(path))=>uu_i18n::format!("壁纸已保存：{}",path.display()),
-                Ok(None)=>String::new(),
-                Err(error)=>uu_i18n::format!("壁纸保存失败：{error}"),
-            };
+            match result {
+                Ok(Some(path))=>self.notice.success(Scope::Wallpaper,uu_i18n::format!("壁纸已保存：{}",path.display())),
+                Ok(None)=>self.notice.clear(),
+                Err(error)=>self.notice.error(Scope::Wallpaper,uu_i18n::format!("壁纸保存失败：{error}")),
+            }
             return true;
         }
         if self.busy() {ctx.request_repaint_after(std::time::Duration::from_millis(100));}

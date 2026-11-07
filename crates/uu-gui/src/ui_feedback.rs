@@ -9,6 +9,8 @@ pub(super) enum Scope {
     Services(u8),
     VirtualDisplays,
     Compatibility,
+    Wallpaper,
+    Stream,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,7 +21,7 @@ pub(super) enum Kind {
     Progress,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Message {
     pub scope: Scope,
     pub kind: Kind,
@@ -40,7 +42,7 @@ impl Message {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(super) struct Feedback {
     message: Option<Message>,
 }
@@ -89,15 +91,19 @@ impl Feedback {
             .filter(|message| &message.scope == scope && message.visible(Instant::now()))
     }
 
-    #[cfg(test)]
     pub fn text(&self) -> &str {
         self.message
             .as_ref()
+            .filter(|message|message.visible(Instant::now()))
             .map(|message| message.text.as_str())
             .unwrap_or("")
     }
 
+    pub fn is_empty(&self)->bool {self.text().is_empty()}
+    pub fn clear(&mut self) {self.message=None;}
+
     pub fn show(&mut self, ui: &mut egui::Ui, scope: Scope) {
+        self.expire(Instant::now());self.tick(ui.ctx());
         let Some(message) = self.current(&scope).cloned() else {
             return;
         };

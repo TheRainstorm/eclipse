@@ -538,7 +538,7 @@ impl super::App {
                                 if section == super::settings_page::SoftwareSection::Appearance
                                     && !self.background.notice.is_empty() {
                                     ui.add_space(8.0);
-                                    ui.label(&self.background.notice);
+                                    self.background.notice.show(ui,super::ui_feedback::Scope::Wallpaper);
                                 }
                             }
                             super::workspace_ui::SettingsView::About => {
