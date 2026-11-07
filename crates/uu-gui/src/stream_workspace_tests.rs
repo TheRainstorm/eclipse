@@ -176,7 +176,9 @@ fn failed_virtual_tab_disconnect_button_preserves_the_other_stream_and_window() 
     let failed=state.windows[0].record_launch(&launch,&mut state.next);
     let platform=state.windows[0].platform.as_ref().unwrap().clone();
     let mut app=App::new_session(&ctx,None,platform,Some(launch.target),false,None,false);
-    app.status="generated virtual display preparation failure".into();
+    app.displays.notice="stale preparation notice".into();
+    app.displays.connection_failed("generated virtual display preparation failure".into());
+    app.status="late preparation status must not hide the error".into();
     app.connect_deferred=false;
     state.windows[0].sessions.push(Session{id:failed,activated:None,app});
     state.windows[0].active=failed;
@@ -188,6 +190,15 @@ fn failed_virtual_tab_disconnect_button_preserves_the_other_stream_and_window() 
     });
     let mut output=render(vec![]);
     for _ in 0..2 {output=render(vec![]);}
+    let texts=output.shapes.iter().filter_map(|shape|if let egui::Shape::Text(text)=&shape.shape {Some(text.galley.job.text.as_str())}else{None}).collect::<Vec<_>>();
+    assert!(texts.contains(&"generated virtual display preparation failure"));
+    assert!(!texts.contains(&"late preparation status must not hide the error"));
+    let copy_point=output.shapes.iter().find_map(|shape|if let egui::Shape::Text(text)=&shape.shape {
+        (text.galley.job.text==uu_i18n::text("复制错误信息")).then_some(text.pos+text.galley.size()/2.)
+    }else{None}).expect("copy error button");
+    render(vec![egui::Event::PointerMoved(copy_point),egui::Event::PointerButton{pos:copy_point,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}]);
+    output=render(vec![egui::Event::PointerButton{pos:copy_point,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}]);
+    assert_eq!(output.platform_output.copied_text,"generated virtual display preparation failure");
     let point=output.shapes.iter().find_map(|shape|if let egui::Shape::Text(text)=&shape.shape {
         (text.galley.job.text==uu_i18n::text("断开此会话")).then_some(text.pos+text.galley.size()/2.)
     } else {None}).expect("failed tab disconnect button");

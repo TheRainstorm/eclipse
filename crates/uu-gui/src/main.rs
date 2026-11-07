@@ -586,8 +586,19 @@ impl App {
                     if self.stream_target.as_ref().is_some_and(|target|target.connection.virtual_display().is_some()) && self.displays.preparing_initial_target() {
                         self.virtual_display.startup_failed(self.status.clone());
                     }
+                    if native {
+                        // Generic connection errors can include authentication
+                        // context. Keep the full reason in the copyable UI;
+                        // automatic diagnostics only record the state change.
+                        h.stats.diagnostics.record(serde_json::json!({"event":"native_connection_failed","display_preparing":self.displays.preparing_initial_target()}));
+                        self.displays.connection_failed(self.status.clone());
+                    }
                 },
             }
+        }
+        if self.displays.connection_error().is_some() {
+            self.retire_stopped_controller(ctx);
+            return;
         }
         if native && self.displays.native_frame_epoch!=h.frames.generation(){
             self.displays.native_frame_epoch=h.frames.generation();

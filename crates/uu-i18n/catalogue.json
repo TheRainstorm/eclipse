@@ -304,6 +304,7 @@
   "分别由接收损坏、解码队列溢出、解码错误和格式改变触发的恢复次数。": "Recoveries triggered by damaged input, decode queue overflow, decoding errors and format changes, respectively.",
   "串流诊断": "Stream diagnostics",
   "复制详情": "Copy details",
+  "复制错误信息": "Copy error details",
   "复制当前全部诊断数值。也可拖选单个数值后按Ctrl+C；点击画面恢复远程键盘。": "Copy all current diagnostics. You can also select individual values and press Ctrl+C; click the video to restore remote keyboard input.",
   "退出串流": "Exit stream",
   "统计信息": "Statistics",

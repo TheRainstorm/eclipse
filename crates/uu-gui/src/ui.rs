@@ -229,8 +229,8 @@ impl App {
             }else{
                 let center=rect.center();
                 let message=Rect::from_center_size(center-egui::vec2(0.0,24.0),egui::vec2((rect.width()-48.0).clamp(1.0,640.0),80.0));
-                ui.put(message,egui::Label::new(RichText::new(if !self.displays.notice.is_empty(){&self.displays.notice}else{&self.status}).size(16.0).color(C::from_rgb(180,190,205))).wrap());
-                if self.controller.is_some() {
+                ui.put(message,egui::Label::new(RichText::new(self.displays.connection_error().unwrap_or_else(||if !self.displays.notice.is_empty(){&self.displays.notice}else{&self.status})).size(16.0).color(C::from_rgb(180,190,205))).wrap());
+                if self.controller.is_some() && self.displays.connection_error().is_none() {
                     if self.displays.ready() || self.displays.switching() {
                         ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(24.0,24.0)),egui::Spinner::new());
                     } else if let Some(id)=self.displays.selected {
@@ -238,9 +238,12 @@ impl App {
                     }
                     if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),super::theme::secondary_button(uu_i18n::text("取消连接"))).clicked(){self.disconnect();}
                 } else {
-                    if ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),super::theme::primary_button(uu_i18n::text("重新连接"))).clicked(){self.connect();}
+                    if ui.add_enabled_ui(self.controller.is_none(),|ui|ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),super::theme::primary_button(uu_i18n::text("重新连接")))).inner.clicked(){self.connect();}
                     if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),super::theme::secondary_button(uu_i18n::text("断开此会话"))).clicked(){
                         if let Some(tabs)=&self.workspace_tabs {tabs.actions.borrow_mut().push(super::stream_workspace::Action::Close(tabs.active));}else{self.disconnect();}
+                    }
+                    if let Some(error)=self.displays.connection_error() {
+                        if ui.put(Rect::from_center_size(center+egui::vec2(0.0,104.0),egui::vec2(156.0,34.0)),super::theme::secondary_button(uu_i18n::text("复制错误信息"))).clicked(){ui.ctx().copy_text(error.to_owned());}
                     }
                 }
             }

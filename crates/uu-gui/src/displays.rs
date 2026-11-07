@@ -21,6 +21,7 @@ pub(super) struct Displays {
     remember_on_confirmation: Option<i32>,
     blocked: bool,
     unbound: bool,
+    connection_error: Option<String>,
     pub notice: String,
     pub menu_open: bool,
     pub anchor: egui::Pos2,
@@ -140,7 +141,21 @@ impl Displays {
         screens.selected().is_some_and(|screen| self.layout.remember_selected(screen))
     }
     pub fn ready(&self) -> bool {
-        !self.awaiting_virtual && !self.blocked && self.pending.is_none()
+        self.connection_error.is_none() && !self.awaiting_virtual && !self.blocked && self.pending.is_none()
+    }
+    pub(super) fn connection_error(&self) -> Option<&str> { self.connection_error.as_deref() }
+    pub(super) fn connection_failed(&mut self, message: String) {
+        // Keep the fixed source for an explicit reconnect. No late catalog,
+        // progress or frame may turn a failed connection back into preparation.
+        self.connection_error = Some(message);
+        self.initial_display = None;
+        self.awaiting_virtual = false;
+        self.pending = None;
+        self.queued = None;
+        self.settings_sent = None;
+        self.blocked = true;
+        self.unbound = true;
+        self.notice.clear();
     }
     pub(super) fn selected_target(&self, screens: &RemoteScreens) -> Option<super::sessions::DisplayTarget> {
         let id = self.selected?;
@@ -198,7 +213,7 @@ impl Displays {
     pub fn waiting_binding(&self) -> bool {
         // The initial host frame can belong to another monitor. Keep it hidden
         // until this window's explicit first selection has been confirmed.
-        self.awaiting_virtual || self.unbound || self.initial_display.is_some()
+        self.connection_error.is_some() || self.awaiting_virtual || self.unbound || self.initial_display.is_some()
     }
     fn bind_track(&mut self, track: u32) {
         if let Some(p) = self
@@ -587,6 +602,26 @@ mod tests {
         let target = displays.selected_target(&catalog(1)).unwrap();
         assert_eq!(target.id, 1);
         assert_eq!(target.source, "Source 1");
+    }
+    #[test]
+    fn connection_failure_ends_preparation_and_reconnect_retains_the_fixed_source() {
+        let mut view = explicit(1, "Source 1");
+        assert!(view.preparing_initial_target() && !view.notice.is_empty());
+        view.connection_failed("generated capture failure".into());
+        assert!(!view.preparing_initial_target());
+        assert_eq!(view.connection_error(), Some("generated capture failure"));
+        assert!(view.notice.is_empty() && !view.ready() && view.waiting_binding());
+        // Even a late matching catalog/frame cannot reopen input or show an
+        // old image after the connection has failed.
+        view.confirm_initial_current(&catalog(1), true, true, true);
+        view.frame(0);
+        assert!(!view.ready() && view.waiting_binding());
+        let mut next = view.for_reconnect();
+        assert!(next.connection_error().is_none() && next.preparing_initial_target());
+        assert_eq!(next.fixed_display.as_ref().unwrap().source, "Source 1");
+        assert_eq!(next.restore_selection(&catalog(1), true, true), None);
+        next.confirm_initial_current(&catalog(1), true, true, true);
+        assert!(next.ready());
     }
     #[test]
     fn persistent_virtual_reconnect_reuses_the_confirmed_source_and_temporary_recreates() {
