@@ -4,16 +4,16 @@
 .gitattributes[FV5T]: F:统一文本检出为LF，维持跨平台源码字节与AOCI基线一致 | R:code:.gitignore | A:- | S:二进制由Git自动识别，不强制换行转换
 .gitignore[FS6T]: F:排除构建产物、账号凭据、邀请、本地资料及独立插件开发检出 | R:code:SECURITY.md,code:docs/plugins.md | A:- | S:handoff与notes只留本地，不强制加入Git；plugins目录由独立仓库维护
 AGENTS.md[SG8S]: F:约束本地资料、统一实现原则、提交规范及开发交付和AOCI认知维护 | R:code:.gitignore,code:aoci.txt | A:- | S:修复先以本地开发编号交付，用户确认后才推送，验收并要求release后才递增正式版本及发布；状态测试不能替代桌面验收；索引语义仅由模型基于证据创作
-Cargo.lock[FV6L]: F:锁定0.23.5开发工作区的原生应用、动森UI组件库、共享SDK及跨平台运行依赖 | R:code:Cargo.toml,code:crates/animal-island-ui/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:crates/uu-media/Cargo.toml | A:- | S:由Cargo生成且使用--locked；独立插件锁不替代主程序SDK证据锁
-Cargo.toml[FV8T]: F:组织0.23.5开发版原生应用、动森UI组件库、共享SDK工作区及统一依赖和构建配置 | R:code:crates/animal-island-ui/Cargo.toml,code:crates/uu-core/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:.cargo/config.toml | A:workspace,members,patch.crates-io,profile.release | S:具体插件不属主工作区；共享动态SDK要求release关闭LTO；vendor补丁覆盖上游；开发编号不代表正式验收发布
+Cargo.lock[FV6L]: F:锁定0.24.0原生应用、动森UI组件库、共享SDK及跨平台运行依赖 | R:code:Cargo.toml,code:crates/animal-island-ui/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:crates/uu-media/Cargo.toml | A:- | S:由Cargo生成且使用--locked；独立插件锁不替代主程序SDK证据锁
+Cargo.toml[FV8T]: F:组织0.24.0原生应用、动森UI组件库与共享SDK工作区，统一依赖及构建配置 | R:code:crates/animal-island-ui/Cargo.toml,code:crates/uu-core/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:.cargo/config.toml | A:workspace,members,patch.crates-io,profile.release | S:具体插件不属主工作区；共享动态SDK要求release关闭LTO；vendor补丁覆盖上游；版本对齐不证明已有公开发布产物
 LICENSE[SG6T]: F:声明项目自有代码可选择MIT或Apache-2.0并划定第三方权利边界 | R:code:LICENSE-MIT,code:LICENSE-APACHE,code:docs/licensing-and-compatibility.md | A:- | S:代码许可不授予第三方服务接入或商标使用权
 LICENSE-APACHE[SG4M]: F:提供Apache-2.0完整许可、专利授权及分发条件 | R:code:LICENSE | A:- | S:-
 LICENSE-MIT[SG4T]: F:提供MIT授权、保留版权声明条件与免责条款 | R:code:LICENSE | A:- | S:-
-README.md[SG7S]: F:介绍原生串流、动森界面、统一服务更新、独立插件及原图壁纸操作 | R:code:docs/ui-design-system.md,code:docs/keyboard-shortcuts.md,code:docs/releases/v0.23.5-dev.20261104.md,code:docs/hud.md,code:docs/windows-background-service.md | A:- | S:截图与源码标签非发布证明；插件默认关；安装与启动器空闲续更服务，已有进程须重开；原图像素非展示纹理大小
+README.md[SG7S]: F:介绍0.24.0多屏与虚拟屏串流、主机静音、统一服务、独立插件及原图壁纸操作 | R:code:docs/releases/v0.24.0.md,code:docs/ui-design-system.md,code:docs/keyboard-shortcuts.md,code:docs/hud.md,code:docs/windows-background-service.md | A:- | S:源码版本与截图非发布证明，下载看实际Release；插件默认关；安装和启动器空闲续更服务，已有进程须重开；原图像素非展示纹理大小
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
 
 ===/home/yfy/Repo/uu_remote/.github/workflows/===
-build-release.yml[OV8L]: F:执行Eclipse双平台回归与完整包发布，支持当前流程重建指定原标签 | R:code:tools/windows/package.py,code:tools/linux/package.py,code:tools/windows/test_installer.ps1,code:tools/release/check_version.py | A:linux-media,windows-installer,build,windows-smoke,release | S:指定release_tag时产品检出标签而夹具取流程版本，探针记实际HEAD；迁移的VPL派生缓存退役；原生烟测需生产程序，现有发布资产核验后保留，生成回归不替代桌面验收
+build-release.yml[OV8L]: F:执行Eclipse双平台回归与完整包发布，支持用当前流程重建指定原标签 | R:code:tools/windows/package.py,code:tools/linux/package.py,code:tools/windows/test_installer.ps1,code:tools/release/check_version.py | A:linux-media,windows-installer,build,windows-smoke,release | S:Linux工作区测试串行共享十端口池，构建任务仍并行；release_tag固定产品源码，夹具取流程版本；探针记实际HEAD，烟测需生产程序；已有资产核验保留；生成回归非桌面验收
 
 ===/home/yfy/Repo/uu_remote/assets/branding/===
 README.md[SU4T]: F:说明Eclipse日蚀品牌、图标来源和资源导出方法及UU标识权属 | R:code:README.md | A:- | S:UU原始favicon不属于本项目双许可
@@ -525,7 +525,7 @@ protocol-compatibility-and-transport.md[SN5S]: F:比较原生、UU兼容与Moonl
 protocol-notes.md[SN5M]: F:保留UU官方软件样本、媒体控制协议、认证和传输的证据笔记 | R:code:plugins/uu-compat/src/socketio.rs,code:plugins/uu-compat/src/control_wire.rs | A:- | S:采样版本和来源有边界，字符串线索不能替代线上互通证据
 pyrowave.md[SH5T]: F:说明实验性PyroWave格式、运行库、GPU同步与高带宽使用边界 | R:code:crates/uu-media/src/pyrowave.rs | A:- | S:默认自动协商不选它；Linux当前CPU传输不能声称GPU直通
 reference-index.md[SG5M]: F:组织Sunshine、Moonlight与同协议参考项目的固定版本源码入口和适配差异 | R:code:docs/licensing-and-compatibility.md | A:- | S:参考机制不授复制GPL代码许可；能力广告须由本实现真实链路证明
-releases.md[SV6T]: F:索引0.23.1至0.23.5开发版本，并规定双平台构建、下载核验与标签发布规则 | R:code:.github/workflows/build-release.yml,code:tools/release/check_version.py,code:docs/releases/v0.23.1.md,code:docs/releases/v0.23.5-dev.20261104.md | A:- | S:源码标签或开发编号不证明已有安装包；重建检出不可变标签，验证后发布并保留资产；哈希非身份签名
+releases.md[SV6T]: F:索引0.24.0与历史开发里程碑，规定双平台构建、下载核验及标签发布规则 | R:code:.github/workflows/build-release.yml,code:tools/release/check_version.py,code:docs/releases/v0.24.0.md,code:docs/releases/v0.23.5-dev.20261104.md | A:- | S:源码标签非可下载产物证明；版本须匹配标签，验证后发布；重建固定原标签，已有资产核验保留；哈希不替代身份签名
 roadmap.md[SW4T]: F:跟踪原生串流与独立兼容插件的交付阶段、后续验证和平台能力边界 | R:code:docs/vision.md,code:docs/releases.md | A:- | S:历史阶段不是当前交付承诺，能力及验收以实际版本说明和安装包为准
 session-probe.md[SO4T]: F:说明后台兼容会话与显式切屏探针及指标收集 | R:code:plugins/uu-compat/examples/session_probe.rs | A:- | S:默认不启剪贴板、不发送键鼠；文中core示例路径早于插件迁移
 stream-recovery.md[SR6T]: F:解释SRTP最高扩展索引、迟到重传、防重放与取消安全读取修复 | R:code:vendor/webrtc-srtp/UU-PATCH.md,code:crates/uu-core/src/srtp_policy.rs | A:- | S:认证成功后才记bitmap，旧包不能倒退最高索引；零解码错误不证明视频仍增长
@@ -609,6 +609,7 @@ v0.23.2-dev.20261104.md[SV4T]: F:记录0.23.2开发版主题选择与主页设�
 v0.23.3-dev.20261104.md[SV4T]: F:记录0.23.3开发版设备多配置、实际参数页和青蓝配色 | R:code:docs/releases.md,code:docs/client-and-server-settings.md | A:- | S:开发编号不代表正式发布；已建立连接继续使用启动时参数；状态与界面测试不替代真实桌面操作
 v0.23.4-dev.20261104.md[SV4T]: F:记录0.23.4开发版动森主题与独立Rust组件库 | R:code:docs/releases.md,code:docs/ui-design-system.md,code:crates/animal-island-ui/README.md | A:- | S:开发包不创建正式标签；组件保留上游MIT与字体OFL通知；夜间配色为本地扩展，生成图不代表桌面验收
 v0.23.5-dev.20261104.md[SV4T]: F:记录0.23.5开发版统一控件、多屏懒连接和垂直同步调度 | R:code:docs/releases.md,code:docs/client-and-server-settings.md,code:docs/windows-latency.md | A:- | S:开发编号不创建正式发布；已访问屏幕继续占用串流、带宽和解码资源；旧cyan迁移为浅蓝；非阻塞呈现不保证固定毫秒收益
+v0.24.0.md[SV5T]: F:整理0.24.0多屏、虚拟显示器、统一服务、编码回退、主机静音及更新验证边界 | R:code:docs/releases.md,code:docs/multiple-displays.md,code:docs/virtual-displays.md,code:docs/native-audio.md | A:- | S:产物与云端状态看实际结果；需重建完整匹配包并更新真实后台；输入延迟、UAC与驱动隔离仍待验证；静音恢复依赖正常关闭
 
 ===/home/yfy/Repo/uu_remote/licenses/===
 README.md[SG4T]: F:记录SPDX标准文本来源版本及第三方原始通知优先规则 | R:code:tools/licenses/generate.py | A:- | S:附带GPL或LGPL文本不等于项目选用该许可
