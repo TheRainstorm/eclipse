@@ -42,7 +42,9 @@ def main():
                UU_DECODER='hw' if args.expect_hardware else args.decoder, RUST_LOG='error')
     data = out / 'data' / 'uu-remote'
     data.mkdir(parents=True)
-    (data / 'gui-settings.json').write_text(json.dumps(dict(hud=True, clipboard=False, muted=True, lan_discovery=False)))
+    (data / 'gui-settings.json').write_text(json.dumps(dict(
+        hud=True, clipboard=False, muted=True, lan_discovery=False,
+        onboarding_dismissed=True, close_to_tray=False, app_autostart=False)))
     marker = out / 'compositor-shortcut'
     config = out / 'sway.conf'
     config.write_text(f'bindsym Mod4+c exec touch {marker}\n'
@@ -121,6 +123,54 @@ def main():
     def screenshot(name, output='HEADLESS-1'):
         subprocess.run(['grim', '-o', output, str(out / (name + '.png'))], env=env, check=True)
 
+    def latest_geometry():
+        return next((event for event in reversed(events())
+                     if event.get('event') == 'window_geometry'), {})
+
+    def hold_geometry(expected):
+        # Outlive the application's two-second initial-fit retry budget. A late
+        # size/position replay must fail even if the first configure was right.
+        deadline = time.monotonic() + 2.2
+        while time.monotonic() < deadline:
+            if gui.poll() is not None or host.poll() is not None:
+                raise RuntimeError('Owned viewing ended during its geometry check')
+            actual = window()['rect']
+            if any(abs(actual[key] - expected[key]) > 2 for key in expected):
+                raise RuntimeError(f'Application replaced compositor geometry: {expected} -> {actual}')
+            time.sleep(.1)
+
+    def move_output(name):
+        before = window()['rect'].copy()
+        window_command('move container to output ' + name)
+        outputs = ipc('', 'get_outputs')
+        output = next(output for output in outputs if output['name'] == name)
+        (out / ('dpi-' + name + '.json')).write_text(json.dumps(outputs, indent=2))
+        wait(lambda: abs(latest_geometry().get('pixels_per_point', 0) - output['scale']) < .01)
+        moved = window()['rect'].copy()
+        if any(abs(moved[key] - before[key]) > 2 for key in ('width', 'height')):
+            raise RuntimeError('Moving an owned window must preserve its compositor size')
+        hold_geometry(moved)
+        # Wayland placement and resizing belong to the compositor. Give this
+        # owned window an explicit fitting size, then verify the client accepts
+        # it rather than demanding the retired automatic 80% migration policy.
+        area = output['rect']
+        width, height = int(area['width'] * .8), int(area['height'] * .8)
+        window_command(f'resize set width {width} px height {height} px')
+        def configured_size():
+            actual = window()['rect']
+            geometry = latest_geometry()
+            bounds = geometry.get('logical_screen_rect', [0, 0, 0, 0])
+            return (abs(actual['width'] - width) <= 2
+                    and abs(actual['height'] - height) <= 2
+                    and abs(bounds[2] - bounds[0] - width) <= 2
+                    and abs(bounds[3] - bounds[1] - height) <= 2
+                    and abs(geometry.get('pixels_per_point', 0) - output['scale']) < .01)
+        wait(configured_size)
+        window_command('move position center')
+        configured = window()['rect'].copy()
+        hold_geometry(configured)
+        return configured, latest_geometry()['pixels_per_point']
+
     try:
         sway = subprocess.Popen(['sway', '-c', str(config), '--unsupported-gpu'], env=env, stdout=log('sway.log'), stderr=subprocess.STDOUT)
         def compositor():
@@ -157,22 +207,12 @@ def main():
         wait(lambda: window().get('fullscreen_mode') == 0)
         result = dict(native_viewer=True, fullscreen=True, local_system_shortcut_in_readonly=True)
         if args.multi_dpi:
-            window_command('move container to output HEADLESS-2')
-            outputs = ipc('', 'get_outputs')
-            area = next(output['rect'] for output in outputs if output['name'] == 'HEADLESS-2')
-            (out / 'dpi-output.json').write_text(json.dumps(outputs, indent=2))
             try:
-                wait(lambda: window()['rect']['width'] <= area['width'] * .9
-                     and window()['rect']['height'] <= area['height'] * .9)
-            except TimeoutError:
+                result['cross_dpi_rect'], result['cross_dpi_scale'] = move_output('HEADLESS-2')
+            except (TimeoutError, RuntimeError):
                 (out / 'dpi-failed-window.json').write_text(json.dumps(window(), indent=2))
                 screenshot('dpi-failed', 'HEADLESS-2')
                 raise
-            result['cross_dpi_before_compositor_center'] = window()['rect']
-            # Wayland clients cannot set global positions. The owned compositor
-            # chooses placement, independently of the application's size policy.
-            window_command('move position center')
-            result['cross_dpi_rect'] = window()['rect']
             screenshot('cross-dpi', 'HEADLESS-2')
             # Moving a container to another output does not focus that output.
             # Keep the final shortcut inside this test's own focused window.
@@ -182,11 +222,8 @@ def main():
             wait(lambda: window().get('fullscreen_mode') == 1)
             keys('x')
             wait(lambda: window().get('fullscreen_mode') == 0)
-            window_command('move container to output HEADLESS-1')
-            wait(lambda: window()['rect']['width'] > area['width'] * .9
-                 and window()['rect']['width'] <= 1600 * .9
-                 and window()['rect']['height'] <= 1000 * .9)
-            result['cross_dpi_return_rect'] = window()['rect']
+            result['cross_dpi_return_rect'], result['cross_dpi_return_scale'] = move_output('HEADLESS-1')
+            result['compositor_geometry_preserved'] = True
             window_command('move position center, focus')
             wait(lambda: window().get('focused'))
         sample = wait(lambda: next((event for event in reversed(events()) if event.get('event') == 'video_stats' and event.get('decoded', 0) >= 120), None))

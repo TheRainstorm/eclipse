@@ -254,9 +254,15 @@ jobs:
           python3 tools/native/audio_smoke.py --probe target/release/examples/audio_capture_probe --output artifacts/native-audio
       - name: Test isolated Wayland viewer and mixed DPI
         if: matrix.platform == 'linux-x86_64'
+        env:
+          VALIDATION_COMMIT: ${{ github.workflow_sha }}
         run: |
+          # Product binaries stay on release_tag; repaired validation follows
+          # this workflow revision, including when rebuilding an old tag.
+          git show "$VALIDATION_COMMIT:tools/native/wayland_smoke.py" > "$RUNNER_TEMP/wayland-smoke.py"
+          echo "Wayland validation harness: $VALIDATION_COMMIT"
           cargo build --release -p uu-gui --example wayland_input --features vaapi --locked
-          python3 tools/native/wayland_smoke.py --gui target/release/eclipse --cli target/release/eclipse-cli --input-driver target/release/examples/wayland_input --output artifacts/native-wayland --renderer pixman --decoder sw --multi-dpi
+          python3 "$RUNNER_TEMP/wayland-smoke.py" --gui target/release/eclipse --cli target/release/eclipse-cli --input-driver target/release/examples/wayland_input --output artifacts/native-wayland --renderer pixman --decoder sw --multi-dpi
       - name: Test isolated Intel VPL ABI contracts
         if: matrix.platform == 'linux-x86_64'
         run: |
