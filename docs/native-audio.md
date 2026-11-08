@@ -2,7 +2,9 @@
 
 v0.4.0 起接入自有加密媒体通路与图形端播放；UU 兼容模式的音频保持独立。
 
-Windows 使用默认输出设备的 WASAPI loopback；Linux 通过 PulseAudio 或 PipeWire Pulse 服务查找默认输出对应的 monitor。不会将默认输入设备作为备用来源。主机在“共享此设备”中勾选“共享系统声音”后开启，默认关闭。命令行真实显示器主机增加 `--audio`；合成画面只能显式使用 `--synthetic-audio`，不能借此采集系统声音。
+Windows 使用默认输出设备的 WASAPI loopback；Linux 通过 PulseAudio 或 PipeWire Pulse 服务查找输出对应的 monitor。不会将默认输入设备作为备用来源。服务设置的音频/视频页提供“传输系统声音”和默认开启的“串流时静音主机扬声器”。关闭后一个选项可让主机和控制端同时收听；设置作用于之后建立的声音串流。命令行真实显示器主机增加 `--audio`；合成画面只能显式使用 `--synthetic-audio`，不能借此采集系统声音。
+
+静音由同一主机进程的声音采集共同持有，关闭一个屏幕不会提前恢复，最后一路声音串流正常结束后恢复原状态。Windows 仅操作采集所用的默认输出端点，原来已经静音或串流中手动调整声音时保留用户状态；默认 WASAPI loopback 在音量和静音之前取样。Linux 的 PulseAudio monitor 会受到输出静音影响，因此创建临时静音输出，迁移原默认输出上的播放流并采集其 monitor；结束后归还仍在临时输出上的流，保留用户另选的默认输出，再移除自建输出。两种实现均不采集麦克风、不修改保存的主机音量。
 
 采集统一为48 kHz立体声、10 ms Opus帧、128 kbps。Windows 接受设备提供的整数或浮点格式，处理单声道、立体声与常见多声道布局；非48 kHz使用带限 sinc 重采样，保持跨数据块的相位。捕获队列与 PCM 缓冲保持有界，复用播放侧的短淡入淡出，并在普通设备抖动时等待完整 PCM 帧。
 
@@ -26,6 +28,8 @@ python3 tools/native/audio_smoke.py \
   --probe ./target/release/examples/audio_capture_probe \
   --output ./artifacts/native-audio-test
 ```
+
+加上 `--mute-host` 可核验临时输出、多个采集共享生命周期、远端声音仍有信号，以及最后一路退出后的输出恢复。
 
 脚本创建独立的 PulseAudio 服务、私有认证 cookie 和空输出设备；默认输入设置为另一条静音源，再向输出播放生成的测试音。采集必须得到输出信号，并在模拟丢包后继续解码。结束时验证采集流释放，再关闭自己的服务与播放进程。测试不修改工作桌面的默认音频设备。
 

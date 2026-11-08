@@ -55,6 +55,7 @@ pub struct Sharing {
     pub encoder_tuning:uu_media::encoder::Tuning,
     pub control: bool,
     pub audio: bool,
+    pub mute_host_audio: bool,
     pub clipboard: bool,
     pub service_port: u16,
     pub discovery_port: u16,
@@ -78,6 +79,7 @@ impl Default for Sharing {
             encoder_tuning:Default::default(),
             control: true,
             audio: true,
+            mute_host_audio: true,
             clipboard: false,
             service_port: crate::native_discovery::SERVICE_PORT,
             discovery_port: crate::native_discovery::DISCOVERY_PORT,
@@ -90,6 +92,9 @@ impl Default for Sharing {
     }
 }
 impl Sharing {
+    pub fn audio_source(&self)->Option<native::AudioSource> {
+        self.audio.then_some(if self.mute_host_audio {native::AudioSource::SystemMuted}else{native::AudioSource::System})
+    }
     pub fn native(&self) -> SharingConfig {
         SharingConfig {encoder_tuning:self.encoder_tuning,session:None,video_policy:Some(crate::native_quality::Policy{codecs:self.allowed_codecs.clone(),preferred_codec:self.codec}),codec:self.codec.unwrap_or_default(),rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:36_000}},
             source: native::CaptureSource::Desktop {initial_monitor:
@@ -100,7 +105,7 @@ impl Sharing {
             encoder: self.encoding.native(),
             session_limit: None,
             allow_input: self.control,
-            audio: self.audio.then_some(native::AudioSource::System),
+            audio: self.audio_source(),
             clipboard: None,
         }
     }
@@ -782,6 +787,20 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_output_mute_defaults_on_for_older_settings_and_opt_out_survives_save() {
+        let mut old=serde_json::to_value(Sharing::default()).unwrap();
+        old.as_object_mut().unwrap().remove("mute_host_audio");
+        let mut sharing:Sharing=serde_json::from_value(old).unwrap();
+        assert!(sharing.mute_host_audio);
+        assert_eq!(sharing.native().audio,Some(native::AudioSource::SystemMuted));
+        sharing.mute_host_audio=false;
+        let restored:Sharing=serde_json::from_value(serde_json::to_value(&sharing).unwrap()).unwrap();
+        assert!(!restored.mute_host_audio);
+        assert_eq!(restored.native().audio,Some(native::AudioSource::System));
+        sharing.audio=false;
+        assert_eq!(sharing.native().audio,None);
+    }
     #[test]
     fn unknown_extension_records_survive_edits_without_becoming_enabled() {
         let root=std::env::temp_dir().join(format!("extension-book-{}",uuid::Uuid::new_v4()));

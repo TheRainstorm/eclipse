@@ -232,7 +232,7 @@ impl Runner {
                 bitrate_kbps: defaults.bitrate_kbps,
                 encoder: sharing.encoding.native(),
                 allow_input: sharing.control,
-                audio: sharing.audio.then_some(crate::native::AudioSource::System),
+                audio: sharing.audio_source(),
                 clipboard: factory.clone(),
             };
             match lan::Server::bind_with_access(

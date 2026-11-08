@@ -10,7 +10,7 @@ use uu_media::{
 };
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let source = match args.next().as_deref() {
+    let mut source = match args.next().as_deref() {
         Some("--synthetic") => Source::Synthetic,
         Some("--system-output") => Source::System,
         _ => anyhow::bail!("choose --synthetic or explicit --system-output"),
@@ -18,11 +18,20 @@ fn main() -> Result<()> {
     let mut packets = 200u64;
     let mut expect_signal = false;
     let mut drop_every = 0;
+    let mut exercise_mute_lease = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--packets" => packets = args.next().context("missing packet count")?.parse()?,
             "--expect-signal" => expect_signal = true,
             "--drop-every" => drop_every = args.next().context("missing loss period")?.parse()?,
+            "--mute-host" => {
+                ensure!(
+                    source == Source::System,
+                    "--mute-host requires --system-output"
+                );
+                source = Source::SystemMuted;
+            }
+            "--exercise-mute-lease" => exercise_mute_lease = true,
             _ => anyhow::bail!("unknown audio probe option"),
         }
     }
@@ -32,6 +41,16 @@ fn main() -> Result<()> {
     );
     let stop = AtomicBool::new(false);
     let mut capture = CaptureSession::new(source, &stop)?;
+    if exercise_mute_lease {
+        ensure!(
+            source == Source::SystemMuted,
+            "mute lease exercise requires --mute-host"
+        );
+        // The second capture must keep the shared output silent when the first
+        // closes, and still receive audio until its own normal teardown.
+        let replacement = CaptureSession::new(source, &stop)?;
+        capture = replacement;
+    }
     let control = AudioControl::default();
     let mut decoder = OpusReceiver::new()?;
     use std::io::Write;

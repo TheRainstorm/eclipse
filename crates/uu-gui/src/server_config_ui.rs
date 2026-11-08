@@ -102,6 +102,8 @@ pub fn capture(ui:&mut egui::Ui,s:&mut Sharing,monitors:&[(String,String)],porta
         if portal {ui.weak(uu_i18n::text("屏幕选择由主机系统授权，远程重选仍需主机确认。"));}
         else {ui.weak(uu_i18n::text("连接后可在客户端切换显示器。"));}
         ui.add_space(10.);crate::theme::switch(ui,&mut s.audio,uu_i18n::text("传输系统声音"));
+        ui.add_enabled_ui(s.audio,|ui|{crate::theme::switch(ui,&mut s.mute_host_audio,uu_i18n::text("串流时静音主机扬声器"));});
+        ui.weak(uu_i18n::text("默认开启；控制端仍可收听。最后一路声音串流结束后恢复原状态；手动调整主机声音时以手动操作为准。"));
         ui.weak(uu_i18n::text("帧率、输出尺寸和码率由各客户端调整。"));
 
 }

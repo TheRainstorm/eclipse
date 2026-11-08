@@ -16,6 +16,7 @@ pub(super) struct Capture {
     receiver: Receiver<(std::time::Instant, Vec<f32>)>,
     failed: Arc<AtomicBool>,
     rate: StereoRate,
+    _mute: Option<super::wasapi_mute::Guard>,
 }
 fn build<T>(
     device: &cpal::Device,
@@ -52,7 +53,12 @@ where
     )?)
 }
 impl Capture {
-    pub fn new() -> Result<Self> {
+    pub fn new(mute_host: bool) -> Result<Self> {
+        let endpoint = if mute_host {
+            Some(super::wasapi_mute::Output::new()?)
+        } else {
+            None
+        };
         let device = cpal::default_host()
             .default_output_device()
             .context("no default system-output device")?;
@@ -84,11 +90,15 @@ impl Capture {
             _ => anyhow::bail!("unsupported system-output sample format"),
         };
         stream.play()?;
+        let mute = endpoint
+            .map(super::wasapi_mute::Output::lease)
+            .transpose()?;
         Ok(Self {
             _stream: stream,
             receiver,
             failed,
             rate,
+            _mute: mute,
         })
     }
     pub fn poll(&mut self) -> Result<Vec<Vec<f32>>> {

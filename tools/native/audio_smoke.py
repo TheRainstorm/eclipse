@@ -18,7 +18,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--probe', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--mute-host', action='store_true')
+    parser.add_argument('--change-output-during-capture', action='store_true')
     args = parser.parse_args()
+    if args.change_output_during_capture and not args.mute_host:
+        parser.error('--change-output-during-capture requires --mute-host')
     os.umask(0o077)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -70,26 +74,55 @@ def main():
         # measuring capture. This affects only this owned synthetic server.
         time.sleep(2)
         probe = subprocess.Popen([str(args.probe.resolve()), '--system-output', '--packets', '250',
-                                  '--expect-signal', '--drop-every', '20'], env=env,
+                                  '--expect-signal', '--drop-every', '20', *(['--mute-host', '--exercise-mute-lease'] if args.mute_host else [])], env=env,
                                  stdout=subprocess.PIPE, stderr=log('probe.err'), text=True)
         processes.append(probe)
-        if not select.select([probe.stdout], [], [], 10)[0] or json.loads(probe.stdout.readline()) != {'ready': True}:
+        ready = probe.stdout.readline() if select.select([probe.stdout], [], [], 10)[0] else ''
+        if not ready.strip() or json.loads(ready) != {'ready': True}:
             raise RuntimeError('Owned monitor capture did not become ready')
+        if args.mute_host:
+            current = subprocess.check_output(['pactl', 'get-default-sink'], env=env, text=True).strip()
+            sinks = json.loads(subprocess.check_output(['pactl', '-f', 'json', 'list', 'sinks'], env=env, text=True))
+            owned = [s for s in sinks if s['name'] == current and current.startswith('eclipse_stream_')]
+            inputs = json.loads(subprocess.check_output(['pactl', '-f', 'json', 'list', 'sink-inputs'], env=env, text=True))
+            if len(owned) != 1 or not inputs or any(i['sink'] != owned[0]['index'] for i in inputs):
+                raise RuntimeError('Host playback did not move away from the original output')
+            if args.change_output_during_capture:
+                # First establish normal remote signal. A manual default change
+                # may also move playback out of our sink; that choice wins.
+                time.sleep(1.25)
+                subprocess.run(['pactl', 'load-module', 'module-null-sink', 'sink_name=eclipse_manual_choice'],
+                               env=env, check=True, stdout=subprocess.DEVNULL)
+                subprocess.run(['pactl', 'set-default-sink', 'eclipse_manual_choice'], env=env, check=True)
         output = probe.communicate(timeout=15)[0]
         (out / 'probe.log').write_text(output)
         if probe.returncode:
             raise RuntimeError('Owned output-monitor audio probe failed')
         report = json.loads(output.strip())
-        if (report.get('audio_capture') != 'passed' or report.get('rms', 0) <= .04
+        minimum_rms = .03 if args.change_output_during_capture else .04
+        minimum_signal_fraction = .35 if args.change_output_during_capture else .8
+        if (report.get('audio_capture') != 'passed' or report.get('rms', 0) <= minimum_rms
                 or not 12 <= report.get('concealment_attempts', 0) <= 20
                 or report.get('first_signal_packet', 999) > 12
-                or report.get('signal_packets', 0) < report.get('decoded', 0) * .8
+                or report.get('signal_packets', 0) < report.get('decoded', 0) * minimum_signal_fraction
                 or report.get('backend') != 'PulseAudio output monitor'):
             raise RuntimeError('Output-monitor signal/concealment checks failed')
         remaining = subprocess.check_output(['pactl', 'list', 'short', 'source-outputs'], env=env, text=True)
         if remaining.strip():
             raise RuntimeError('Owned audio capture stream remained open after probe exit')
-        report.update(scope='owned null sink; unrelated default input', output_device_unchanged=True)
+        if args.mute_host:
+            current = subprocess.check_output(['pactl', 'get-default-sink'], env=env, text=True).strip()
+            sinks = json.loads(subprocess.check_output(['pactl', '-f', 'json', 'list', 'sinks'], env=env, text=True))
+            expected = 'eclipse_manual_choice' if args.change_output_during_capture else 'eclipse_output'
+            if current != expected or any(s['name'].startswith('eclipse_stream_') for s in sinks):
+                raise RuntimeError('Owned host output was not restored after capture')
+            inputs = json.loads(subprocess.check_output(['pactl', '-f', 'json', 'list', 'sink-inputs'], env=env, text=True))
+            target = next(s['index'] for s in sinks if s['name'] == expected)
+            if any(i['sink'] != target for i in inputs):
+                raise RuntimeError('Host playback was not returned to the selected output')
+        report['host_mute_checked'] = args.mute_host
+        report['manual_output_change_preserved'] = args.change_output_during_capture
+        report.update(scope='owned null sink; unrelated default input', output_device_restored=True)
         (out / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
         print(json.dumps(report))
     finally:

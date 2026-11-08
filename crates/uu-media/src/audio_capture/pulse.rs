@@ -20,8 +20,9 @@ pub(super) struct Capture {
     stream: Stream,
     context: Context,
     mainloop: Mainloop,
+    route: Option<super::pulse_route::Guard>,
 }
-fn wait(
+pub(super) fn wait(
     mainloop: &mut Mainloop,
     stop: &AtomicBool,
     mut ready: impl FnMut() -> Result<bool>,
@@ -42,7 +43,7 @@ fn wait(
     Ok(())
 }
 impl Capture {
-    pub fn new(stop: &AtomicBool) -> Result<Self> {
+    pub fn new(stop: &AtomicBool, mute_host: bool) -> Result<Self> {
         let mut mainloop = Mainloop::new().context("cannot create system audio event loop")?;
         let mut context = Context::new(&mainloop, "uu-client output sharing")
             .context("cannot create system audio connection")?;
@@ -57,6 +58,9 @@ impl Capture {
             );
             Ok(context.get_state() == ContextState::Ready)
         })?;
+        let route = mute_host
+            .then(|| super::pulse_route::Guard::acquire(stop))
+            .transpose()?;
         let sink = Rc::new(RefCell::new(None));
         let result = sink.clone();
         let request = context.introspect().get_server_info(move |info| {
@@ -70,6 +74,10 @@ impl Capture {
             .take()
             .flatten()
             .context("no default system-output device")?;
+        let sink = route
+            .as_ref()
+            .map(|route| route.sink().to_owned())
+            .unwrap_or(sink);
         let monitor = Rc::new(RefCell::new(None));
         let result = monitor.clone();
         let request = context
@@ -109,7 +117,9 @@ impl Capture {
         stream.connect_record(
             Some(&monitor),
             Some(&buffer),
-            pulse::stream::FlagSet::ADJUST_LATENCY,
+            // This is the exact monitor selected for this capture. A server
+            // default change must not silently move it to another source.
+            pulse::stream::FlagSet::ADJUST_LATENCY | pulse::stream::FlagSet::DONT_MOVE,
         )?;
         wait(&mut mainloop, stop, || {
             ensure!(
@@ -125,6 +135,7 @@ impl Capture {
             stream,
             context,
             mainloop,
+            route,
         })
     }
     pub fn poll(&mut self) -> Result<Vec<Vec<f32>>> {
@@ -163,5 +174,6 @@ impl Drop for Capture {
     fn drop(&mut self) {
         let _ = self.stream.disconnect();
         self.context.disconnect();
+        drop(self.route.take());
     }
 }

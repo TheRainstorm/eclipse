@@ -15,14 +15,22 @@ use std::{
 
 #[cfg(target_os = "linux")]
 mod pulse;
+#[cfg(target_os = "linux")]
+mod pulse_route;
 #[cfg(windows)]
 mod wasapi;
+#[cfg(windows)]
+mod wasapi_mute;
+#[cfg(any(windows,test))]
+mod mute;
 
 const RATE: u32 = 48_000;
 const FRAMES: usize = 480;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     System,
+    /// Capture system output while suppressing playback on the host.
+    SystemMuted,
     Synthetic,
 }
 pub struct EncodedAudio {
@@ -54,11 +62,11 @@ impl CaptureSession {
         let device = match source {
             Source::Synthetic => Device::Synthetic,
             #[cfg(target_os = "linux")]
-            Source::System => Device::Pulse(pulse::Capture::new(stop)?),
+            Source::System | Source::SystemMuted => Device::Pulse(pulse::Capture::new(stop,source==Source::SystemMuted)?),
             #[cfg(windows)]
-            Source::System => Device::Wasapi(wasapi::Capture::new()?),
+            Source::System | Source::SystemMuted => Device::Wasapi(wasapi::Capture::new(source==Source::SystemMuted)?),
             #[cfg(not(any(windows, target_os = "linux")))]
-            Source::System => {
+            Source::System | Source::SystemMuted => {
                 anyhow::bail!("system-output capture is unavailable on this platform")
             }
         };

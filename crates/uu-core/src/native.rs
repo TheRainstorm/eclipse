@@ -231,7 +231,7 @@ impl SharingConfig {
         ensure!(self.encoder!=EncoderPreference::Software || (self.codec==VideoCodec::H264 && self.rate_control==uu_media::encoder::RateControl::Cbr),"{}", uu_i18n::format!("所选编码格式或 VBR 需要硬件编码"));
         let monitor = matches!(self.source,CaptureSource::Primary|CaptureSource::Desktop { .. }|CaptureSource::Monitor(_));
         ensure!(!self.allow_input || monitor, "desktop input requires an explicitly shared monitor");
-        ensure!(self.audio != Some(AudioSource::System) || monitor, "system audio requires an explicitly shared monitor");
+        ensure!(!matches!(self.audio,Some(AudioSource::System|AudioSource::SystemMuted)) || monitor, "system audio requires an explicitly shared monitor");
         Ok(())
     }
 }
