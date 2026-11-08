@@ -26,6 +26,34 @@ fn backend(error: impl std::fmt::Display) -> CaptureError {
     CaptureError::Backend(format!("DXGI: {error}"))
 }
 
+/// A desktop switch can leave a duplication's frame ownership unusable even
+/// after ReleaseFrame. Retire that object; never replay its cached pixels or
+/// retry AcquireNextFrame on the same object. Bound unexpected state recovery
+/// separately from Windows' normal desktop/access transitions.
+#[derive(Default)]
+struct DuplicationRecovery {
+    invalid_states: u8,
+}
+impl DuplicationRecovery {
+    fn retry(&mut self, code: windows::core::HRESULT, reopening: bool) -> bool {
+        if code == DXGI_ERROR_ACCESS_LOST || code == DXGI_ERROR_SESSION_DISCONNECTED
+            || code == DXGI_ERROR_UNSUPPORTED || code == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE
+            || code == windows::Win32::Foundation::E_ACCESSDENIED {
+            return true;
+        }
+        // Invalid arguments to AcquireNextFrame are programmer errors. During
+        // reopening, DuplicateOutput may instead reject a transitioning output.
+        if code != DXGI_ERROR_INVALID_CALL
+            && !(reopening && code == windows::Win32::Foundation::E_INVALIDARG) {
+            return false;
+        }
+        if self.invalid_states >= 3 { return false; }
+        self.invalid_states += 1;
+        true
+    }
+    fn frame_ready(&mut self) { self.invalid_states = 0; }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Monitor {
     pub name: String,
@@ -222,6 +250,7 @@ pub struct DxgiCapture {
     allow_hdr:bool,
     adapter_vendor: u16,
     duplication: Option<IDXGIOutputDuplication>,
+    recovery: DuplicationRecovery,
     retry_at: Instant,
     context: ID3D11DeviceContext,
     device: ID3D11Device,
@@ -311,6 +340,7 @@ impl DxgiCapture {
             allow_hdr:allow_hdr && selected.rotation==Rotation::None,
             adapter_vendor,
             duplication: Some(duplication),
+            recovery: Default::default(),
             retry_at: Instant::now(),
             context,
             device,
@@ -353,6 +383,7 @@ impl DxgiCapture {
         self.staging = None;
         self.capture_pool = None;
         self.duplication = None;
+        self.retry_at = Instant::now() + Duration::from_millis(100);
     }
     fn resume(&mut self) -> Result<(), CaptureError> {
         if Instant::now() < self.retry_at {
@@ -374,15 +405,10 @@ impl DxgiCapture {
             let now_hdr=output_hdr(&selected.output);
             if self.allow_hdr && self.hdr.is_some()!=now_hdr.is_some() {return Err(backend("显示器 HDR 状态已改变，请重新连接"));}
             duplicate(&selected.output,&self.device,self.hdr.is_some()).map_err(|e| {
-                if e.code() == DXGI_ERROR_ACCESS_LOST
-                    || e.code() == DXGI_ERROR_SESSION_DISCONNECTED
-                    || e.code() == DXGI_ERROR_UNSUPPORTED
-                    || e.code() == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE
-                    || e.code() == windows::Win32::Foundation::E_ACCESSDENIED
-                {
-                    CaptureError::Suspended(format!("等待当前桌面采集权限或显示模式恢复：{e}"))
+                if self.recovery.retry(e.code(), true) {
+                    CaptureError::Suspended(format!("等待当前桌面 DuplicateOutput 恢复（{}）：{e}", self.source.name))
                 } else {
-                    backend(e)
+                    backend(format!("DuplicateOutput while reopening {}: {e}", self.source.name))
                 }
             })?
         });
@@ -420,14 +446,14 @@ impl DxgiCapture {
         let before = self.diagnostics.as_ref().and_then(|_| qpc_now());
         let acquired = unsafe { duplication.AcquireNextFrame(wait_ms, &mut info, &mut resource) };
         let after = self.diagnostics.as_ref().and_then(|_| qpc_now());
+        let retry = acquired.as_ref().err().is_some_and(|error|self.recovery.retry(error.code(), false));
         if let Some(observer) = &mut self.diagnostics {
             use crate::capture_diagnostics::{Acquisition, Outcome};
             let (hresult, outcome) = match &acquired {
                 Ok(()) if info.LastPresentTime == 0 && info.AccumulatedFrames == 0 => (0, Outcome::PointerOnly),
                 Ok(()) => (0, Outcome::AcquiredNotReturned),
                 Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => (error.code().0, Outcome::WaitTimeout),
-                Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST || error.code() == DXGI_ERROR_SESSION_DISCONNECTED
-                    || error.code() == DXGI_ERROR_UNSUPPORTED || error.code() == windows::Win32::Foundation::E_ACCESSDENIED => (error.code().0, Outcome::Retired),
+                Err(error) if retry => (error.code().0, Outcome::Retired),
                 Err(error) => (error.code().0, Outcome::Error),
             };
             observer.acquired(Acquisition { thread_id: unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
@@ -439,16 +465,11 @@ impl DxgiCapture {
         match acquired {
             Ok(()) => {}
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
-            Err(e)
-                if e.code() == DXGI_ERROR_ACCESS_LOST
-                    || e.code() == DXGI_ERROR_SESSION_DISCONNECTED
-                    || e.code() == DXGI_ERROR_UNSUPPORTED
-                    || e.code() == windows::Win32::Foundation::E_ACCESSDENIED =>
-            {
+            Err(e) if retry => {
                 self.invalidate();
-                return Err(CaptureError::Suspended(format!("等待 DXGI 桌面恢复：{e}")));
+                return Err(CaptureError::Suspended(format!("等待 AcquireNextFrame 重建（{}）：{e}", self.source.name)));
             }
-            Err(e) => return Err(backend(e)),
+            Err(e) => return Err(backend(format!("AcquireNextFrame for {}: {e}", self.source.name))),
         }
         // Every successful acquisition releases its frame, including all error paths.
         let _lease = FrameLease(duplication.clone());
@@ -460,6 +481,7 @@ impl DxgiCapture {
         if info.LastPresentTime == 0 && info.AccumulatedFrames == 0 {
             return Ok(None);
         }
+        self.recovery.frame_ready();
         self.present_info = u64::try_from(info.LastPresentTime).ok().filter(|ticks| *ticks > 0)
             .filter(|_| self.qpc_frequency > 0)
             .map(|qpc_ticks| crate::frame_info::SourceTime { qpc_ticks, frequency_hz: self.qpc_frequency });
@@ -711,6 +733,41 @@ impl Drop for MappedSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_recovery_rebuilds_invalid_ownership_and_resets_only_on_a_real_frame() {
+        let mut recovery=DuplicationRecovery::default();
+        for _ in 0..3 { assert!(recovery.retry(DXGI_ERROR_INVALID_CALL,false)); }
+        assert!(!recovery.retry(DXGI_ERROR_INVALID_CALL,false),"persistent invalid ownership must surface as an error");
+        // Permission/desktop waits do not replenish the invalid-state budget.
+        for _ in 0..20 { assert!(recovery.retry(windows::Win32::Foundation::E_ACCESSDENIED,true)); }
+        assert!(!recovery.retry(DXGI_ERROR_INVALID_CALL,false));
+        recovery.frame_ready();
+        assert!(recovery.retry(DXGI_ERROR_INVALID_CALL,false));
+    }
+
+    #[test]
+    fn desktop_recovery_preserves_normal_transition_waits_and_rejects_device_loss() {
+        let mut recovery=DuplicationRecovery::default();
+        for _ in 0..10 {
+            for error in [DXGI_ERROR_ACCESS_LOST,DXGI_ERROR_SESSION_DISCONNECTED,DXGI_ERROR_UNSUPPORTED,DXGI_ERROR_NOT_CURRENTLY_AVAILABLE] {
+                assert!(recovery.retry(error,false));assert!(recovery.retry(error,true));
+            }
+        }
+        for error in [DXGI_ERROR_DEVICE_REMOVED,DXGI_ERROR_DEVICE_RESET,windows::Win32::Foundation::E_FAIL] {
+            assert!(!recovery.retry(error,false));assert!(!recovery.retry(error,true));
+        }
+    }
+
+    #[test]
+    fn desktop_recovery_invalid_arguments_are_limited_to_duplication_reopen() {
+        let mut recovery=DuplicationRecovery::default();
+        assert!(!recovery.retry(windows::Win32::Foundation::E_INVALIDARG,false));
+        assert!(recovery.retry(windows::Win32::Foundation::E_INVALIDARG,true));
+        assert!(recovery.retry(DXGI_ERROR_INVALID_CALL,false));
+        assert!(recovery.retry(windows::Win32::Foundation::E_INVALIDARG,true));
+        assert!(!recovery.retry(DXGI_ERROR_INVALID_CALL,false));
+    }
 
     #[test]
     #[ignore = "requires an interactive output; checks duplication geometry without acquiring desktop pixels"]
