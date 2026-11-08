@@ -82,6 +82,7 @@ pub struct Actions {
     pub host: bool,
     pub maximize: bool,
     pub refresh_wallpaper:bool,
+    pub tutorial: bool,
 }
 
 fn note(ui: &mut egui::Ui, text: &str) {
@@ -362,6 +363,9 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
         note(ui,uu_i18n::text("快捷键属于本机应用，所有串流窗口共用；保存后会更新已打开的新版窗口。设备画质配置不覆盖快捷键。"));
     }),
     SoftwareSection::General=>group(ui,uu_i18n::text("常规"),|ui| {
+        if ui.add(theme::secondary_button(uu_i18n::text("打开新手教程"))).clicked() {actions.tutorial=true;}
+        note(ui,uu_i18n::text("随时重看连接说明；只有一台电脑时也可以进行本机串流测试。"));
+        ui.add_space(8.);
         ui.horizontal(|ui| {ui.label(uu_i18n::text("界面语言"));
             crate::theme::Select::from_id_salt("application-language").selected_text(s.language.label()).show_ui(ui,|ui|{
                 for language in uu_i18n::Language::ALL {crate::theme::selectable_value(ui,&mut s.language,language,language.label());}

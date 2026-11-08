@@ -278,17 +278,15 @@ mod tests {
         }
     }
     #[test]
-    fn empty_devices_offer_add_and_optional_password_setup_without_starting_sharing() {
+    fn empty_devices_offer_add_and_single_computer_test_without_starting_sharing() {
         let mut h = Harness::new();
         h.frame(vec![]);
-        assert!(h.texts.iter().any(|(s, _)| s == "连接你的第一台电脑"));
+        assert!(h.texts.iter().any(|(s, _)| s == "尚未添加设备"));
         assert!(h.click("添加第一台电脑").is_empty());
         assert!(h.workspace.editor.is_some());
         assert!(!h.workspace.host.running());
         h.workspace.editor = None;
-        h.click("设置安全连接密码");
-        assert_eq!(h.workspace.route.page, Page::Services);
-        assert_eq!(h.workspace.service_tab, 4);
+        assert!(matches!(&h.click("本机串流测试")[..], [Action::SelfStream]));
         assert!(!h.workspace.host.running());
     }
 
@@ -310,7 +308,7 @@ mod tests {
                     .1
                     .y
             };
-            let next_heading = y("连接你的第一台电脑");
+            let next_heading = y("尚未添加设备");
             let next_add = y("添加第一台电脑");
             assert_eq!(*heading_y.get_or_insert(next_heading), next_heading);
             assert_eq!(*add_y.get_or_insert(next_add), next_add);
@@ -370,7 +368,7 @@ mod tests {
             h.frame(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);
         }
         h.frame(vec![]);
-        let x=|label:&str|h.text_lefts.iter().find(|(text,_)|text==label).unwrap_or_else(||panic!("missing {label}: {:?}",h.texts)).1;
+        let x=|label:&str|h.text_lefts.iter().rfind(|(text,_)|text==label).unwrap_or_else(||panic!("missing {label}: {:?}",h.texts)).1;
         let expected=x("收藏当前壁纸");
         for label in ["下载壁纸","刷新壁纸","本机串流测试","添加设备","添加附近设备"] {
             assert!((x(label)-expected).abs()<2.,"{label} at {} is not aligned with {expected}: {:?}",x(label),h.text_lefts);
@@ -1208,15 +1206,8 @@ impl Workspace {
         if profiles.is_empty() {
             card(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    let p = theme::palette(ui.visuals());
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(96., 72.), egui::Sense::hover());
-                    let screen = egui::Rect::from_center_size(rect.center() - egui::vec2(0., 8.), egui::vec2(72., 44.));
-                    ui.painter().rect(screen, 8., p.overlay, egui::Stroke::new(1.5, p.accent));
-                    ui.painter().line_segment([screen.center_bottom(), screen.center_bottom()+egui::vec2(0., 10.)], egui::Stroke::new(2., p.accent));
-                    ui.painter().line_segment([screen.center_bottom()+egui::vec2(-14., 10.), screen.center_bottom()+egui::vec2(14., 10.)], egui::Stroke::new(2., p.accent));
-                    ui.heading(uu_i18n::text("连接你的第一台电脑"));
-                    muted(ui, uu_i18n::text("1. 在对方电脑开启 Eclipse 服务　2. 添加对方 IP 地址"));
-                    muted(ui, uu_i18n::text("3. 首次连接完成设备配对　4. 点击开始串流"));
+                    ui.heading(uu_i18n::text("尚未添加设备"));
+                    muted(ui, uu_i18n::text("添加远端电脑，或先进行本机串流测试。"));
                     ui.add_space(8.);
                     if ui.add(theme::primary_button(uu_i18n::text("添加第一台电脑"))).clicked() {
                         self.new_device(None, None);
@@ -1224,7 +1215,7 @@ impl Workspace {
                     if !info.nearby.is_empty() {
                         ui.menu_button(uu_i18n::text("选择附近电脑"), |ui| {
                             for (name, address) in &info.nearby {
-                                if ui.add(crate::theme::secondary_button(name)).clicked() {
+                                if ui.add(theme::secondary_button(name)).clicked() {
                                     self.new_device(None, None);
                                     if let Some(editor) = &mut self.editor {
                                         editor.name = name.clone();
@@ -1235,17 +1226,8 @@ impl Workspace {
                             }
                         });
                     }
-                    ui.add_space(6.);
-                    muted(ui, uu_i18n::text("安全连接密码为可选设置；也可以使用配对码或已授权公钥。"));
-                    let password_label = if self.pairing_password_configured == Some(true) {
-                        uu_i18n::text("修改安全连接密码")
-                    } else {
-                        uu_i18n::text("设置安全连接密码")
-                    };
-                    if ui.add(theme::secondary_button(password_label)).clicked() {
-                        self.route.page = Page::Services;
-                        self.service_tab = 4;
-                        #[cfg(windows)] self.background_service.open_pairing();
+                    if ui.add(theme::secondary_button(uu_i18n::text("本机串流测试"))).clicked() {
+                        actions.push(Action::SelfStream);
                     }
                 });
             });

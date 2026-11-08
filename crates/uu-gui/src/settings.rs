@@ -86,6 +86,7 @@ pub struct Settings {
     /// Global color family; device profiles never override it.
     pub color_theme: super::theme::ColorTheme,
     pub language: uu_i18n::Language,
+    pub onboarding_dismissed: bool,
     pub lan_discovery: bool,
     // Retained only to migrate older configurations into connection services.
     pub lan_service_port: u16,
@@ -105,7 +106,7 @@ pub struct Settings {
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { client: ClientSettings::default(), application_hotkeys:None, theme_preference:super::theme::DEFAULT_PREFERENCE, color_theme:Default::default(), language:uu_i18n::Language::default(), lan_discovery:true,
+        Self { client: ClientSettings::default(), application_hotkeys:None, theme_preference:super::theme::DEFAULT_PREFERENCE, color_theme:Default::default(), language:uu_i18n::Language::default(), onboarding_dismissed:false,lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
             device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,close_to_tray:false,show_input_status:false,virtual_display_presets:Default::default(),
@@ -120,6 +121,11 @@ impl std::ops::DerefMut for Settings {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.client }
 }
 impl Settings {
+    pub(super) fn dismiss_onboarding(path: &Path) -> anyhow::Result<()> {
+        let mut latest = Self::load(path)?;
+        latest.onboarding_dismissed = true;
+        latest.save(path)
+    }
     pub fn wallpaper_url(&self) -> &str {
         match self.wallpaper_source {
             WallpaperSource::Photography => PHOTOGRAPHY_WALLPAPER,
@@ -195,8 +201,10 @@ impl Settings {
             "{}", uu_i18n::format!("局域网端口必须在 1–65535 之间"));
         // Automatic HUD/audio changes must not overwrite a broken original.
         // Recheck on every write, including after a second window changes it.
-        Self::load(path)?;
-        save_json(self, path)
+        let latest = Self::load(path)?;
+        let mut merged = self.clone();
+        merged.onboarding_dismissed |= latest.onboarding_dismissed;
+        save_json(&merged, path)
     }
 
     /// A compatibility stream saves only client preferences. Software settings
@@ -549,6 +557,7 @@ impl super::App {
                     });
             });
         self.plugin_actions(plugin_actions);
+        if actions.tutorial {self.onboarding_open = true;}
         if actions.back {
             self.leave_settings();
         }
@@ -692,6 +701,7 @@ impl super::App {
             }
         }
         if actions.about {self.open_about();}
+        if actions.tutorial {self.onboarding_open = true;}
         if actions.refresh_wallpaper && self.settings_draft.wallpaper_enabled {self.background.sync(&self.settings_draft,ctx);self.background.refresh(ctx);}
         if actions.host {self.stream_settings_open=false;self.open_native_host();}
         let apply=actions.apply;

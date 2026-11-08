@@ -2003,5 +2003,16 @@
   "自定义分辨率的宽高须为 2–8192 之间的偶数": "Custom resolution dimensions must be even numbers between 2 and 8192",
   "核对上次日志、驱动、配置及显示状态，确认操作已完成或撤销本次未完成变更；驱动已卸载时核验后封存旧记录。不会重装驱动、新建屏幕或恢复历史桌面布局。": "Checks the previous journal, driver, configuration and display state to confirm completion or roll back the unfinished changes. If the driver was uninstalled, verifies its removal and archives the old record. Does not reinstall, create displays, or restore a historical desktop layout.",
   "串流时静音主机扬声器": "Mute host speakers while streaming",
-  "默认开启；控制端仍可收听。最后一路声音串流结束后恢复原状态；手动调整主机声音时以手动操作为准。": "Enabled by default; audio still plays on the viewer. The original host state is restored after the last audio stream ends. Manual changes on the host take precedence."
+  "默认开启；控制端仍可收听。最后一路声音串流结束后恢复原状态；手动调整主机声音时以手动操作为准。": "Enabled by default; audio still plays on the viewer. The original host state is restored after the last audio stream ends. Manual changes on the host take precedence.",
+  "新手教程": "Getting started",
+  "只有一台电脑也能测试": "Test with a single computer",
+  "本机串流测试通过回环连接验证采集、编解码和显示，无需另一台电脑或开启共享服务。": "The local streaming test verifies capture, encoding, decoding and display over a loopback connection. No second computer or sharing service is required.",
+  "配对方式和安全连接密码可在服务管理的配对页设置。": "Choose pairing methods and a connection password on the service pairing page.",
+  "可在设置 → 常规中随时打开新手教程。": "You can reopen this guide anytime in Settings → General.",
+  "关闭教程": "Close guide",
+  "打开新手教程": "Open getting started guide",
+  "随时重看连接说明；只有一台电脑时也可以进行本机串流测试。": "Review connection instructions anytime, or test local streaming with a single computer.",
+  "教程已关闭，但偏好未能保存；原设置文件已保留。": "The guide is closed, but its preference could not be saved. Your original settings file was preserved.",
+  "尚未添加设备": "No devices added yet",
+  "添加远端电脑，或先进行本机串流测试。": "Add a remote computer, or try the local streaming test first."
 }

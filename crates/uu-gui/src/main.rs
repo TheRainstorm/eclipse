@@ -56,6 +56,7 @@ mod service_ui;
 mod server_config_ui;
 mod remote_admin_ui;
 mod pairing_ui;
+mod onboarding;
 mod connection_details;
 mod lan_ui;
 mod lan_host_ui;
@@ -181,6 +182,7 @@ struct App {
     connection_details_open:bool,
     remote_admin_ui:remote_admin_ui::RemoteAdminUi,
     pairing_ui:pairing_ui::ClientUi,
+    onboarding_open: bool,
     lan: lan_ui::LanUi,
     clipboard_window:std::sync::Arc<std::sync::atomic::AtomicIsize>,
     native_host: native_host_ui::NativeHostUi,
@@ -449,6 +451,8 @@ impl App {
         if stream_target.is_some() {
             if let Ok(value)=std::env::var("UU_VSYNC"){preferences.vsync=value!="0";}
         }
+        let workspace = workspace_ui::Workspace::load(config.as_ref(),(preferences.lan_service_port,preferences.lan_discovery_port));
+        let onboarding_open = stream_target.is_none() && workspace.book.devices.is_empty() && !preferences.onboarding_dismissed;
         let mut app = Self {
             plugins,plugin_client_error,client_support,
             instance_id:NEXT_INSTANCE.fetch_add(1,std::sync::atomic::Ordering::Relaxed),
@@ -459,10 +463,11 @@ impl App {
             plugin_payload,
             native_ui: native_ui::NativeUi::default(),
             gamepad:Default::default(),
-            workspace:workspace_ui::Workspace::load(config.as_ref(),(preferences.lan_service_port,preferences.lan_discovery_port)),
+            workspace,
             connection_details_open:false,
             remote_admin_ui:Default::default(),
             pairing_ui:Default::default(),
+            onboarding_open,
             lan:lan_ui::LanUi::new(config.as_ref().map(|c|c.at("native-lan"))),
             clipboard_window:std::sync::Arc::new(std::sync::atomic::AtomicIsize::new(platform.window_id())),
             native_host: native_host_ui::NativeHostUi::default(),
@@ -1556,6 +1561,7 @@ impl App {
         self.about_ui(ctx);
         self.connection_details_ui(ctx);
         if self.stream_target.is_none(){self.workspace_dialogs(ctx);}
+        self.onboarding_ui(ctx);
         self.device_pairing_ui(ctx);
         if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {
             self.audio_save_after=None;self.persist_preferences();
