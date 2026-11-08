@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-07T21:00:54Z",
+  "updated_at": "2026-11-08T05:25:46Z",
   "files": {
     ".cargo/config.toml": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "dbe369c967c40874e0fe09599e848beb17fe13d055b0df0e5d6a537d19b1e209",
-      "size": 208754,
-      "normalized_sha256": "dbe369c967c40874e0fe09599e848beb17fe13d055b0df0e5d6a537d19b1e209"
+      "sha256": "c72b33447b212dadf6f1bd692a453508f20a7f069076f28a3022a2c6334a6db9",
+      "size": 208791,
+      "normalized_sha256": "c72b33447b212dadf6f1bd692a453508f20a7f069076f28a3022a2c6334a6db9"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -3616,9 +3616,9 @@
     },
     "tools/linux/install.py": {
       "role": "index",
-      "sha256": "dfa81d1139778559423517b244a528493ae6c2018cf576ca332095c21635ac2b",
-      "size": 7620,
-      "normalized_sha256": "dfa81d1139778559423517b244a528493ae6c2018cf576ca332095c21635ac2b"
+      "sha256": "191b2b1cebb08befda1948bfe25776bab9693b11afcdbfd6e178a566d534f93b",
+      "size": 12317,
+      "normalized_sha256": "191b2b1cebb08befda1948bfe25776bab9693b11afcdbfd6e178a566d534f93b"
     },
     "tools/linux/package.py": {
       "role": "index",
@@ -3868,9 +3868,9 @@
     },
     "tools/release/test_linux_package.py": {
       "role": "observe",
-      "sha256": "3504620a8f3112beebd15513b3417d0072b2f88ae8c1d1b6a778aa22eae5e84e",
-      "size": 12780,
-      "normalized_sha256": "3504620a8f3112beebd15513b3417d0072b2f88ae8c1d1b6a778aa22eae5e84e"
+      "sha256": "df347be4bb01417cc95d197a3ee158124284155d200f8387012d88491ce9d3d7",
+      "size": 18052,
+      "normalized_sha256": "df347be4bb01417cc95d197a3ee158124284155d200f8387012d88491ce9d3d7"
     },
     "tools/release/test_source.py": {
       "role": "observe",

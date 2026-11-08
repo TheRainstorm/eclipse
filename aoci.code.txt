@@ -653,7 +653,7 @@ generate.py[OV5T]: F:根据指定锁定Cargo清单向指定输出目录生成依
 .gitignore[FV2T]: F:忽略Linux工具Python字节码缓存 | R:- | A:- | S:-
 README.txt[SV4T]: F:提供Linux Eclipse完整包安装、兼容别名与插件及Ctrl+Alt默认命令说明 | R:code:tools/linux/install.py | A:- | S:保留旧用户数据，门户控制受系统授权；升级需重开旧进程
 audio_smoke.py[TH5T]: F:在自有PipeWire空输出上确认Opus播放信号 | R:code:crates/uu-media/examples/audio_probe.rs | A:main | S:只记录自有测试音，不录工作桌面声音
-install.py[OV7S]: F:核验Linux完整包后安装Eclipse版本目录并创建主桌面入口及旧命令别名 | R:code:tools/linux/package.py | A:verify_package,executables,desktop_entry,main | S:旧桌面项隐藏且重指新目录，旧版本保留；format4使用新名称，3起限定SDK标准库；复用仍核摘要，Exec独立转义不经shell
+install.py[OV7M]: F:核验Linux完整包及匹配插件后安装版本目录，切换桌面入口和兼容命令 | R:code:tools/linux/package.py | A:verify_package,verify_installation,release_name,desktop_entry,main | S:开发合包按主程序与插件提交分目录，完整载荷先入库再切current；复用核摘要且保旧版本；旧桌面项隐藏，Exec独立转义不经shell
 package.py[OV7S]: F:构建含VAAPI、PyroWave和共享SDK的eclipse前缀Linux包并核验归档缓存 | R:code:tools/linux/install.py,code:tools/release/plugin_sdk.py,code:tools/release/source.py | A:main,source_revision | S:format4收齐新命名程序与SDK标准库；源码须干净且不需具体插件；缓存恢复复核全部载荷和来源及执行权限
 wayland_smoke.py[TU5M]: F:在自有无头合成器检查兼容串流、窗口及Ctrl+Alt默认快捷键和输入释放 | R:code:crates/uu-gui/examples/wayland_input.rs | A:main | S:须明确既有账号和目标，凭据副本仅隔离目录；键鼠只向自有合成器，远端固定文本检查须专用夹具
 
