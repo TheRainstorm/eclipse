@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Rebuild and publish an existing immutable tag using this workflow revision; empty builds this ref only'
+        description: 'Existing remote tag including v (e.g. v0.24.0); push a new tag first. Empty only builds the selected ref'
         required: false
         type: string
 
