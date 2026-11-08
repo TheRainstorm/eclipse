@@ -86,6 +86,89 @@ class LinuxPackageTests(unittest.TestCase):
         (package / 'version.json').write_text(json.dumps(manifest))
         return package
 
+    def paired_package(self, revision='a' * 40, plugin_revision='b' * 40):
+        package = self.package(revision)
+        addon = package / 'plugins/uu'; addon.mkdir(parents=True)
+        shutil.copy2('/bin/true', addon / 'libuu_compat.so')
+        plugin = dict(api_version=1, id='uu', sdk_id='f' * 64, library='libuu_compat.so',
+                      library_sha256=hashlib.sha256((addon / 'libuu_compat.so').read_bytes()).hexdigest())
+        (addon / 'plugin.json').write_text(json.dumps(plugin))
+        for name in ['README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt', 'ENGINE-THIRD-PARTY-NOTICES.txt']:
+            (addon / name).write_text('owned extension fixture/' + name)
+        self.bind_pair(package, plugin_revision)
+        return package
+
+    def bind_pair(self, package, plugin_revision='b' * 40):
+        payload = {path.relative_to(package).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                   for path in package.rglob('*') if path.is_file() and path.name != 'development.json'}
+        (package / 'development.json').write_text(json.dumps(dict(format_version=1, main_commit=json.loads((package / 'version.json').read_text())['source_commit'],
+            plugin_commit=plugin_revision, declared_engine_commit='c' * 40, sha256=payload)))
+
+    def install(self, package, prefix):
+        with patch('sys.argv', ['install.py', '--package', str(package), '--prefix', str(prefix)]), contextlib.redirect_stdout(io.StringIO()):
+            installer.main()
+
+    def test_paired_bundle_installs_all_files_before_promoting_current(self):
+        package = self.paired_package(); prefix = self.root / 'installed'
+        original_replace = Path.replace
+        def promote(path, target):
+            if target == prefix / 'opt/eclipse/current':
+                installed = path.resolve()
+                _, metadata, payload = installer.verify_installation(installed)
+                self.assertEqual(metadata['plugin_commit'], 'b' * 40)
+                self.assertTrue(all((installed / name).is_file() for name in payload))
+            return original_replace(path, target)
+        with patch.object(Path, 'replace', promote):
+            self.install(package, prefix)
+        current = prefix / 'opt/eclipse/current'
+        self.assertEqual(current.resolve().name, 'a' * 12 + '-' + 'b' * 12)
+        self.assertEqual(installer.verify_installation(current)[1]['plugin_commit'], 'b' * 40)
+
+    def test_new_plugin_commit_retains_previous_paired_installation(self):
+        package = self.paired_package(); prefix = self.root / 'installed'
+        self.install(package, prefix)
+        first = (prefix / 'opt/eclipse/current').resolve()
+        self.bind_pair(package, 'd' * 40)
+        self.install(package, prefix)
+        self.assertNotEqual((prefix / 'opt/eclipse/current').resolve(), first)
+        self.assertEqual(installer.verify_installation(first)[1]['plugin_commit'], 'b' * 40)
+
+    def test_extension_installation_uses_manifest_identity(self):
+        package = self.paired_package(); prefix = self.root / 'installed'
+        addon = package / 'plugins/example-addon'
+        (package / 'plugins/uu').rename(addon)
+        (addon / 'libuu_compat.so').rename(addon / 'example.so')
+        plugin = json.loads((addon / 'plugin.json').read_text())
+        plugin.update(id='example-addon', library='example.so')
+        (addon / 'plugin.json').write_text(json.dumps(plugin)); self.bind_pair(package)
+        self.install(package, prefix)
+        self.assertTrue((prefix / 'opt/eclipse/current/plugins/example-addon/example.so').is_file())
+
+    def test_incompatible_or_incomplete_plugin_never_changes_installation(self):
+        first = self.package(); second = self.paired_package('d' * 40)
+        prefix = self.root / 'installed'; self.install(first, prefix)
+        current = prefix / 'opt/eclipse/current'; before = current.resolve()
+        plugin_path = second / 'plugins/uu/plugin.json'
+        original = plugin_path.read_text()
+        for change in ({'sdk_id': '0' * 64}, {'library': '../outside.so'}, {'library_sha256': '0' * 64}):
+            with self.subTest(change=change):
+                plugin_path.write_text(json.dumps(dict(json.loads(original), **change))); self.bind_pair(second)
+                with self.assertRaises(ValueError): self.install(second, prefix)
+                self.assertEqual(current.resolve(), before)
+        plugin_path.write_text(original); self.bind_pair(second)
+        (second / 'plugins/uu/LICENSE').unlink()
+        with self.assertRaises(ValueError): self.install(second, prefix)
+        self.assertEqual(current.resolve(), before)
+
+    def test_corrupt_existing_plugin_blocks_reuse_without_switching_current(self):
+        package = self.paired_package(); prefix = self.root / 'installed'; self.install(package, prefix)
+        first = (prefix / 'opt/eclipse/current').resolve()
+        second = self.package('d' * 40); self.install(second, prefix)
+        before = (prefix / 'opt/eclipse/current').resolve()
+        (first / 'plugins/uu/libuu_compat.so').write_bytes(b'damaged extension')
+        with self.assertRaises(ValueError): self.install(package, prefix)
+        self.assertEqual((prefix / 'opt/eclipse/current').resolve(), before)
+
     def test_every_payload_is_checked_including_installer_and_readme(self):
         package = self.package();installer.verify_package(package)
         for name in [*installer.PAYLOAD,*self.runtime]:

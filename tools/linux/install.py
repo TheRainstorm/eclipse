@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import tempfile
@@ -52,6 +52,73 @@ def verify_package(package):
     return manifest
 
 
+def verify_installation(package):
+    """A development bundle binds the main payload and matching extensions.
+
+    Ordinary release packages keep their original contract and install identity.
+    Account/configuration files are never part of either payload.
+    """
+    manifest = verify_package(package)
+    files = [*required_files(manifest), 'version.json']
+    metadata = package / 'development.json'
+    if not metadata.exists() and not metadata.is_symlink():
+        return manifest, None, files
+    if metadata.is_symlink() or not metadata.is_file() or metadata.stat().st_size > 1024 * 1024:
+        raise ValueError('Invalid development manifest')
+    development = json.loads(metadata.read_text())
+    if not isinstance(development, dict) or development.get('format_version') != 1 or manifest.get('format_version') != 4:
+        raise ValueError('Unsupported Linux development bundle')
+    for key in ('main_commit', 'plugin_commit', 'declared_engine_commit'):
+        if not isinstance(development.get(key), str) or not re.fullmatch(r'[0-9a-f]{40}', development[key]):
+            raise ValueError('Invalid development source identity')
+    if development['main_commit'] != manifest['source_commit']:
+        raise ValueError('Development main source differs')
+    hashes = development.get('sha256')
+    if not isinstance(hashes, dict) or not set(files).issubset(hashes):
+        raise ValueError('Incomplete development payload inventory')
+    extensions = {}
+    for name in set(hashes) - set(files):
+        path = PurePosixPath(name)
+        if (name != path.as_posix() or len(path.parts) != 3 or path.parts[0] != 'plugins'
+                or not re.fullmatch(r'[a-z0-9-]{1,64}', path.parts[1])
+                or path.parts[2] in ('.', '..') or '\\' in name):
+            raise ValueError('Invalid development extension path')
+        extensions.setdefault(path.parts[1], set()).add(path.parts[2])
+    if not extensions or len(extensions) > 128:
+        raise ValueError('Invalid development extension inventory')
+    for identifier, names in extensions.items():
+        folder = package / 'plugins' / identifier
+        plugin_path = folder / 'plugin.json'
+        if any(path.is_symlink() for path in (package/'plugins', folder, plugin_path)) or not plugin_path.is_file() or plugin_path.stat().st_size > 65536:
+            raise ValueError('Invalid development plugin manifest')
+        plugin = json.loads(plugin_path.read_text())
+        if (not isinstance(plugin, dict) or plugin.get('id') != identifier or plugin.get('api_version') != 1
+                or plugin.get('sdk_id') != manifest['plugin_sdk_id']
+                or not isinstance(plugin.get('library'), str)
+                or not re.fullmatch(r'[A-Za-z0-9_-]+\.so', plugin['library'])):
+            raise ValueError('Development plugin does not match the application SDK')
+        extension_files = {'plugin.json', plugin['library'], 'README.md', 'LICENSE', 'LICENSE-MIT',
+                           'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt', 'ENGINE-THIRD-PARTY-NOTICES.txt'}
+        if names != extension_files:
+            raise ValueError('Incomplete development extension payload')
+        if hashes['plugins/' + identifier + '/' + plugin['library']] != plugin.get('library_sha256'):
+            raise ValueError('Development plugin library digest differs')
+    payload = sorted(hashes)
+    for name in payload:
+        path = package / name
+        expected = hashes[name]
+        if (not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected)
+                or path.is_symlink() or not path.is_file()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != expected):
+            raise ValueError(f'Development integrity check failed: {name}')
+    return manifest, development, [*payload, 'development.json']
+
+
+def release_name(manifest, development):
+    name = manifest['source_commit'][:12]
+    return name + '-' + development['plugin_commit'][:12] if development else name
+
+
 def desktop_value(value):
     return str(value).replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
 
@@ -83,11 +150,15 @@ def main():
     parser.add_argument('--package', type=Path, default=Path(__file__).resolve().parent)
     args = parser.parse_args()
     package = args.package.resolve()
-    manifest = verify_package(package)
+    manifest, development, payload = verify_installation(package)
     revision = manifest['source_commit']
     gui,cli=executables(manifest)
-    for name in [gui,cli,*(['libpyrowave-shared.so.1'] if manifest.get('format_version',1)>=2 else []),*manifest.get('plugin_runtime',[])]:
-        deps = subprocess.check_output(['ldd', str(package / name)], text=True)
+    libraries = [gui,cli,*(['libpyrowave-shared.so.1'] if manifest.get('format_version',1)>=2 else []),*manifest.get('plugin_runtime',[])]
+    if development:
+        libraries.extend(name for name in payload if name.startswith('plugins/') and name.endswith('.so'))
+    environment = dict(os.environ, LD_LIBRARY_PATH=str(package) + (':' + os.environ['LD_LIBRARY_PATH'] if os.environ.get('LD_LIBRARY_PATH') else ''))
+    for name in libraries:
+        deps = subprocess.check_output(['ldd', str(package / name)], text=True, env=environment)
         if 'not found' in deps: raise RuntimeError(f'Missing shared libraries for {name}: {deps}')
     prefix = args.prefix.expanduser().resolve()
     if any(ord(c) < 32 for c in str(prefix)):
@@ -96,11 +167,14 @@ def main():
     desktop_contents = [(False, desktop_entry(base,gui=gui)), (True, desktop_entry(base, legacy=True,gui=gui))]
     releases = base / 'releases'
     releases.mkdir(parents=True, exist_ok=True)
-    dest = releases / revision[:12]
+    dest = releases / release_name(manifest, development)
+    if dest.is_symlink():
+        raise ValueError('Release directory must not be a symbolic link')
     if not dest.exists():
         staging = Path(tempfile.mkdtemp(prefix='.install-', dir=releases))
         try:
-            for name in [*required_files(manifest), 'version.json']:
+            for name in payload:
+                (staging / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(package / name, staging / name)
             for name in [gui,cli]: (staging / name).chmod(0o755)
             staging.rename(dest)
@@ -109,9 +183,11 @@ def main():
     else:
         # Reusing a release must not promote a damaged or misidentified install.
         # Build timestamps may differ for a legitimate rebuild of the same source.
-        existing = verify_package(dest)
+        existing, existing_development, _ = verify_installation(dest)
         if existing['source_commit'] != revision or existing['sha256'] != manifest['sha256']:
             raise ValueError('Existing release differs; refusing to overwrite a running installation')
+        if existing_development != development:
+            raise ValueError('Existing development release differs; refusing to overwrite it')
     def link(target, path):
         path.parent.mkdir(parents=True, exist_ok=True)
         pending = path.with_name(path.name + f'.tmp-{os.getpid()}')
