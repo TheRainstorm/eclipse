@@ -57,7 +57,8 @@ class BuildProvenanceTests(unittest.TestCase):
         crate = self.workspace(self.root)
         revision = self.commit_fixture()
         values, output = self.run_script(crate)
-        self.assertEqual(values, {'UU_BUILD_COMMIT': revision, 'UU_BUILD_DIRTY': 'false'})
+        self.assertEqual(values, {'UU_BUILD_COMMIT': revision, 'UU_BUILD_TAG': '',
+                                  'UU_BUILD_DIRTY': 'false'})
         self.assertIn('.git/HEAD', output.replace('\\', '/'))
         self.assertIn('.git/index', output.replace('\\', '/'))
         (crate / 'src/main.rs').write_text('fn main() { /* changed */ }\n')
@@ -66,16 +67,38 @@ class BuildProvenanceTests(unittest.TestCase):
         (crate / 'src/new.rs').write_text('// not committed yet\n')
         self.assertEqual(self.run_script(crate)[0]['UU_BUILD_DIRTY'], 'true')
 
+    def test_exact_release_tag_survives_packing_but_does_not_label_descendants(self):
+        crate = self.workspace(self.root)
+        revision = self.commit_fixture()
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                 'tag', '-a', 'v0.24.0', '-m', 'isolated release')
+        values, output = self.run_script(crate)
+        self.assertEqual(values, {'UU_BUILD_COMMIT': revision, 'UU_BUILD_TAG': 'v0.24.0',
+                                  'UU_BUILD_DIRTY': 'false'})
+        self.assertIn('.git/refs/tags', output.replace('\\', '/'))
+        self.git('pack-refs', '--all')
+        values, output = self.run_script(crate)
+        self.assertEqual(values['UU_BUILD_TAG'], 'v0.24.0')
+        self.assertIn('.git/packed-refs', output.replace('\\', '/'))
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                 'commit', '--allow-empty', '-qm', 'development after release')
+        values, _ = self.run_script(crate)
+        self.assertEqual(values, {'UU_BUILD_COMMIT': self.git('rev-parse', 'HEAD'),
+                                  'UU_BUILD_TAG': '', 'UU_BUILD_DIRTY': 'false'})
+
     def test_source_archive_does_not_borrow_parent_repository_identity(self):
         (self.root / 'README').write_text('unrelated repository\n')
         self.commit_fixture()
+        self.git('tag', 'v9.9.9')
         crate = self.workspace(self.root / 'downloaded-source')
         values, _ = self.run_script(crate)
-        self.assertEqual(values, {'UU_BUILD_COMMIT': '', 'UU_BUILD_DIRTY': 'unknown'})
+        self.assertEqual(values, {'UU_BUILD_COMMIT': '', 'UU_BUILD_TAG': '',
+                                  'UU_BUILD_DIRTY': 'unknown'})
 
     def test_source_archive_without_git_is_supported(self):
         values, _ = self.run_script(self.workspace(self.root))
-        self.assertEqual(values, {'UU_BUILD_COMMIT': '', 'UU_BUILD_DIRTY': 'unknown'})
+        self.assertEqual(values, {'UU_BUILD_COMMIT': '', 'UU_BUILD_TAG': '',
+                                  'UU_BUILD_DIRTY': 'unknown'})
 
 
 if __name__ == '__main__':
