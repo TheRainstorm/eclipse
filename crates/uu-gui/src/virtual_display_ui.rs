@@ -1388,7 +1388,7 @@ mod tests {
         }
         assert!(texts.iter().any(|text| text == "新建虚拟显示器"));
         assert!(texts.iter().any(|text| text == "虚拟显示器上限"));
-        assert!(texts.iter().any(|text| text == "已创建：1 / 2"));
+        assert!(texts.iter().any(|text| text == "已创建：1 / 1"));
         assert!(texts.iter().any(|text| text.contains("Generated desk")));
         assert!(!texts.iter().any(|text| text == "选择管理对象"));
         assert!(!texts.iter().any(|text| text.starts_with("管理对象：")));

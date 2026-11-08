@@ -93,24 +93,29 @@ pub struct Settings {
     pub lan_discovery_port: u16,
     pub device_view: DeviceView,
     pub wallpaper_enabled: bool,
+    #[serde(default)]
     pub app_autostart:bool,
+    #[serde(default)]
     pub close_to_tray:bool,
     /// Last acknowledged host value for the tray; the host owns the policy.
     pub show_input_status:bool,
     pub virtual_display_presets: super::virtual_display_presets::Presets,
+    #[serde(default)]
     pub wallpaper_source: WallpaperSource,
     pub wallpaper_favorite: Option<String>,
     /// Retained while built-in sources are selected, so returning to Custom API
     /// restores the user's own URL.
+    #[serde(default="legacy_wallpaper_api")]
     pub wallpaper_api: String,
 }
+fn legacy_wallpaper_api()->String {PHOTOGRAPHY_WALLPAPER.into()}
 impl Default for Settings {
     fn default() -> Self {
         Self { client: ClientSettings::default(), application_hotkeys:None, theme_preference:super::theme::DEFAULT_PREFERENCE, color_theme:Default::default(), language:uu_i18n::Language::default(), onboarding_dismissed:false,lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
-            device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,close_to_tray:false,show_input_status:false,virtual_display_presets:Default::default(),
-            wallpaper_source:WallpaperSource::Photography, wallpaper_favorite:None, wallpaper_api:PHOTOGRAPHY_WALLPAPER.into() }
+            device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:true,close_to_tray:true,show_input_status:false,virtual_display_presets:Default::default(),
+            wallpaper_source:WallpaperSource::Anime, wallpaper_favorite:None, wallpaper_api:ANIME_WALLPAPER.into() }
     }
 }
 impl std::ops::Deref for Settings {
@@ -574,12 +579,11 @@ impl super::App {
                 self.set_settings_notice(uu_i18n::format!("无法应用：{error:#}"));
                 return;
             }
-            if self.preferences.app_autostart != self.settings_draft.app_autostart {
-                if let Err(error) = super::app_startup::apply(self.settings_draft.app_autostart) {
-                    self.settings_storage_error = true;
-                    self.set_settings_notice(uu_i18n::format!("无法保存软件自启动：{error:#}"));
-                    return;
-                }
+            // Saving also reconciles a fresh default with the OS registration.
+            if let Err(error) = super::app_startup::apply(self.settings_draft.app_autostart) {
+                self.settings_storage_error = true;
+                self.set_settings_notice(uu_i18n::format!("无法保存软件自启动：{error:#}"));
+                return;
             }
             let wallpaper_changed = self.preferences.wallpaper_identity() != self.settings_draft.wallpaper_identity()
                 || self.preferences.wallpaper_enabled != self.settings_draft.wallpaper_enabled;
@@ -709,7 +713,7 @@ impl super::App {
         let recover=actions.recover;
         if apply {
             if let Err(error)=self.settings_draft.validate() {self.set_settings_notice(uu_i18n::format!("无法应用：{error:#}"));return;}
-            if !child && self.preferences.app_autostart!=self.settings_draft.app_autostart {
+            if !child {
                 if let Err(error)=super::app_startup::apply(self.settings_draft.app_autostart){self.set_settings_notice(uu_i18n::format!("无法保存软件自启动：{error:#}"));return;}
             }
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
@@ -934,7 +938,7 @@ mod tests {
 
     #[test]
     fn wallpaper_builtin_sources_retain_custom_url_and_validate_only_active_api() {
-        let mut settings=Settings {wallpaper_api:"invalid custom draft".into(),..Default::default()};
+        let mut settings=Settings {wallpaper_source:WallpaperSource::Photography,wallpaper_api:"invalid custom draft".into(),..Default::default()};
         assert_eq!(settings.wallpaper_url(),PHOTOGRAPHY_WALLPAPER);
         assert!(settings.validate().is_ok());
         settings.wallpaper_source=WallpaperSource::Anime;
@@ -951,8 +955,8 @@ mod tests {
         assert!(settings.validate().is_ok());
         assert_eq!(settings.wallpaper_url(),"https://example.invalid/image");
         super::super::settings_page::SoftwareSection::Appearance.reset(&mut settings);
-        assert_eq!(settings.wallpaper_source,WallpaperSource::Photography);
-        assert_eq!(settings.wallpaper_url(),PHOTOGRAPHY_WALLPAPER);
+        assert_eq!(settings.wallpaper_source,WallpaperSource::Anime);
+        assert_eq!(settings.wallpaper_url(),ANIME_WALLPAPER);
     }
 
     #[test]

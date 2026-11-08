@@ -824,7 +824,7 @@ mod tests {
                     let bounds=layout.paint(ui,view,appearance).rect;
                     assert!((bounds.top()-(view.height()*position).min(view.height()-bounds.height())).abs()<0.01);
                     assert!(view.contains_rect(bounds));
-                    if position==HudAppearance::default().vertical_position {assert!((bounds.top()-36.).abs()<0.01);}
+                    if position==HudAppearance::default().vertical_position {assert!((bounds.top()-35.64).abs()<0.01);}
                 }
             });
         });

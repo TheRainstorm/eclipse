@@ -66,7 +66,7 @@ pub struct HudAppearance {
     pub diagnostic_opacity:f32,
 }
 impl Default for HudAppearance {
-    fn default()->Self {Self {vertical_position:1./30.,opacity:0.75,diagnostic_opacity:0.8}}
+    fn default()->Self {Self {vertical_position:0.033,opacity:0.75,diagnostic_opacity:0.8}}
 }
 impl HudAppearance {
     fn validate(&self)->Result<()> {
@@ -85,6 +85,7 @@ pub struct ClientSettings {
     pub follow_remote_fps: bool,
     /// Local mode takes precedence over the legacy remote-mode flag.
     pub follow_local_fps:bool,
+    #[serde(default)]
     pub limit_fps_to_local:bool,
     // Legacy profile field: do not carry an obsolete exclusive-layout request
     // into a new connection after the control has been retired.
@@ -112,10 +113,11 @@ pub struct ClientSettings {
     pub software_decoder: bool,
     pub prefer_hevc: bool,
     pub relative_mouse: bool,
-    #[serde(alias = "remote_cursor", deserialize_with = "cursor")]
+    #[serde(default, alias = "remote_cursor", deserialize_with = "cursor")]
     pub cursor_mode: CursorMode,
     pub clipboard: bool,
     /// Native consent is independent of the compatibility clipboard default.
+    #[serde(default)]
     pub native_clipboard: bool,
     pub gamepad: bool,
     /// Forward client commands except the configured nested-mode toggle.
@@ -128,11 +130,11 @@ fn preserve_display_layout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<cra
 fn default_network_budget()->u32 {100}
 impl Default for ClientSettings {
     fn default() -> Self {
-        Self { fps:60, follow_remote_fps:true,follow_local_fps:false,limit_fps_to_local:false, display_mode:crate::screen_control::DisplayMode::Preserve,
-            bitrate:6,custom_mbps:55,network_budget_mbps:default_network_budget(),resolution:0,custom_resolution:[1920,1080],codec:CodecPreference::Auto,rate_control:None,
-            volume:100,muted:false,hud:false,hud_appearance:HudAppearance::default(),hotkeys:crate::hotkeys::Bindings::default(),capture_keyboard:true,
-            vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
-            cursor_mode:CursorMode::Remote,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
+        Self { fps:60, follow_remote_fps:true,follow_local_fps:false,limit_fps_to_local:true, display_mode:crate::screen_control::DisplayMode::Preserve,
+            bitrate:0,custom_mbps:55,network_budget_mbps:default_network_budget(),resolution:0,custom_resolution:[1920,1080],codec:CodecPreference::Auto,rate_control:None,
+            volume:100,muted:false,hud:true,hud_appearance:HudAppearance::default(),hotkeys:crate::hotkeys::Bindings::default(),capture_keyboard:true,
+            vsync:false,hdr:true,software_decoder:false,prefer_hevc:true,relative_mouse:false,
+            cursor_mode:CursorMode::Both,clipboard:true,native_clipboard:true,gamepad:true,nested_shortcuts:false }
     }
 }
 impl ClientSettings {
@@ -280,6 +282,7 @@ mod clipboard_tests {
     use super::*;
     #[test]
     fn native_clipboard_consent_is_independent_and_survives_client_profile_roundtrip() {
+        assert!(ClientSettings::default().native_clipboard);
         let mut settings:ClientSettings=serde_json::from_str(r#"{"clipboard":true}"#).unwrap();
         assert!(settings.clipboard);assert!(!settings.native_clipboard);
         settings.native_clipboard=true;
@@ -314,7 +317,7 @@ mod bitrate_tests {
     }
     #[test]
     fn local_and_custom_resolution_resolve_to_valid_wire_bounds_without_changing_source_modes() {
-        let mut settings=ClientSettings{resolution:LOCAL_RESOLUTION,follow_local_fps:true,..Default::default()};
+        let mut settings=ClientSettings{resolution:LOCAL_RESOLUTION,follow_local_fps:true,bitrate:6,..Default::default()};
         let local=LocalDisplay{size:Some([3072,1920]),refresh_millihz:Some(120_000)};
         let request=settings.resolved_request(Some(240),local,240,Some(20_000));
         assert_eq!(request.bounds,Some([3072,1920]));assert_eq!(request.fps,120);assert_eq!(request.bitrate_kbps,Some(20_000));request.validate().unwrap();
@@ -351,7 +354,8 @@ mod bitrate_tests {
     #[test]
     fn recommended_bitrate_is_default_and_fixed_presets_keep_their_values() {
         let mut s=ClientSettings::default();
-        assert_eq!(s.bitrate,6);assert_eq!(s.network_budget_mbps,100);assert!(s.native_request().bitrate_kbps.is_none());
+        assert_eq!(s.network_budget_mbps,100);assert!(s.native_request().bitrate_kbps.is_none());
+        s.bitrate=6;
         assert_eq!(s.with_budget_kbps(Some(12_345)).bitrate_kbps,Some(12_345));
         assert_eq!(s.with_budget_kbps(None).bitrate_kbps,None);
         for (index,kbps) in [(1,30_000),(2,14_000),(3,8_000),(4,55_000)] {

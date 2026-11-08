@@ -2,6 +2,10 @@ use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+// These ownership scenarios exercise two allocations; production defaults are
+// independent of the explicitly configured capacity in this fixture.
+const TEST_DISPLAY_LIMIT: u16 = 2;
+
 #[derive(Default)]
 struct Fake {
     targets: Mutex<Vec<Target>>,
@@ -259,7 +263,7 @@ fn fixture() -> (Arc<Manager>, Arc<Fake>) {
             editing_mode: AtomicBool::new(false),
             hosts: Mutex::default(),
             policy:Mutex::default(),
-            limit:std::sync::atomic::AtomicU16::new(DEFAULT_DISPLAY_LIMIT),
+            limit:std::sync::atomic::AtomicU16::new(TEST_DISPLAY_LIMIT),
         }),
         fake,
     )
@@ -621,7 +625,7 @@ fn another_manager(backend: &Arc<Fake>) -> Arc<Manager> {
             editing_mode: AtomicBool::new(false),
         hosts: Mutex::default(),
         policy:Mutex::default(),
-            limit:std::sync::atomic::AtomicU16::new(DEFAULT_DISPLAY_LIMIT),
+            limit:std::sync::atomic::AtomicU16::new(TEST_DISPLAY_LIMIT),
     })
 }
 #[test]
@@ -862,7 +866,7 @@ fn common_create_prepares_missing_driver_once_before_allocating_distinct_leases(
     assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst), 1);
     assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 1);
     assert_eq!(manager.status().unwrap().available_slots, 0);
-    assert_eq!(backend.targets.lock().unwrap().len(), 2, "default limit prepares two targets, never a hidden batch of sixteen");
+    assert_eq!(backend.targets.lock().unwrap().len(), 2, "configured limit prepares two targets, never a hidden batch of sixteen");
     manager.remove(a.id).unwrap();
     manager.remove(b.id).unwrap();
 }
@@ -1098,7 +1102,9 @@ fn removed_driver_recovery_failure_never_downloads_or_creates_a_replacement() {
 fn saved_policy(manager:&Manager)->std::path::PathBuf {
     let path=std::env::temp_dir().join(format!("eclipse-saved-displays-{}",Uuid::new_v4()));
     std::fs::create_dir_all(&path).unwrap();
-    manager.configure_saved_displays(&path).unwrap();path
+    manager.configure_saved_displays(&path).unwrap();
+    manager.set_limit_persisted(TEST_DISPLAY_LIMIT).unwrap();
+    path
 }
 
 #[test]

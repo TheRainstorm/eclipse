@@ -281,7 +281,7 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-pub const DEFAULT_DISPLAY_LIMIT:u16=2;
+pub const DEFAULT_DISPLAY_LIMIT:u16=1;
 /// Current native display catalog and management envelopes contain at most 16 outputs.
 pub const MAX_DISPLAY_LIMIT:u16=16;
 pub fn default_display_limit()->u16 {DEFAULT_DISPLAY_LIMIT}

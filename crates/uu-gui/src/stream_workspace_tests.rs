@@ -407,7 +407,7 @@ fn deferred_initial_budget_uses_source_geometry_and_reserves_manual_targets() {
     let base=ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into());
     let target=|id,source:&str|StreamTarget{connection:ConnectionTarget::NativeDisplay{connection:Box::new(base.clone()),display:DisplayTarget{id,source:source.into()}},alias:"Generated computer".into(),view_only:true};
     let mut settings=uu_core::client_settings::ClientSettings::default();
-    assert_eq!(settings.bitrate,6);
+    settings.bitrate=6;
     let mut large_screen=generated_screen(1);large_screen.width=3840;large_screen.height=2160;large_screen.refresh_hz=120;large_screen.display_name="Large".into();
     let mut small_screen=generated_screen(2);small_screen.width=1920;small_screen.height=1080;small_screen.refresh_hz=60;small_screen.display_name="Small".into();
     let large=deferred_budget_plan(1,&settings,&target(1,"Large"),Some(&large_screen),Default::default()).unwrap();

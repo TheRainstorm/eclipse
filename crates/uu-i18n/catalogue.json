@@ -2014,5 +2014,6 @@
   "随时重看连接说明；只有一台电脑时也可以进行本机串流测试。": "Review connection instructions anytime, or test local streaming with a single computer.",
   "教程已关闭，但偏好未能保存；原设置文件已保留。": "The guide is closed, but its preference could not be saved. Your original settings file was preserved.",
   "尚未添加设备": "No devices added yet",
-  "添加远端电脑，或先进行本机串流测试。": "Add a remote computer, or try the local streaming test first."
+  "添加远端电脑，或先进行本机串流测试。": "Add a remote computer, or try the local streaming test first.",
+  "默认 1 个；临时和持久虚拟屏共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。": "The default limit is 1. Temporary and persistent virtual displays share this limit; 0 disables creation. Lowering it does not close existing displays."
 }

@@ -41,6 +41,7 @@ pub struct Sharing {
     pub allowed_codecs:Vec<native::VideoCodec>,
     #[serde(skip_serializing)]
     pub max_bitrate_mbps:u32,
+    #[serde(default)]
     pub rate_control:RateMode,
     #[serde(skip_serializing)]
     pub peak_bitrate_mbps:u32,
@@ -56,6 +57,7 @@ pub struct Sharing {
     pub control: bool,
     pub audio: bool,
     pub mute_host_audio: bool,
+    #[serde(default)]
     pub clipboard: bool,
     pub service_port: u16,
     pub discovery_port: u16,
@@ -69,8 +71,8 @@ pub struct Sharing {
 impl Default for Sharing {
     fn default() -> Self {
         Self {
-            allowed_codecs:vec![native::VideoCodec::H264,native::VideoCodec::Hevc,native::VideoCodec::Av1],max_bitrate_mbps:100,
-            codec:Default::default(),rate_control:Default::default(),peak_bitrate_mbps:36,
+            allowed_codecs:vec![native::VideoCodec::H264,native::VideoCodec::Hevc,native::VideoCodec::Av1,native::VideoCodec::Pyrowave],max_bitrate_mbps:100,
+            codec:Default::default(),rate_control:RateMode::Vbr,peak_bitrate_mbps:36,
             name: crate::config::local_device_name(),
             monitor: String::new(),
             fps: 60,
@@ -80,7 +82,7 @@ impl Default for Sharing {
             control: true,
             audio: true,
             mute_host_audio: true,
-            clipboard: false,
+            clipboard: true,
             service_port: crate::native_discovery::SERVICE_PORT,
             discovery_port: crate::native_discovery::DISCOVERY_PORT,
             plugin_services: Vec::new(),
@@ -1042,8 +1044,12 @@ mod tests {
     }
     #[test]
     fn shared_codec_and_rate_policy_survives_storage_and_rejects_invalid_profiles(){
+        let initial=Sharing::default();initial.validate().unwrap();
+        assert_eq!(initial.rate_control,RateMode::Vbr);
+        assert!(initial.clipboard);
         let legacy:Sharing=serde_json::from_value(serde_json::json!({"name":"generated"})).unwrap();
         assert_eq!(legacy.codec,None);assert_eq!(legacy.rate_control,RateMode::Cbr);
+        assert!(!legacy.clipboard,"a missing legacy field must not grant clipboard access");
         assert_eq!(legacy.native().video_policy.unwrap().preferred_codec,None);
         let explicit:Sharing=serde_json::from_value(serde_json::json!({"name":"generated","codec":"h264"})).unwrap();
         assert_eq!(explicit.codec,Some(native::VideoCodec::H264));
