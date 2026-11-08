@@ -4,7 +4,7 @@
 .gitattributes[FV5T]: F:统一文本检出为LF，维持跨平台源码字节与AOCI基线一致 | R:code:.gitignore | A:- | S:二进制由Git自动识别，不强制换行转换
 .gitignore[FS6T]: F:排除构建产物、账号凭据、邀请、本地资料及独立插件开发检出 | R:code:SECURITY.md,code:docs/plugins.md | A:- | S:handoff与notes只留本地，不强制加入Git；plugins目录由独立仓库维护
 AGENTS.md[SG8S]: F:约束本地资料、统一实现原则、提交规范及开发交付和AOCI认知维护 | R:code:.gitignore,code:aoci.txt | A:- | S:修复先以本地开发编号交付，用户确认后才推送，验收并要求release后才递增正式版本及发布；状态测试不能替代桌面验收；索引语义仅由模型基于证据创作
-Cargo.lock[FV6L]: F:锁定0.23.5开发工作区的原生应用、动森UI组件库、共享SDK及跨平台运行依赖 | R:code:Cargo.toml,code:crates/animal-island-ui/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:crates/uu-gui/Cargo.toml | A:- | S:由Cargo生成且使用--locked；独立插件锁不替代主程序SDK证据锁
+Cargo.lock[FV6L]: F:锁定0.23.5开发工作区的原生应用、动森UI组件库、共享SDK及跨平台运行依赖 | R:code:Cargo.toml,code:crates/animal-island-ui/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:crates/uu-media/Cargo.toml | A:- | S:由Cargo生成且使用--locked；独立插件锁不替代主程序SDK证据锁
 Cargo.toml[FV8T]: F:组织0.23.5开发版原生应用、动森UI组件库、共享SDK工作区及统一依赖和构建配置 | R:code:crates/animal-island-ui/Cargo.toml,code:crates/uu-core/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:.cargo/config.toml | A:workspace,members,patch.crates-io,profile.release | S:具体插件不属主工作区；共享动态SDK要求release关闭LTO；vendor补丁覆盖上游；开发编号不代表正式验收发布
 LICENSE[SG6T]: F:声明项目自有代码可选择MIT或Apache-2.0并划定第三方权利边界 | R:code:LICENSE-MIT,code:LICENSE-APACHE,code:docs/licensing-and-compatibility.md | A:- | S:代码许可不授予第三方服务接入或商标使用权
 LICENSE-APACHE[SG4M]: F:提供Apache-2.0完整许可、专利授权及分发条件 | R:code:LICENSE | A:- | S:-
@@ -111,7 +111,7 @@ cursor.rs[DU5T]: F:定义提供方无关的光标像素、热点、缩放与屏�
 decode_backlog.rs[KP8T]: F:按压缩数据内存与实测解码工作量限制待解码参考帧队列 | R:code:crates/uu-core/src/video_receiver.rs | A:Budget,Permit | S:单一装配生产者申请permit；Drop归还；保留至少9帧预算防止网络突发破坏参考链
 decode_gate.rs[KR8T]: F:以丢包epoch和独立恢复请求控制参考帧接纳与IDR恢复 | R:code:crates/uu-core/src/video_receiver.rs | A:DecodeGate,RecoverySignal | S:旧epoch完整IDR可显示但不能清除更新的恢复请求；传输丢包不应直接销毁健康解码器
 device_auth.rs[DS9L]: F:在临时传输上执行版本化公钥、短码、密码和临时授权认证 | R:code:crates/uu-core/src/device_trust.rs,code:crates/uu-core/src/pairing_password.rs | A:client,host,PairingControl,PairingDisplay | S:认证成功前不得采集或输入；绑定传输与双方身份随机数；提供方账号不是设备授权，临时授权不得落成永久信任
-device_book.rs[PD8L]: F:保存设备身份、多地址、客户端预设、每屏参数、共享入口及不可变启动快照 | R:code:crates/uu-core/src/device_trust.rs,code:crates/uu-core/src/client_settings.rs,code:crates/uu-core/src/plugins.rs | A:Store,Book,Profile,Launch,DisplayClientSettings | S:未知插件路由和旧共享字段原样保留；Launch冻结选中客户端配置；保存设备不覆盖预设或每屏参数，合并时迁移；每屏target稳定唯一且最多64项；编辑档案不替换信任库
+device_book.rs[PD8L]: F:保存设备身份、多地址、客户端逐屏预设、共享音频策略及不可变启动快照 | R:code:crates/uu-core/src/device_trust.rs,code:crates/uu-core/src/client_settings.rs,code:crates/uu-core/src/plugins.rs,code:crates/uu-media/src/audio_capture.rs | A:Store,Book,Profile,Launch,Sharing | S:缺失静音字段默认开启，声音关闭则不采集；未知路由和旧字段保留；Launch冻结客户端配置；设备保存不覆盖预设或每屏参数；target唯一且最多64项；编辑档案不换信任库
 device_channel.rs[IS8L]: F:建立仅数据的bootstrap连接，先完成设备认证再在原通道进行媒体协商 | R:code:crates/uu-core/src/device_auth.rs,code:crates/uu-core/src/native_media.rs | A:Bootstrap,DataIo | S:media-ready屏障才放宽认证消息上限；配对等待仍驱动提供方心跳，认证前无媒体轨道或桌面资源
 device_internet.rs[AN8M]: F:经注册提供方接入设备认证与原生媒体，并按当前管理默认值分配每条已授权媒体 | R:code:crates/uu-core/src/device_channel.rs,code:crates/uu-core/src/shared_host.rs,code:crates/uu-core/src/plugins.rs | A:listen,serve_connection | S:四个许可只限未完成认证的Native连接，认证成功即归还；认证后取得租约才启动媒体；断连先cancel再等清理；输入许可取交集；每次准入取管理默认快照，既有媒体保持旧值
 device_network_tests.rs[TS6L]: F:以真实TLS和WSS及生成媒体验证配对权限、撤销清理、编码允许列表与认证准入分离 | R:code:crates/uu-core/src/device_auth.rs,code:crates/uu-core/src/native_lan.rs,code:crates/uu-core/src/device_internet.rs | A:- | S:仅生成媒体，不代表桌面验收；回退不得绕过主机允许列表，准备失败释放会话后仍可重连；已认证媒体不占临时认证许可
@@ -124,7 +124,7 @@ error.rs[LG4T]: F:定义配置不可用、非法会话转移及IO统一核心错
 frame_cadence.rs[KO6T]: F:分别汇总源RTP帧间距、本地到达间距及接收解码节拍分布 | R:code:crates/uu-core/src/video_receiver.rs | A:Cadence,Snapshot | S:不跨主机减时钟，源帧间距不能作为单向网络延迟
 frame_trace.rs[DO8L]: F:以源身份关联采集编码至RTP写入，提供新鲜的主机跨度与实际编码后端 | R:code:crates/uu-core/src/socket_trace.rs,code:crates/uu-core/src/media.rs | A:HostTrace,Frame,Report,video_latency | S:仅同钟区间可相减；API返回不是GPU或显示完成；跨度重叠不能再相加；接收快照绑定媒体epoch且五秒过期，本地实验不外发逐帧数据
 host_admin.rs[AS8M]: F:通过原生控制通道或本机OS管理权限检查主机状态、保存多入口配置、改授权及断开会话 | R:code:crates/uu-core/src/shared_host.rs,code:crates/uu-core/src/device_book.rs,code:crates/uu-core/src/virtual_display.rs | A:Service,Request,Response,execute_local_manager | S:网络操作实时重验管理权限；保存重验配置版本并至少保留一个入口；本机管理要求OS边界；保存立即更新新连接默认值和虚拟屏上限，监听身份与端口待重启；既有媒体保留旧快照，重启等待保存回执
-host_runtime.rs[AG8L]: F:统一GUI与后台共享身份、连接入口、插件策略、防火墙及虚拟屏生命周期 | R:code:crates/uu-core/src/shared_host.rs,code:crates/uu-core/src/device_internet.rs,code:crates/uu-core/src/plugins/preferences.rs,code:crates/uu-core/src/native_virtual_display.rs,code:crates/uu-core/src/firewall/windows.rs | A:prepare,prepare_service,Runner,Endpoint | S:服务无可用入口仍保留管理面；插件须持久启用；所有入口共用HostOwner和授权；启动不安装或扩容虚拟屏，worker只续已接受意图并恢复持久屏；退出等待已接受驱动变更，不超时abort
+host_runtime.rs[AG8L]: F:统一GUI与后台共享身份、连接入口、音频策略、插件、防火墙及虚拟屏生命周期 | R:code:crates/uu-core/src/shared_host.rs,code:crates/uu-core/src/device_internet.rs,code:crates/uu-core/src/plugins/preferences.rs,code:crates/uu-core/src/native_virtual_display.rs,code:crates/uu-core/src/device_book.rs | A:prepare,prepare_service,Runner,Endpoint | S:无入口仍保管理面；插件须持久启用；入口共用HostOwner、授权及声音源策略；启动不扩容，worker仅续已接受意图和恢复持久屏；退出join驱动变更，不超时abort
 hotkeys.rs[DU7L]: F:定义15项前台客户端命令、默认Ctrl+Alt组合、冲突校验及返回本机逃逸 | R:code:crates/uu-core/src/client_settings.rs,code:crates/uu-gui/src/shortcuts.rs | A:Action,Chord,Bindings | S:缺项继承、显式禁用保留，新增默认仅继承空闲键；导航仅全屏，嵌套只保留切回与返回本机；AltGr不匹配，修饰键精确比较；Ctrl+Alt+D在窗口隐藏后仍可恢复
 input_ownership.rs[DS9T]: F:在同一主机全部会话间租赁唯一键鼠所有权 | R:code:crates/uu-core/src/native_control.rs,code:crates/uu-core/src/shared_host.rs | A:Authority,Lease | S:OS释放失败会永久污染当前Authority并阻止后续接管，不能把未释放长按交给新会话
 internet.rs[LN8L]: F:抽象自建或按ID注册的公网提供方，认证旧共享密钥SDP并分派公钥设备会话 | R:code:crates/uu-core/src/plugins.rs,code:crates/uu-core/src/internet/self_hosted.rs | A:Provider,Settings,Connection,Transport,Authenticated | S:提供方ID不授桌面权限；HMAC绑定完整SDP、方向和新挑战，访问密钥不交提供方；未启用插件不能取得新连接实例
@@ -133,7 +133,7 @@ lib.rs[LG7S]: F:声明原生引擎、回环虚拟屏和固定端口、防火墙�
 listen_socket.rs[RN7T]: F:创建固定接口TCP和UDP监听器并实施平台正确的端口所有权 | R:code:crates/uu-core/src/native_lan.rs | A:tcp,udp | S:Windows bind前启用SO_EXCLUSIVEADDRUSE；不可用SO_REUSEADDR模拟Unix语义
 local_workspace.rs[RS7L]: F:通过本地认证监听器把新串流请求交给已有工作区并避免重复启动 | R:code:crates/uu-gui/src/stream_workspace.rs | A:join,Join,Owner | S:落盘仅短期能力，密码和连接请求留内存；首进程持有监听直到全部串流关闭
 media.rs[AN9L]: F:统一WebRTC接收解码、图像身份、统计、实际编码回退结果与管理客户端，并退役媒体任务 | R:code:crates/uu-core/src/video_receiver.rs,code:crates/uu-core/src/display_frames.rs,code:crates/uu-core/src/video_e2e.rs,code:crates/uu-core/src/congestion.rs,code:crates/uu-core/src/native_virtual_display.rs | A:MediaStats,Peer | S:ready不等压缩队列排空；批内只保留最后解码输出，不丢参考AU；身份在解码冻结；原始和修复丢包分开，RTT含调度；关闭须等待接收和反馈退役；回退回执与保存偏好分离
-native.rs[AN9L]: F:编排授权后显示源、虚拟屏、采编准备与客户端优先的回退协商，拥有媒体换代和连接收尾 | R:code:crates/uu-core/src/native/encoder_startup.rs,code:crates/uu-core/src/native_media.rs,code:crates/uu-core/src/native_control.rs,code:crates/uu-core/src/native_displays.rs,code:crates/uu-core/src/native_virtual_display.rs,code:crates/uu-core/src/stream_ports.rs | A:HostConfig,SharingConfig,serve,view,serve_direct | S:自动TCP限十槽；初始屏先于采集，租约跨epoch；新两端独立属性协商回退，仍受主机允许及接收能力限制，旧端明确要求保持；实际关键帧验证后Answer，成功即停探；取消须置标并join准备后释放租约；辅助通道随阶段退役
+native.rs[AN9L]: F:编排授权后显示源、虚拟屏、采编准备与客户端优先回退协商，拥有媒体换代和连接收尾 | R:code:crates/uu-core/src/native/encoder_startup.rs,code:crates/uu-core/src/native_media.rs,code:crates/uu-core/src/native_control.rs,code:crates/uu-core/src/native_displays.rs,code:crates/uu-core/src/native_virtual_display.rs,code:crates/uu-core/src/stream_ports.rs | A:HostConfig,SharingConfig,serve,view,serve_direct | S:自动TCP限十槽；两种系统声音源均要求明确共享显示器；初始屏先于采集，租约跨epoch；回退仍受允许列表及接收能力约束，旧端保持；实际关键帧验证后Answer，成功停探；取消置标并join准备后释放租约，辅助通道随阶段退役
 native_audio.rs[AH7S]: F:在OS线程持有声音采集后端并向媒体任务交付编码声音与恢复状态 | R:code:crates/uu-media/src/audio_capture.rs | A:Worker | S:声音独立于视频输入，停止请求后有界等待线程退出
 native_clipboard.rs[IU8L]: F:在有序SCTP流传输双边许可的文本和PNG，拥有两端任务并维护能力提示所有权 | R:code:crates/uu-core/src/native_clipboard/image.rs,code:crates/uu-core/src/clipboard.rs,code:crates/uu-core/src/native_tasks.rs | A:host,viewer,suspend,stop | S:不读OS剪贴板；transport epoch与焦点generation拒旧写入；无backend不打开设备；Closing和Closed都退役且收尾join；能力提示仅在无更新操作错误时退休；不能等待on_close令强channel经SettingEngine保活mux
 native_color.rs[FN7S]: F:通过独立SDP属性协商可选HDR10编解码与源显示元数据 | R:code:crates/uu-core/src/native_quality.rs | A:Request,Response,capture_codecs | S:无属性即SDR；只有双方实际支持的HEVC或AV1 HDR请求才改变采集域
@@ -283,7 +283,7 @@ native_ui.rs[AU7M]: F:接入原生邀请与回环连接，初始化媒体统计�
 pairing_ui.rs[AI7S]: F:共用四种主机配对导航及PIN生命周期说明，管理控制端短码选择、密码和公钥草稿 | R:code:crates/uu-core/src/device_auth.rs,code:crates/uu-core/src/device_trust.rs,code:crates/uu-gui/src/service_ui.rs | A:ClientUi,HostUi,host_methods,host_code_settings | S:PIN由控制端连接时生成，本机输入并批准；临时配对撤销此前长期授权，断连失效；换方式保草稿不保存，换目标清密码，明文Zeroizing；短码不替代方向授权
 platform.rs[IU9L]: F:管理窗口DPI焦点、原生外观、统一系统键路由及Windows全局返回本机热键 | R:code:crates/uu-gui/src/keyboard_capture.rs,code:crates/uu-gui/src/wayland_capture.rs,code:crates/uu-gui/src/window.rs | A:Platform,startup_origin,global_toggle_registered,take_global_toggle | S:换输入接收者先释放原远端键鼠；hook存活才捕获，窗口与hook共用范围；浮窗才启阴影圆角；返回本机热键注册失败则拒绝隐藏窗口；诊断不存键内容
 remote_admin_ui.rs[AU6T]: F:通过认证管理客户端展示实际连接数、主机配置和授权，并提交保存、改权、撤权及断开 | R:code:crates/uu-core/src/host_admin.rs | A:RemoteAdminUi | S:刷新快照不覆盖未保存草稿；配置保存携原revision；UI授权标志不替代主机实时校验；等待最长10秒并分辨未知结果；连接数不代表固定容量；本机管理窗口仍显式显示虚拟显示器上限
-server_config_ui.rs[AU6S]: F:共用主机采集、默认编码、音频与许可编辑，按调用方显示设备名及虚拟屏上限 | R:code:crates/uu-core/src/device_book.rs,code:crates/uu-core/src/virtual_display.rs | A:edit,capture,device_name | S:主机默认只作用自动客户端，不能覆盖允许列表；PyroWave不入自动；临时码率不改主机；降低上限不关已有屏；门户选屏仍须确认
+server_config_ui.rs[AU6S]: F:共用主机采集、编码、声音传输及主机静音编辑，按调用方显示设备名和虚拟屏上限 | R:code:crates/uu-core/src/device_book.rs,code:crates/uu-core/src/virtual_display.rs | A:edit,capture,device_name | S:静音选项随声音传输禁用而保值；默认编码不能覆盖客户端显式选择或允许列表；降低上限不关已有屏；门户选屏仍须确认
 service_ui.rs[AO7L]: F:管理统一Windows服务、空闲更新与重启确认，展示已加载插件、四种配对及虚拟屏页面 | R:code:crates/uu-core/src/service_admin/windows.rs,code:crates/uu-gui/src/service_ui/connections.rs,code:crates/uu-gui/src/virtual_display_ui.rs,code:crates/uu-gui/src/plugin_ui.rs,code:crates/uu-gui/src/pairing_ui.rs | A:Entry,Manager,automatic_restart_ready,automatic_restart_safe,plugins_ui,show_confirmation | S:关GUI不停服务；刷新保草稿；更新前后核空闲及未决操作，取消不重试；零会话直做、未知须确认；设备名归配对页，音视频不重复；PIN说明不创建预设秘密；只展示加载插件
 sessions.rs[AU7L]: F:定义普通、固定源和临时虚拟屏启动身份，校验参数、稳定每屏配置键并交付工作区或子进程 | R:code:crates/uu-gui/src/stream_workspace.rs,code:crates/uu-core/src/local_workspace.rs,code:crates/uu-core/src/device_book.rs | A:StreamTarget,ConnectionTarget,DisplayTarget,VirtualDisplayTarget,Sessions | S:物理屏配置键用源名、无源时用ID，虚拟视图用启动UUID；已知屏key按源名去ID；Virtual不可嵌插件或回环；凭据仅16KiB Zeroizing stdin；启动器退出不杀串流
 settings.rs[PC8L]: F:迁移保存全局及逐屏偏好，应用本地画质策略并同步窗口设备音频状态 | R:code:crates/uu-core/src/device_book.rs,code:crates/uu-core/src/client_settings.rs,code:crates/uu-gui/src/settings_page.rs,code:crates/uu-gui/src/audio_controls.rs,code:crates/uu-gui/src/sessions.rs | A:Settings,WallpaperSource,save_json,save_bytes,save_stream_profile_settings | S:稳定屏键仅写本屏sidecar，陈旧流保全局新值；Apply仅改内存；FPS上限不反写选择；音频快照和应用走共享组；坏文件不覆盖，缺字段迁移且重复字段拒绝
@@ -341,7 +341,7 @@ lib.rs[LL6T]: F:合并主目录与消费crate自有目录，展开双语格式�
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n/===
 Cargo.toml[FL4T]: F:声明应用语言库、双语宏和构建时目录依赖 | R:code:crates/uu-i18n/src/lib.rs | A:- | S:-
 build.rs[OL5T]: F:把翻译JSON生成到OUT_DIR的静态匹配函数 | R:code:crates/uu-i18n/catalogue.json,code:crates/uu-i18n/src/catalogue.rs | A:main | S:目录变化触发重建，生成物不写回源码目录
-catalogue.json[FL6L]: F:维护主程序双语模板，包括显示器、编码回退、PIN配对、统一服务及错误复制 | R:code:crates/uu-i18n/build.rs,code:crates/uu-i18n-macros/src/lib.rs | A:- | S:插件词汇归插件；占位符须对应中文；缺译运行时回退中文，格式模板缺译编译失败；文案非功能验收
+catalogue.json[FL6L]: F:维护主程序双语模板，包括显示器、编码回退、PIN配对、统一服务与主机静音 | R:code:crates/uu-i18n/build.rs,code:crates/uu-i18n-macros/src/lib.rs | A:- | S:插件词汇归插件；占位符须对应中文；缺译运行时回退中文，格式模板缺译编译失败；文案非功能验收
 
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n/src/===
 catalogue.rs[LL4T]: F:把构建生成的静态英文查询函数引入语言库 | R:code:crates/uu-i18n/build.rs | A:- | S:-
@@ -374,12 +374,12 @@ windows.rs[IU8M]: F:以SendInput在当前输入桌面发送HID键鼠与Unicode�
 windows_desktop.rs[IS8M]: F:为无窗口采集或输入线程绑定当前输入桌面并提供线程级物理像素DPI守卫 | R:code:crates/uu-input/src/windows.rs,code:crates/uu-capture/src/windows.rs | A:PhysicalCoordinates,sync_input_desktop,sync_injection_desktop | S:不能在GUI线程调用，不切可见桌面或提权；同名桌面仍需校验句柄访问权，捕获绑定到注入需升级访问权；绑定期间保持handle存活；访问失败提示控制台显示输出和后台服务条件
 
 ===/home/yfy/Repo/uu_remote/crates/uu-media/===
-Cargo.toml[FV6T]: F:声明媒体库软件与硬件编解码、声音及可选VAAPI和PyroWave特性 | R:code:crates/uu-media/src/lib.rs | A:- | S:VAAPI需构建库且显式启用，VPL和PyroWave运行库动态加载
+Cargo.toml[FV6T]: F:声明媒体库编解码、声音采集及Windows端点静音依赖和可选硬件特性 | R:code:crates/uu-media/src/lib.rs,code:crates/uu-media/src/audio_capture/wasapi_mute.rs | A:- | S:Windows声音不依赖GPU特性开关；COM实现使用同版windows-core；VAAPI显式启用，VPL和PyroWave运行时加载
 build.rs[OV6T]: F:按平台特性编译VPL、AMF、HDR及PyroWave适配器并链接系统图形库 | R:code:crates/uu-media/src/vpl/native.c,code:crates/uu-media/src/amf/native.cpp | A:main | S:Windows VPL链接DXGI以枚举适配器，实际VPL库仍运行时加载；第三方SDK头保留原许可
 
 ===/home/yfy/Repo/uu_remote/crates/uu-media/examples/===
 amf_input_probe.rs[TH6L]: F:用变化GPU图样验证AMF编码硬解、源标记和多代次租约释放 | R:code:crates/uu-media/src/encoder/amf.rs | A:main | S:读回与逐帧记录属于正确性验证，不作为低延迟基准
-audio_capture_probe.rs[TH5T]: F:把显式系统或生成声音编码包解为指标，检查信号及丢包恢复 | R:code:crates/uu-media/src/audio_capture.rs | A:main | S:不打开播放设备，系统采集必须显式选择
+audio_capture_probe.rs[TH5S]: F:将显式系统或生成声音解为指标并可演练静音采集的共享租约 | R:code:crates/uu-media/src/audio_capture.rs,code:tools/native/audio_smoke.py | A:main | S:不开播放设备、不存PCM；系统采集与主机静音须显式选择；租约演练关闭首采集后由第二路继续
 audio_probe.rs[TH4T]: F:生成440Hz信号经Opus和生产播放设备检查有界队列与欠载 | R:code:crates/uu-media/src/audio.rs | A:main | S:会播放测试声音，不读取麦克风
 av1_decode_probe.rs[TH5T]: F:循环生成AV1 I/P单位检查解码像素PTS和可选GPU租约 | R:code:crates/uu-media/src/av1.rs | A:main | S:仅生成视频，不访问桌面网络输入或声音
 bench_rgba.rs[TP4T]: F:离线测量1080p生成I420到RGBA转换平均耗时 | R:code:crates/uu-media/src/convert.rs | A:main | S:-
@@ -403,7 +403,7 @@ native.cpp[IH8L]: F:实现AMF动态运行库编码会话、GPU输入租约和原
 
 ===/home/yfy/Repo/uu_remote/crates/uu-media/src/===
 audio.rs[AH8L]: F:实现有界Opus重排、丢包平滑、过渡淡化和系统播放，并维护音量与停放状态 | R:code:crates/uu-media/src/audio_red.rs | A:AudioControl,OpusReceiver,Reorder,PcmQueue,playback | S:RTP只try_send，硬件播放在独立线程；PLC或FEC尝试计数不能声称真实FEC恢复；停放的视图静音但不改用户静音和音量；队列最多约60ms，欠载过渡保持最后可听帧并避免波形跳变
-audio_capture.rs[AH8M]: F:显式采集系统输出或生成声音并重采样为定时48kHz立体声Opus包 | R:code:crates/uu-media/src/audio_capture/pulse.rs,code:crates/uu-media/src/audio_capture/wasapi.rs | A:CaptureSession,Source,EncodedAudio | S:无麦克风回退，源时钟sample_index保留延迟空档；正常设备块抖动不应立即制造欠载
+audio_capture.rs[AH8M]: F:选择生成声音或保留及抑制主机播放的系统输出，统一48kHz立体声Opus采集 | R:code:crates/uu-media/src/audio_capture/pulse.rs,code:crates/uu-media/src/audio_capture/wasapi.rs,code:crates/uu-media/src/audio_capture/mute.rs | A:CaptureSession,Source,EncodedAudio | S:SystemMuted由平台后端拥有输出恢复；无麦克风回退；sample_index保留源时钟空档；正常设备块抖动不立即制造欠载
 audio_red.rs[KN6T]: F:按RFC2198封装与拆解一包Opus冗余 | R:code:crates/uu-core/src/native_media.rs | A:pack,unpack | S:payload最大1100字节，仅保留符合偏移和长度限制的前包
 av1.rs[KH8L]: F:解析AV1低开销OBU、序列颜色和关键帧并执行真实I/P解码能力探测 | R:code:crates/uu-media/src/decoder.rs | A:obus,sequence,is_keyframe,probe_decoder | S:有设备不等于支持AV1，探针需产出有效I/P帧；修颜色只改序列声明，不改编码像素
 bitstream.rs[KH8L]: F:共用H264 Annex-B、SPS解析与帧号间隙修补及几何颜色元数据 | R:code:crates/uu-media/src/h264.rs,code:crates/uu-media/src/hw/d3d11va.rs | A:patch_sps_allow_gaps,h264_dimensions | S:UU码控丢帧却未声明允许gap，软硬解都需同一补丁；解析有64KiB头部界限且未知布局不猜改
@@ -433,8 +433,11 @@ present_observation.rs[DO7T]: F:定义版本化Rust与C++共享的原始Present�
 hevc_encoder_color.rs[KH8M]: F:验证自身HEVC SPS并有界重写VUI视频颜色声明，保持其它语法与图像NAL不变 | R:code:crates/uu-media/src/hevc.rs,code:crates/uu-media/src/encoder/mf.rs,code:crates/uu-media/src/color.rs | A:declare_encoder_color | S:只接受本机编码输出且先用完整H265解析器验证SPS，限64KiB；仅4:2:0的SDR8位或HDR10位；SDR声明limited601，HDR声明limited2020/PQ；保留非SPS字节、参考与几何，缺失VUI或信号字段可插入，接收流禁止使用
 
 ===/home/yfy/Repo/uu_remote/crates/uu-media/src/audio_capture/===
-pulse.rs[IH6S]: F:从PulseAudio默认输出的monitor读取声音并响应取消与断开 | R:code:crates/uu-media/src/audio_capture.rs | A:Capture | S:绝不选择默认录音源，NOAUTOSPAWN不隐式启动服务
-wasapi.rs[IH6S]: F:通过CPAL的WASAPI输出loopback读取有界声音块并转成立体声采样 | R:code:crates/uu-media/src/audio_capture.rs | A:Capture | S:仅默认输出设备，不转用麦克风；设备停止显式失败交上层恢复
+pulse.rs[IH6S]: F:采集PulseAudio输出monitor，可持有临时静音输出路由并响应取消与断开 | R:code:crates/uu-media/src/audio_capture.rs,code:crates/uu-media/src/audio_capture/pulse_route.rs | A:Capture,wait | S:NOAUTOSPAWN不启动服务；精确monitor使用DONT_MOVE，禁止默认源变化挪到麦克风；采集断开后再释放路由
+wasapi.rs[IH6S]: F:通过CPAL的WASAPI输出loopback采集有界立体声块并可持有主机静音租约 | R:code:crates/uu-media/src/audio_capture.rs,code:crates/uu-media/src/audio_capture/wasapi_mute.rs | A:Capture | S:仅默认输出，无麦克风回退；采集播放成功后才静音，stream先于租约析构；设备停止交上层重试
+mute.rs[DH7S]: F:跨采集引用计数同一音频端点静音，最后释放时按原状态及手动覆盖决定恢复 | R:code:crates/uu-media/src/audio_capture/wasapi_mute.rs | A:Endpoint,Lease | S:仅保存端点键和状态，不跨线程共享设备对象；恢复与新租约串行；原已静音或观察到手动修改不自动取消静音；仅正常释放恢复
+pulse_route.rs[IH8M]: F:为Linux声音采集租赁自有静音输出，迁移播放流并在最后释放时归还和清理 | R:code:crates/uu-media/src/audio_capture/pulse.rs | A:Guard | S:按服务器进程内共享路由；只移原默认输出上的流；恢复只动仍属自建输出的流并保手动默认选择；删除核名字、index和module；失败清理保同一意图，禁止重复创建；恢复依赖正常Drop
+wasapi_mute.rs[IH7S]: F:在声音worker中租赁精确WASAPI默认输出静音并观察外部声音调整 | R:code:crates/uu-media/src/audio_capture/mute.rs,code:crates/uu-media/src/audio_capture/wasapi.rs | A:Output,Guard | S:打开loopback前后核端点ID；自有GUID通知不算手动覆盖；COM对象及回调先于平衡CoUninitialize退役；正常Drop释放租约
 
 ===/home/yfy/Repo/uu_remote/crates/uu-media/src/convert/===
 x86.rs[KP6S]: F:以SSE4.1执行与标量一致的YUV到RGBA转换 | R:code:crates/uu-media/src/convert.rs | A:convert,convert_color | S:调用方先验完整平面且运行时检查指令集；尾部不越界加载
@@ -501,7 +504,7 @@ keyboard-capture.md[SU6T]: F:规定整条键盘流捕获归属与暂停释放，
 keyboard-shortcuts.md[SU5T]: F:列出统一Ctrl+Alt默认命令并说明应用级录制、全屏循环导航、显式设备选择和全局返回本机 | R:code:crates/uu-core/src/hotkeys.rs,code:crates/uu-gui/src/shortcuts_ui.rs,code:crates/uu-gui/src/keyboard_capture.rs | A:- | S:自定义和禁用保留；导航仅当前全屏窗口，切会话本机命令仍可匹配，远端等旧修饰键松开；改绑定另需释放；全局返回本机注册失败时拒绝隐藏
 licensing-and-compatibility.md[SS6T]: F:区分项目双许可、第三方来源、官方服务接入和编解码专利边界 | R:code:LICENSE,code:THIRD-PARTY-NOTICES.txt | A:- | S:原创代码许可不代表网易接入授权；依赖生成清单不是法律审计
 linux-client.md[SH5S]: F:说明Linux Eclipse安装构建、门户共享与隔离验收及用Ctrl+Alt+S检查实际硬解 | R:code:tools/linux/package.py,code:docs/native-capture.md,code:docs/plugins.md | A:- | S:旧用户数据路径保留，具体插件另行启用；Wayland不以Xwayland替代授权桌面；能力须实际出图，编译或离线吞吐非实机验收
-native-audio.md[SH5T]: F:说明系统输出采集与Opus及RED恢复、客户端音量和Ctrl+Alt+M静音及隔离验证 | R:code:crates/uu-media/src/audio_capture.rs | A:- | S:无麦克风回退；实际RED解码恢复与FEC或PLC尝试分开统计，探针只解码不播放
+native-audio.md[SH5T]: F:说明系统声音采集、默认主机静音与输出恢复、Opus恢复、客户端音量及隔离验证 | R:code:crates/uu-media/src/audio_capture.rs,code:tools/native/audio_smoke.py | A:- | S:无麦克风回退；Windows静音端点，Linux改临时输出；最后一路正常结束才恢复，手动选择优先；尝试恢复计数不等已恢复
 native-capture.md[SH5T]: F:记录X11、Wayland与DXGI采集接口、授权和诊断方式 | R:code:crates/uu-capture/src/lib.rs,code:docs/native-encoding.md | A:- | S:包含早期Windows CPU路径描述，当前GPU能力须结合编码和HDR说明
 native-clipboard.md[SU5T]: F:说明原生文本图片剪贴板双边许可、前台范围和隔离验证 | R:code:crates/uu-core/src/native_clipboard.rs | A:- | S:两端默认关闭，半张图片不写系统；只读控制端可接收但不发本地内容
 native-cursor.md[SU5T]: F:说明Windows远端光标传输与源坐标合成、Ctrl+Alt+C模式切换和旧主机回退 | R:code:crates/uu-core/src/native_cursor.rs | A:- | S:DXGI位置为形状左上角，不再扣热点；光标更新不计新视频帧；源应用隐藏或内嵌指针遵守平台状态
@@ -658,7 +661,7 @@ package.py[OV7S]: F:构建含VAAPI、PyroWave和共享SDK的eclipse前缀Linux�
 wayland_smoke.py[TU5M]: F:在自有无头合成器检查兼容串流、窗口及Ctrl+Alt默认快捷键和输入释放 | R:code:crates/uu-gui/examples/wayland_input.rs | A:main | S:须明确既有账号和目标，凭据副本仅隔离目录；键鼠只向自有合成器，远端固定文本检查须专用夹具
 
 ===/home/yfy/Repo/uu_remote/tools/native/===
-audio_smoke.py[TH5S]: F:在私有Pulse输出和独立静音输入之间验证系统输出采集与Opus | R:code:crates/uu-media/examples/audio_capture_probe.rs | A:main | S:专用服务cookie与socket，不改用户默认音频设备
+audio_smoke.py[TH5S]: F:在私有Pulse服务验证系统输出信号、静音共享生命周期及手动改输出后的清理 | R:code:crates/uu-media/examples/audio_capture_probe.rs,code:crates/uu-media/src/audio_capture/pulse_route.rs | A:main | S:专用cookie与socket，不改工作桌面设备；手动改输出可移走播放流，先证信号再核保留选择；清理仅自有子进程和目录
 clipboard_smoke.py[TU5S]: F:启动两套认证Xvfb并行检验原生图文剪贴板许可与生命周期 | R:code:crates/uu-gui/examples/native_clipboard_probe.rs | A:main | S:只复制生成内容，失败仍清理自身服务器
 frame_trace_compare.py[TP5T]: F:用独立生成源进程执行遥测开关ABBA吞吐和尾间隔对照 | R:code:crates/uu-core/examples/frame_trace_probe.rs | A:main | S:先登记门槛，不操作真实桌面，单轮排障不能证明收益
 hdr_color_probe.cpp[TH6T]: F:以生成HDR细边缘对生产GPU转换和独立CPU采样公式逐像素比较 | R:code:crates/uu-media/src/d3d11_color.cpp | A:main | S:不采桌面或更改显示设置，结果不代表物理HDR
