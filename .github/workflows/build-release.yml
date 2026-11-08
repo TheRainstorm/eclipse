@@ -184,7 +184,9 @@ jobs:
       - name: Test and package Linux
         if: matrix.platform == 'linux-x86_64'
         run: |
-          cargo test --workspace --lib --bins --tests --release --features vaapi --locked
+          # Native network fixtures share the production ten-port pool. Run
+          # them serially so concurrent tests cannot consume each other's slots.
+          cargo test --workspace --lib --bins --tests --release --features vaapi --locked -- --test-threads=1
           cargo test --workspace --doc --release --features vaapi --locked
           cargo build --release -p uu-media --example vaapi_readback_probe --features vaapi --locked
           cargo build --release -p uu-gui --example video_dma_probe --features vaapi --locked
