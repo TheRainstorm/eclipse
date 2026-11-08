@@ -36,7 +36,7 @@ pixels.rs[KH6T]: F:校验CPU桌面缓冲区跨度和长度，去除行填充并�
 scale.rs[KH7T]: F:按边界等比缩小编码输出并透传原采集会话及实时物理输入映射 | R:code:crates/uu-capture/src/backend.rs | A:bounded,dimensions | S:输入映射仍为物理桌面，不按编码缩放；D3D11仅调整输出几何交编码器缩放；CPU拒绝HDR缩放
 synthetic.rs[TH6S]: F:生成有运动和彩色梯度的I420测试帧并按帧率定时输出 | R:code:crates/uu-capture/src/frame_info.rs | A:SyntheticCapture | S:偶数尺寸向下取整；动态帧率重置节拍而不重置源帧身份
 wayland.rs[IH8L]: F:使用合成器声明的screencopy接口采集显示输出并映射输入目标 | R:code:crates/uu-capture/src/lib.rs,code:crates/uu-input/src/wayland.rs | A:WaylandCapture,available,monitors | S:仅使用当前用户连接声明的接口；输出移除、取消或尺寸变化必须中止
-windows.rs[IH9L]: F:管理DXGI采集、GPU或CPU帧、显示器友好名、光标源身份及同模式输出位置恢复 | R:code:crates/uu-capture/src/backend.rs,code:crates/uu-capture/src/frame_info.rs,code:crates/uu-media/src/encoder/capture_pool.rs,code:crates/uu-capture/src/capture_diagnostics.rs | A:DxgiCapture,monitors,diagnostic_monitors | S:恢复按适配器LUID与监视器接口唯一匹配，不依赖DISPLAY别名；位置或主屏变化重建后更新物理输入映射，宽高旋转HDR变化仍失败；CCD友好名缺失或歧义时只影响展示；指针更新不算新视频帧
+windows.rs[IH9L]: F:管理DXGI采集、GPU或CPU帧、显示器友好名、源身份及桌面切换后的采集重建 | R:code:crates/uu-capture/src/backend.rs,code:crates/uu-capture/src/frame_info.rs,code:crates/uu-media/src/encoder/capture_pool.rs,code:crates/uu-capture/src/capture_diagnostics.rs | A:DxgiCapture,monitors,diagnostic_monitors | S:恢复按LUID与监视器接口唯一匹配；失效先清旧图和输入映射，重建间隔100ms；无效所有权最多重建三次，仅真实新图重置预算，设备丢失仍失败；同像素位置变化更新映射，宽高旋转HDR变化须重连；CCD歧义只影响展示，指针更新不算新图
 x11.rs[IH7M]: F:枚举RandR显示器并读取指定桌面或窗口，解包多种X11像素布局 | R:code:crates/uu-capture/src/backend.rs | A:X11Capture,monitors | S:Wayland环境默认拒绝以Xwayland根窗口代替桌面；窗口源不授予桌面输入范围
 capture_diagnostics.rs[DO6M]: F:以有界所有者线程记录区分DXGI采集结果、缓存回放及资源退役并导出终止报告 | R:code:crates/uu-capture/src/windows.rs,code:crates/uu-capture/src/frame_info.rs | A:Recorder,Outcome | S:两个开关均精确为1才启用；热路径不读钟或写盘；淘汰与展开异常显式记录，终止报告不能证明会话干净或GPU显示完成
 
