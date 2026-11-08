@@ -13,7 +13,7 @@ README.md[SG7S]: F:介绍0.24.0多屏与虚拟屏串流、主机静音、统一�
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
 
 ===/home/yfy/Repo/uu_remote/.github/workflows/===
-build-release.yml[OV8L]: F:执行Eclipse双平台回归与完整包发布，支持用当前流程重建指定原标签 | R:code:tools/windows/package.py,code:tools/linux/package.py,code:tools/windows/test_installer.ps1,code:tools/release/check_version.py | A:linux-media,windows-installer,build,windows-smoke,release | S:Linux工作区测试串行共享十端口池，构建并行；手动release_tag须已推远端含v标签，产品固定而夹具用当前流程；已有资产核验保留；探针记HEAD，烟测须生产程序；生成回归非桌面验收
+build-release.yml[OV8L]: F:执行Eclipse双平台回归与完整包发布，支持当前流程验证并重建不可变原标签 | R:code:tools/windows/package.py,code:tools/linux/package.py,code:tools/windows/test_installer.ps1,code:tools/native/wayland_smoke.py,code:tools/release/check_version.py | A:linux-media,windows-installer,build,windows-smoke,release | S:Linux工作区测试串行共享十端口池；release_tag须已推含v标签；产品固定标签，Windows安装及Wayland夹具用当前工作流，后者按workflow_sha提取到临时目录；已发布资产核验保留；探针记HEAD，烟测须生产程序；生成非桌面验收
 
 ===/home/yfy/Repo/uu_remote/assets/branding/===
 README.md[SU4T]: F:说明Eclipse日蚀品牌、图标来源和资源导出方法及UU标识权属 | R:code:README.md | A:- | S:UU原始favicon不属于本项目双许可
@@ -526,7 +526,7 @@ protocol-compatibility-and-transport.md[SN5S]: F:比较原生、UU兼容与Moonl
 protocol-notes.md[SN5M]: F:保留UU官方软件样本、媒体控制协议、认证和传输的证据笔记 | R:code:plugins/uu-compat/src/socketio.rs,code:plugins/uu-compat/src/control_wire.rs | A:- | S:采样版本和来源有边界，字符串线索不能替代线上互通证据
 pyrowave.md[SH5T]: F:说明实验性PyroWave格式、运行库、GPU同步与高带宽使用边界 | R:code:crates/uu-media/src/pyrowave.rs | A:- | S:默认自动协商不选它；Linux当前CPU传输不能声称GPU直通
 reference-index.md[SG5M]: F:组织Sunshine、Moonlight与同协议参考项目的固定版本源码入口和适配差异 | R:code:docs/licensing-and-compatibility.md | A:- | S:参考机制不授复制GPL代码许可；能力广告须由本实现真实链路证明
-releases.md[SV6T]: F:索引0.24.0与历史里程碑，规定双平台构建、下载核验及首次和重建发布规则 | R:code:.github/workflows/build-release.yml,code:tools/release/check_version.py,code:docs/releases/v0.24.0.md,code:docs/releases/v0.23.5-dev.20261104.md | A:- | S:首次发布先推含v标签，手动输入不创建标签；源码标签非下载证明；版本必须匹配；重建固定原标签、保已发布资产；哈希非身份签名
+releases.md[SV6T]: F:索引0.24.0与历史里程碑，规定双平台构建、下载核验及首次和重建发布规则 | R:code:.github/workflows/build-release.yml,code:tools/release/check_version.py,code:docs/releases/v0.24.0.md,code:docs/releases/v0.23.5-dev.20261104.md | A:- | S:首次先推含v标签，手动输入不创建；产品固定原标签，Windows安装和Wayland夹具跟随当前流程；版本须匹配；已有资产保留；哈希非身份签名
 roadmap.md[SW4T]: F:跟踪原生串流与独立兼容插件的交付阶段、后续验证和平台能力边界 | R:code:docs/vision.md,code:docs/releases.md | A:- | S:历史阶段不是当前交付承诺，能力及验收以实际版本说明和安装包为准
 session-probe.md[SO4T]: F:说明后台兼容会话与显式切屏探针及指标收集 | R:code:plugins/uu-compat/examples/session_probe.rs | A:- | S:默认不启剪贴板、不发送键鼠；文中core示例路径早于插件迁移
 stream-recovery.md[SR6T]: F:解释SRTP最高扩展索引、迟到重传、防重放与取消安全读取修复 | R:code:vendor/webrtc-srtp/UU-PATCH.md,code:crates/uu-core/src/srtp_policy.rs | A:- | S:认证成功后才记bitmap，旧包不能倒退最高索引；零解码错误不证明视频仍增长
@@ -679,7 +679,7 @@ vpl_contract_smoke.py[TH5T]: F:在隔离伪VPL运行库中验证ABI参数拒绝�
 vpl_runtime_fixture.c[TH5T]: F:模拟VPL公开函数并注入驱动参数变化与资源关闭错误 | R:code:crates/uu-media/src/vpl/native.c | A:MFXLoad,MFXCreateSession | S:只作隔离测试替身，禁止安装为真实运行库
 wayland_host_input.py[TU5S]: F:在自有双缩放Sway输出与终端中验证主机输入真实交付 | R:code:crates/uu-input/examples/wayland_owned_probe.rs | A:main | S:只连私有合成器，终端字节和指针报告证明目标输出而非日常桌面
 wayland_portal_startup.py[TH5M]: F:用自有Sway、DBus和PipeWire验证真实wlr门户启动与取消切屏 | R:code:crates/uu-core/examples/native_startup_probe.rs | A:inside,main | S:只链接自有生成视频端口，不启硬件发现或改变用户门户环境
-wayland_smoke.py[TU5M]: F:在隔离Sway中用原生生成会话检查Ctrl+Alt命令、全屏和混合DPI窗口 | R:code:crates/uu-gui/examples/wayland_input.rs | A:main | S:锁定已映射串流surface而非隐藏协调窗口；焦点与输入仅夹具，输出目录须新建，使用私有生成配置
+wayland_smoke.py[TU5M]: F:在隔离Sway用原生生成串流验证命令、全屏、混合DPI及合成器几何归属 | R:code:crates/uu-gui/examples/wayland_input.rs,code:crates/uu-gui/src/window.rs | A:main | S:锁定映射的串流surface，拒幻影协调窗；迁屏保系统尺寸，显式合成器配置后跨两秒预算查迟到回放；输入仅自有夹具，私有新输出，禁教程和托盘退出
 windows_latency_observer.py[TO6S]: F:在独立进程读取有限绘制进度和窗口资源清单，避免阻塞刺激绘制 | R:code:tools/native/windows_latency_worker.py | A:PaintPage,collect,run | S:seqlock页唯一生产者，父进程join两端后合并；PID须匹配创建时间
 windows_latency_scene.py[TH5M]: F:生成固定种子全源图样并只读核对交互窗口身份、覆盖及外部变化 | R:code:tools/native/windows_latency_worker.py | A:manifest,Renderer,window_snapshot | S:Session0拒绝窗口盘点，不修改外部窗口或显示设置
 windows_latency_worker.py[TP6L]: F:在新隔离目录运行有期限Windows延迟刺激采样与Eclipse产品进程并记录源清单 | R:code:tools/native/windows_latency_observer.py,code:tools/native/windows_latency_scene.py | A:StimulusReport,main | S:须交互控制台普通用户；只使用自有生成源，不装服务或打开既有配置，失败保留最终证据
