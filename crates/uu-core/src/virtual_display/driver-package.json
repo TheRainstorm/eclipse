@@ -6,6 +6,7 @@
   "license": "MIT",
   "source_url": "https://github.com/VirtualDrivers/Virtual-Display-Driver/tree/25.7.23",
   "url": "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip",
+  "api_url": "https://api.github.com/repos/VirtualDrivers/Virtual-Display-Driver/releases/assets/275640574",
   "zip_sha256": "e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a",
   "files": [
     { "name": "mttvdd.cat", "bytes": 13017, "sha256": "08a0093fc9b2e32b287a6f8a77ca4de0a31830d29fc33d2b13a918dc859468f6" },

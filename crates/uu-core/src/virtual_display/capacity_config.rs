@@ -162,6 +162,12 @@ fn count_range(xml: &str) -> Result<std::ops::Range<usize>> {
 }
 
 pub(super) fn expand(bytes: &[u8], minimum: u32) -> Result<Change> {
+    edit_count(bytes, minimum, false)
+}
+pub(super) fn exact_count(bytes: &[u8], count: u32) -> Result<Change> {
+    edit_count(bytes, count, true)
+}
+fn edit_count(bytes: &[u8], minimum: u32, exact: bool) -> Result<Change> {
     if minimum == 0 {
         return Err(fail("requested Mtt capacity must be positive"));
     }
@@ -173,7 +179,7 @@ pub(super) fn expand(bytes: &[u8], minimum: u32) -> Result<Change> {
     if original_count == 0 {
         return Err(fail("Mtt monitor count must be positive"));
     }
-    let count = minimum.max(original_count);
+    let count = if exact { minimum } else { minimum.max(original_count) };
     let mut after = bytes.to_vec();
     if count != original_count {
         // Translate the UTF-8 string index back into original encoded bytes.

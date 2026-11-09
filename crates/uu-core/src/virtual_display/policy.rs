@@ -138,6 +138,7 @@ impl Manager {
                 "cannot switch saved-display owner while targets are held",
             ));
         }
+        self.backend.configure_store(&file.directory,&saved.displays.iter().map(|d|d.target.clone()).collect::<Vec<_>>())?;
         state.file = Some(file);
         state.keep_after_stream = saved.keep_after_stream;
         state.restore_pending = !saved.displays.is_empty();

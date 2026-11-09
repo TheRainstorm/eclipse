@@ -74,7 +74,12 @@ fn download_to_owned_directory() -> Result<Downloaded> {
             .redirect(reqwest::redirect::Policy::limited(5))
             .user_agent("Eclipse virtual display installer")
             .build()?;
-        let mut response = client.get(&package.url).send().await?.error_for_status()?;
+        let mut response = match client.get(&package.url).send().await.and_then(reqwest::Response::error_for_status) {
+            Ok(response)=>response,
+            Err(primary)=>client.get(&package.api_url).header(reqwest::header::ACCEPT,"application/octet-stream")
+                .send().await.and_then(reqwest::Response::error_for_status)
+                .map_err(|fallback|anyhow::anyhow!("signed driver download failed: {primary}; official asset API: {fallback}"))?,
+        };
         const MAX: usize = 512 * 1024;
         ensure!(
             response

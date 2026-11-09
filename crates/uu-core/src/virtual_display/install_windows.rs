@@ -21,7 +21,7 @@ use windows_sys::{
         Devices::DeviceAndDriverInstallation::*,
         Foundation::{
             GetLastError, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, GENERIC_WRITE,
-            INVALID_HANDLE_VALUE,
+            INVALID_HANDLE_VALUE, ERROR_NO_SUCH_DEVINST,
         },
         Security::WinTrust::*,
         Security::{
@@ -436,6 +436,8 @@ struct DeviceNode {
     registered: bool,
     keep: bool,
 }
+struct RegistryKey(HKEY);
+impl Drop for RegistryKey { fn drop(&mut self) { unsafe { RegCloseKey(self.0); } } }
 struct DriverList {
     devices: HDEVINFO,
     info: SP_DEVINFO_DATA,
@@ -450,6 +452,9 @@ impl Drop for DriverList {
 impl DeviceNode {
     fn create() -> Result<Self> {
         no_existing_mtt_node()?;
+        Self::create_named("Virtual Display Driver")
+    }
+    fn create_named(description: &str) -> Result<Self> {
         let handle = unsafe { SetupDiCreateDeviceInfoList(&DISPLAY_CLASS, null_mut()) };
         if handle == INVALID_HANDLE_VALUE as isize {
             return Err(os_error("SetupDiCreateDeviceInfoList", unsafe {
@@ -465,7 +470,7 @@ impl DeviceNode {
                     devices.0,
                     wide("Display").as_ptr(),
                     &DISPLAY_CLASS,
-                    wide("Virtual Display Driver").as_ptr(),
+                    wide(description).as_ptr(),
                     null_mut(),
                     DICD_GENERATE_ID,
                     &mut info,
@@ -525,6 +530,9 @@ impl DeviceNode {
     }
     fn register(&mut self) -> Result<()> {
         no_existing_mtt_node()?;
+        self.register_exact()
+    }
+    fn register_exact(&mut self) -> Result<()> {
         // Best effort before registration; some SetupAPI providers expose the
         // generated ID only after creating the devnode. A failed DIF may still
         // have accepted a registration, so mark submission before invoking it.
@@ -539,6 +547,9 @@ impl DeviceNode {
         identity
     }
     fn bind(&mut self, directory: &Path) -> Result<()> {
+        self.bind_exact(directory, None)
+    }
+    fn bind_exact(&mut self, directory: &Path, group: Option<&str>) -> Result<()> {
         let inf = path_wide(&directory.join("MttVDD.inf"));
         let mut destination = [0u16; 512];
         win_ok(
@@ -577,6 +588,7 @@ impl DeviceNode {
         parameters.DriverPath.fill(0);
         parameters.DriverPath[..length].copy_from_slice(&destination[..length]);
         parameters.Flags |= DI_ENUMSINGLEINF | DI_QUIETINSTALL;
+        if group.is_some() { parameters.Flags |= DI_DONOTCALLCONFIGMG; }
         parameters.FlagsEx |= DI_FLAGSEX_ALLOWEXCLUDEDDRVS;
         win_ok(
             unsafe { SetupDiSetDeviceInstallParamsW(self.devices.0, &self.info, &parameters) },
@@ -623,6 +635,32 @@ impl DeviceNode {
                 "pinned driver does not identify one unambiguous compatible model".into(),
             ));
         }
+        if let Some(group) = group {
+            win_ok(unsafe { SetupDiSetSelectedDriverW(self.devices.0, &mut self.info, &mut driver) }, "select exact signed driver")?;
+            win_ok(unsafe { SetupDiCallClassInstaller(DIF_INSTALLDEVICE, self.devices.0, &self.info) }, "install deferred exact device")?;
+            self.set_value("WUDF", "DeviceGroupId", group)?;
+            if self.value("WUDF", "DeviceGroupId")? != group { return Err(Error::Platform("UMDF isolation group was not retained".into())); }
+            win_ok(unsafe { SetupDiGetDeviceInstallParamsW(self.devices.0, &self.info, &mut parameters) }, "read deferred install flags")?;
+            if parameters.Flags & DI_NEEDREBOOT != 0 { return Err(Error::Platform("Windows requires a restart to install this device".into())); }
+            parameters.Flags &= !DI_DONOTCALLCONFIGMG;
+            win_ok(unsafe { SetupDiSetDeviceInstallParamsW(self.devices.0, &self.info, &parameters) }, "complete exact device settings")?;
+            // Go through the class installer for this devnode only. The
+            // SetupDiRestartDevices default handler is reserved for class
+            // installers and can restart sibling devices after file changes.
+            // Use a fresh information set: the install set retains deferred
+            // restart state inside SetupAPI even after updating Flags.
+            let mut fresh=open_demand_device(&self.instance)?.ok_or(Error::UnknownSlot)?;
+            let mut fresh_parameters:SP_DEVINSTALL_PARAMS_W=unsafe{zeroed()};fresh_parameters.cbSize=size_of::<SP_DEVINSTALL_PARAMS_W>() as u32;
+            win_ok(unsafe{SetupDiGetDeviceInstallParamsW(fresh.devices.0,&fresh.info,&mut fresh_parameters)},"read fresh device start parameters")?;
+            fresh_parameters.Flags &= !DI_DONOTCALLCONFIGMG;
+            win_ok(unsafe{SetupDiSetDeviceInstallParamsW(fresh.devices.0,&fresh.info,&fresh_parameters)},"allow exact device start")?;
+            let change = SP_PROPCHANGE_PARAMS {
+                ClassInstallHeader:SP_CLASSINSTALL_HEADER { cbSize:size_of::<SP_CLASSINSTALL_HEADER>() as u32, InstallFunction:DIF_PROPERTYCHANGE },
+                StateChange:DICS_PROPCHANGE, Scope:DICS_FLAG_GLOBAL, HwProfile:0,
+            };
+            win_ok(unsafe { SetupDiSetClassInstallParamsW(fresh.devices.0, &fresh.info, &change.ClassInstallHeader, size_of::<SP_PROPCHANGE_PARAMS>() as u32) }, "prepare exact device start")?;
+            return win_ok(unsafe { SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, fresh.devices.0, &fresh.info) }, "start isolated exact device");
+        }
         let mut reboot = 0;
         win_ok(
             unsafe {
@@ -641,6 +679,31 @@ impl DeviceNode {
             return Err(Error::Platform("Windows requires a restart to load the driver; the newly created device will be rolled back".into()));
         }
         Ok(())
+    }
+    fn hardware_key(&self) -> Result<RegistryKey> {
+        let key = unsafe { SetupDiCreateDevRegKeyW(self.devices.0, &self.info, DICS_FLAG_GLOBAL, 0, DIREG_DEV, null(), null()) };
+        if key == INVALID_HANDLE_VALUE { return Err(os_error("open exact device hardware key", unsafe { GetLastError() })); }
+        Ok(RegistryKey(key))
+    }
+    fn set_value(&self, subkey:&str, name:&str, value:&str) -> Result<()> {
+        let root = self.hardware_key()?;
+        let mut key = null_mut();
+        let code = unsafe { RegCreateKeyExW(root.0, wide(subkey).as_ptr(), 0, null(), 0, KEY_SET_VALUE|KEY_QUERY_VALUE, null(), &mut key, null_mut()) };
+        if code != 0 { return Err(os_error("create exact device setting", code)); }
+        let key = RegistryKey(key); let value = wide(value);
+        let code = unsafe { RegSetValueExW(key.0, wide(name).as_ptr(), 0, REG_SZ, value.as_ptr().cast(), (value.len()*2) as u32) };
+        if code != 0 { return Err(os_error("write exact device setting", code)); }
+        Ok(())
+    }
+    fn value(&self, subkey:&str, name:&str) -> Result<String> {
+        let raw=unsafe { SetupDiOpenDevRegKey(self.devices.0,&self.info,DICS_FLAG_GLOBAL,0,DIREG_DEV,KEY_QUERY_VALUE) };
+        if raw==INVALID_HANDLE_VALUE { return Err(os_error("read exact hardware key",unsafe{GetLastError()})); }
+        let root=RegistryKey(raw);
+        let mut value = [0u16;1024]; let mut length = std::mem::size_of_val(&value) as u32;
+        let code = unsafe { RegGetValueW(root.0, wide(subkey).as_ptr(), wide(name).as_ptr(), RRF_RT_REG_SZ, null_mut(), value.as_mut_ptr().cast(), &mut length) };
+        if code != 0 { return Err(os_error("read exact device setting", code)); }
+        let end = value.iter().position(|v| *v == 0).ok_or_else(|| Error::Platform("unterminated device setting".into()))?;
+        String::from_utf16(&value[..end]).map_err(|_| Error::Platform("invalid device setting".into()))
     }
     fn rollback(&mut self) -> Result<()> {
         if !self.registered {
@@ -668,6 +731,133 @@ impl Drop for DeviceNode {
             }
         }
     }
+}
+
+/// Stage the original signed package without publishing a monitor. Every
+/// subsequently created isolated adapter reads exactly one monitor from it.
+pub(super) fn stage_demand_package(payload:&[(String,Vec<u8>)]) -> Result<PathBuf> {
+    let mut directory = ProtectedDirectory::create(payload)?;
+    verify_catalog(&directory.path)?;
+    let file = directory.path.join("vdd_settings.xml");
+    let before = std::fs::read(&file).map_err(|e|Error::Platform(e.to_string()))?;
+    let change = super::capacity_config::exact_count(&before,1)?;
+    super::windows::provision::capacity::store::replace_exact(&file,&before,&change.after)?;
+    directory.keep = true;
+    Ok(directory.path.clone())
+}
+pub(super) fn demand_configuration(directory:&Path) -> Result<()> {
+    let mut current = [0u16;32768]; let mut length=std::mem::size_of_val(&current) as u32;
+    let code=unsafe { RegGetValueW(HKEY_LOCAL_MACHINE,wide(CONFIG_KEY).as_ptr(),wide("VDDPATH").as_ptr(),RRF_RT_REG_SZ,null_mut(),current.as_mut_ptr().cast(),&mut length) };
+    if code == ERROR_FILE_NOT_FOUND { let _owned=Configuration::create(directory)?; return Ok(()); }
+    let expected=path_wide(directory);
+    if code != 0 || length as usize != expected.len()*2 || current[..expected.len()] != expected {
+        return Err(Error::Platform("MttVDD configuration belongs to another installation; it was preserved".into()));
+    }
+    Ok(())
+}
+pub(super) fn current_configuration() -> Result<Option<PathBuf>> {
+    let mut value=[0u16;32768]; let mut length=std::mem::size_of_val(&value) as u32;
+    let code=unsafe { RegGetValueW(HKEY_LOCAL_MACHINE,wide(CONFIG_KEY).as_ptr(),wide("VDDPATH").as_ptr(),RRF_RT_REG_SZ,null_mut(),value.as_mut_ptr().cast(),&mut length) };
+    if code==ERROR_FILE_NOT_FOUND { return Ok(None); }
+    if code!=0 { return Err(os_error("read current Mtt configuration",code)); }
+    let end=value.iter().position(|c|*c==0).ok_or_else(||Error::Platform("invalid Mtt configuration path".into()))?;
+    Ok(Some(PathBuf::from(OsString::from_wide(&value[..end]))))
+}
+pub(super) fn create_demand_device(directory:&Path, token:&str, registered:&mut dyn FnMut(&str)->Result<()>) -> Result<String> {
+    let description=format!("Eclipse Virtual Display {token}");
+    let mut device=DeviceNode::create_named(&description)?;
+    // Durable recovery owns the accepted registration, including an error or
+    // process exit before SetupAPI returns its exact instance ID.
+    device.keep=true;
+    device.register_exact()?;
+    registered(&device.instance)?;
+    device.set_value("Eclipse","Owner",token)?;
+    device.bind_exact(directory,Some(&format!("EclipseVDD-{token}")))?;
+    Ok(device.instance.clone())
+}
+pub(super) fn demand_instances() -> Result<Vec<String>> {
+    let handle=unsafe { SetupDiGetClassDevsW(&DISPLAY_CLASS,null(),null_mut(),0) };
+    if handle==INVALID_HANDLE_VALUE as isize { return Err(os_error("enumerate Mtt devices",unsafe{GetLastError()})); }
+    let devices=DevInfoSet(handle); let mut result=Vec::new();
+    for index in 0..4096 {
+        let mut info:SP_DEVINFO_DATA=unsafe{zeroed()}; info.cbSize=size_of::<SP_DEVINFO_DATA>() as u32;
+        if unsafe { SetupDiEnumDeviceInfo(devices.0,index,&mut info) }==0 {
+            let code=unsafe{GetLastError()};
+            if code==ERROR_NO_MORE_ITEMS { return Ok(result); }
+            return Err(os_error("enumerate exact Mtt node",code));
+        }
+        let hardware=property(devices.0,&info,SPDRP_HARDWAREID)?;
+        if hardware.split('\0').any(|id|matches!(id.to_ascii_lowercase().as_str(),"root\\mttvdd"|"mttvdd")) {
+            let mut id=[0u16;512];
+            win_ok(unsafe{SetupDiGetDeviceInstanceIdW(devices.0,&info,id.as_mut_ptr(),id.len() as u32,null_mut())},"read Mtt instance")?;
+            result.push(String::from_utf16_lossy(&id[..id.iter().position(|c|*c==0).unwrap_or(id.len())]).to_ascii_lowercase());
+        }
+    }
+    Err(Error::Platform("Mtt device inventory exceeds safety bound".into()))
+}
+fn property(devices:HDEVINFO,info:&SP_DEVINFO_DATA,kind:u32) -> Result<String> {
+    let mut value=[0u16;2048];
+    win_ok(unsafe{SetupDiGetDeviceRegistryPropertyW(devices,info,kind,null_mut(),value.as_mut_ptr().cast(),std::mem::size_of_val(&value) as u32,null_mut())},"read exact device property")?;
+    Ok(String::from_utf16_lossy(&value).trim_end_matches('\0').to_owned())
+}
+fn open_demand_device(instance:&str) -> Result<Option<DeviceNode>> {
+    let handle=unsafe{SetupDiCreateDeviceInfoList(&DISPLAY_CLASS,null_mut())};
+    if handle==INVALID_HANDLE_VALUE as isize { return Err(os_error("open exact device set",unsafe{GetLastError()})); }
+    let devices=DevInfoSet(handle); let mut info:SP_DEVINFO_DATA=unsafe{zeroed()};info.cbSize=size_of::<SP_DEVINFO_DATA>() as u32;
+    if unsafe{SetupDiOpenDeviceInfoW(devices.0,wide(instance).as_ptr(),null_mut(),0,&mut info)}==0 {
+        let code=unsafe{GetLastError()};
+        if matches!(code,ERROR_NO_SUCH_DEVINST|ERROR_FILE_NOT_FOUND) { return Ok(None); }
+        return Err(os_error("open exact virtual device",code));
+    }
+    let hardware=property(devices.0,&info,SPDRP_HARDWAREID)?;
+    if !hardware.split('\0').any(|id|matches!(id.to_ascii_lowercase().as_str(),"root\\mttvdd"|"mttvdd")) { return Err(Error::Platform("recorded device no longer has the original hardware identity".into())); }
+    Ok(Some(DeviceNode{devices,info,instance:instance.into(),registered:true,keep:true}))
+}
+pub(super) fn verify_demand_device(instance:&str,token:&str,ready:bool) -> Result<bool> {
+    let Some(device)=open_demand_device(instance)? else { return Ok(false); };
+    let owner=device.value("Eclipse","Owner");
+    if !owner.as_ref().is_ok_and(|value|value==token) {
+        if ready || property(device.devices.0,&device.info,SPDRP_DEVICEDESC)? != format!("Eclipse Virtual Display {token}") {
+            return Err(Error::Platform("recorded virtual device ownership changed; device was preserved".into()));
+        }
+    }
+    if ready && device.value("WUDF","DeviceGroupId")? != format!("EclipseVDD-{token}") { return Err(Error::Platform("recorded UMDF isolation group changed; device was preserved".into())); }
+    Ok(true)
+}
+pub(super) fn demand_problem(instance:&str) -> String {
+    match open_demand_device(instance) {
+        Ok(Some(device))=> {
+            let (mut status,mut problem)=(0,0);
+            let code=unsafe {CM_Get_DevNode_Status(&mut status,&mut problem,device.info.DevInst,0)};
+            format!("instance={instance}, cm={code}, status={status:#x}, problem={problem}, group={:?}",device.value("WUDF","DeviceGroupId"))
+        },
+        Ok(None)=>format!("instance={instance}, absent"),
+        Err(error)=>format!("instance={instance}, {error}"),
+    }
+}
+pub(super) fn find_unbound_demand(token:&str) -> Result<Option<String>> {
+    let mut found=None;
+    for instance in demand_instances()? {
+        let Some(device)=open_demand_device(&instance)? else { continue; };
+        if property(device.devices.0,&device.info,SPDRP_DEVICEDESC)?==format!("Eclipse Virtual Display {token}") {
+            if found.is_some() { return Err(Error::Platform("interrupted virtual device identity is ambiguous".into())); }
+            found=Some(instance);
+        }
+    }
+    Ok(found)
+}
+pub(super) fn remove_demand_device(instance:&str,token:&str,ready:bool) -> Result<()> {
+    if !verify_demand_device(instance,token,ready)? { return Ok(()); }
+    if let Some(mut device)=open_demand_device(instance)? { device.rollback()?; }
+    if open_demand_device(instance)?.is_some() { return Err(Error::Platform("exact virtual device removal is not yet complete".into())); }
+    Ok(())
+}
+/// Only the receipt, pinned driver and inactive-target checks in the capacity
+/// migration path authorize this legacy operation. Names never authorize it.
+pub(super) fn remove_verified_legacy(instance:&str) -> Result<()> {
+    if let Some(mut device)=open_demand_device(instance)? {device.rollback()?;}
+    if open_demand_device(instance)?.is_some() {return Err(Error::Platform("legacy virtual adapter removal is pending".into()));}
+    Ok(())
 }
 
 pub(super) struct InstallationFailure {

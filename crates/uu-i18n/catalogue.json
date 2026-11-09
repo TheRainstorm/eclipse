@@ -1,5 +1,8 @@
 {
   "每份配置都有独立的服务端设置和配对，随 data/server 一起保存。一台电脑同时运行一个服务端；在服务管理中切换配置，有串流时请先断开。复制目录前先停止本配置的服务。": "Each configuration keeps its own host settings and pairings in data/server. One host runs at a time. Switch configurations in Service Management after disconnecting streams; stop this host before copying its folder.",
+  "创建一块才出现一块，删除后从 Windows 移除；上限不会预留断开的显示器。首次创建会检查并准备签名驱动。": "Each monitor appears when created and is removed from Windows when deleted. The limit reserves no disconnected monitors. The first creation checks and prepares the signed driver.",
+  "检查驱动准备": "Check driver preparation",
+  "校验签名驱动文件；缺失时下载并准备。此操作不创建显示器，也不恢复历史桌面布局。": "Verify the signed driver files, downloading and preparing them if missing. This creates no monitors and does not restore an old desktop layout.",
   "无法清理旧版自启动（{removed}）": "Could not remove the old startup entry ({removed})",
   "本机服务正在使用其它配置；切换后才会使用本目录的服务端设置和配对。": "The host is using another configuration. Switch to use this folder’s server settings and pairings.",
   "请先结束当前服务的串流，再切换配置。": "End the current host streams before switching configurations.",

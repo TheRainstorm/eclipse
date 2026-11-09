@@ -47,7 +47,7 @@ fn ordinary(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn read(path: &Path) -> Result<Vec<u8>> {
+pub(in crate::virtual_display) fn read(path: &Path) -> Result<Vec<u8>> {
     ordinary(path)?;
     let mut file = OpenOptions::new()
         .read(true)
@@ -92,7 +92,7 @@ fn write_handle(file: &mut File, bytes: &[u8]) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn replace_exact(path: &Path, expected: &[u8], replacement: &[u8]) -> Result<()> {
+pub(in crate::virtual_display) fn replace_exact(path: &Path, expected: &[u8], replacement: &[u8]) -> Result<()> {
     ordinary(path)?;
     // Sharing is disabled while comparing, writing, syncing and reading back.
     // Keep the file/ACL/inode; close before UMDF may reopen its XML. A write
@@ -194,7 +194,7 @@ fn private_root(path: &Path) -> Result<()> {
     }
     checked
 }
-fn root() -> Result<PathBuf> {
+pub(in crate::virtual_display) fn root() -> Result<PathBuf> {
     let root = root_path()?;
     ordinary(
         root.parent()

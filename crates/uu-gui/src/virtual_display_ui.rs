@@ -157,7 +157,7 @@ impl State {
             }).collect();
         let mut state=Self{local_owner:Some(LocalOwner::Background),..Default::default()};
         state.receive(Response::Snapshot {
-            status:Status{supported:true,driver_present:true,available_slots:14,leased:2,allocated:2,keep_after_stream:false,limit:2,supports_lifetimes:true,supports_configuration:true,explanation:String::new(),install_url:String::new(),preparation:None},
+            status:Status{supported:true,driver_present:true,available_slots:14,leased:2,allocated:2,keep_after_stream:false,limit:2,supports_lifetimes:true,supports_configuration:true,on_demand:false,explanation:String::new(),install_url:String::new(),preparation:None},
             displays,slots:Vec::new(),
         },Some(LocalOwner::Background));
         state
@@ -845,6 +845,8 @@ impl State {
         } else if let Some(status) = &self.status {
             let explanation = if !status.supported {
                 uu_i18n::text("虚拟副屏仅支持 Windows")
+            } else if status.on_demand && status.allocation_count()<usize::from(status.limit) {
+                uu_i18n::text("创建一块才出现一块，删除后从 Windows 移除；上限不会预留断开的显示器。首次创建会检查并准备签名驱动。")
             } else if !status.driver_present {
                 uu_i18n::text("源机尚未安装支持的签名虚拟副屏驱动")
             } else if status.supports_lifetimes&&status.allocation_count()>=usize::from(status.limit) {
@@ -853,7 +855,7 @@ impl State {
                 uu_i18n::text("驱动没有可用虚拟屏，请在源机管理窗口准备驱动后重试")
             } else { "" };
             if !explanation.is_empty() { ui.weak(explanation); }
-            if !status.driver_present {
+            if !status.driver_present && !status.on_demand {
                 ui.hyperlink_to(
                     uu_i18n::text("下载签名虚拟副屏驱动"),
                     uu_core::virtual_display::INSTALL_URL,
@@ -861,7 +863,7 @@ impl State {
 
             }
             #[cfg(windows)]
-            if client.is_none() && status.driver_present && status.available_slots == 0 {
+            if client.is_none() && !status.on_demand && status.driver_present && status.available_slots == 0 {
                 let label = if embedded {
                     uu_i18n::text("准备虚拟显示器")
                 } else {
@@ -871,7 +873,7 @@ impl State {
                     .on_hover_text(uu_i18n::text("准备已安装的虚拟显示设备，完成后刷新当前管理对象的列表。"))
                     .clicked() {preparation_action=Some(if embedded {preparation_ui::Action::Prepare} else {preparation_ui::Action::BackgroundSetup});}
             }
-            if client.is_none()&&!status.driver_present {
+            if client.is_none()&&!status.driver_present&&!status.on_demand {
                 ui.weak(if embedded {
                     uu_i18n::text("更新或启用服务后，可自动准备虚拟显示器。")
                 } else {
@@ -883,6 +885,12 @@ impl State {
                     uu_i18n::text("打开后台准备")
                 };
                 if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(label)).clicked(){preparation_action=Some(if embedded {preparation_ui::Action::Prepare} else {preparation_ui::Action::BackgroundSetup});}
+            }
+            if client.is_none() && status.on_demand {
+                if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("检查驱动准备"))).clicked() {
+                    preparation_action=Some(if embedded {preparation_ui::Action::Prepare} else {preparation_ui::Action::BackgroundSetup});
+                }
+                ui.weak(uu_i18n::text("校验签名驱动文件；缺失时下载并准备。此操作不创建显示器，也不恢复历史桌面布局。"));
             }
         }
         if background_unavailable {
@@ -1336,7 +1344,7 @@ mod tests {
                 available_slots: 1,
                 leased: displays.len(),
                 allocated: displays.len(),
-                keep_after_stream:false,limit:uu_core::virtual_display::DEFAULT_DISPLAY_LIMIT,supports_lifetimes:true,supports_configuration:true,
+                keep_after_stream:false,limit:uu_core::virtual_display::DEFAULT_DISPLAY_LIMIT,supports_lifetimes:true,supports_configuration:true,on_demand:false,
                 explanation: String::new(),
                 install_url: String::new(),
                 preparation: None,

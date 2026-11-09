@@ -37,13 +37,16 @@ mod color_api;
 mod driver_download;
 #[path = "provision_windows.rs"]
 pub(super) mod provision;
+#[path = "demand_windows.rs"]
+mod demand;
 
-pub(super) struct Windows;
+#[derive(Default)]
+pub(super) struct Windows { scope:Mutex<Option<(String,BTreeSet<TargetKey>)>> }
 
 pub(super) struct MutationLock(HANDLE);
 impl MutationLock {
     fn acquire() -> Result<Self> {
-        Self::acquire_named("Local\\EclipseVirtualDisplayManager", 5_000)
+        Self::acquire_named("Global\\EclipseVirtualDisplayManager.v2", 5_000)
     }
     pub(super) fn acquire_named(name: &str, timeout: u32) -> Result<Self> {
         let name: Vec<_> = name.encode_utf16().chain([0]).collect();
@@ -150,23 +153,46 @@ fn scoped_worker<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
 }
 
 impl Backend for Windows {
-    fn recover(&self) -> Result<()> {
-        worker(|| {
-            // Inspect the durable gate after acquiring the shared layout lock;
-            // another process may have submitted preparation while we waited.
-            if provision::capacity::recovery_pending()? {
-                return Err(Error::Platform(
-                    "capacity preparation requires verified idle-host recovery".into(),
-                ));
+    fn on_demand(&self) -> bool { true }
+    fn configure_store(&self, directory:&std::path::Path, saved:&[TargetKey]) -> Result<()> {
+        let scope=crate::service_profile::directory_key(directory).map_err(|e|Error::Platform(e.to_string()))?;
+        *self.scope.lock().map_err(|_|Error::Platform("display owner is poisoned".into()))? = Some((scope.clone(),saved.iter().cloned().collect()));
+        if crate::service_admin::windows::require_administrator().is_ok() {
+            scoped_worker(move||demand::reconcile_owner(&scope))??;
+            if let Err(error)=scoped_worker(demand::retire_idle_pool)? {tracing::warn!(%error,"legacy virtual display pool cleanup is waiting for its owner");}
+        }
+        Ok(())
+    }
+    fn prepare_on_demand(&self, package:Option<&[(String,Vec<u8>)]>) -> Result<()> {
+        scoped_worker(demand::recover_uninstalled_legacy)??;
+        if package.is_none() && scoped_worker(demand::prepared)?? { return Ok(()); }
+        let owned;
+        let package = if let Some(package) = package { package } else {
+            owned = driver_download::download().map_err(|e|Error::Platform(e.message))?;
+            &owned
+        };
+        scoped_worker(|| demand::prepare(package))?
+    }
+    fn allocate(&self, id:LeaseId) -> Result<Option<(Target,Box<dyn Claim>)>> {
+        if !scoped_worker(demand::prepared)?? {self.prepare_on_demand(None)?;}
+        let (scope,saved) = {
+            let mut selected=self.scope.lock().map_err(|_|Error::Platform("display owner is poisoned".into()))?;
+            if selected.is_none() {
+                let directory=crate::Config::from_env().map_err(|e|Error::Platform(e.to_string()))?.at("device-trust");
+                *selected=Some((crate::service_profile::directory_key(&directory).map_err(|e|Error::Platform(e.to_string()))?,BTreeSet::new()));
             }
-            provision::recover_pending_only()
-        })?
+            selected.as_ref().unwrap().clone()
+        };
+        scoped_worker(|| demand::create(&scope,id,&saved))?.map(Some)
+    }
+    fn recover(&self) -> Result<()> {
+        Ok(())
     }
     fn preparation_authorized(&self) -> bool {
         crate::service_admin::windows::require_administrator().is_ok()
     }
     fn preparation_observation(&self) -> Result<Option<preparation::Observation>> {
-        worker(provision::capacity::observe)?.map(Some)
+        Ok(None)
     }
     fn download_capacity_driver(&self) -> preparation::Result<Vec<(String, Vec<u8>)>> {
         driver_download::download()
@@ -197,7 +223,9 @@ impl Backend for Windows {
         worker(provision::prepare)?
     }
     fn inventory(&self) -> Result<Inventory> {
-        worker(|| inventory(&scene()?))?
+        if crate::service_admin::windows::require_administrator().is_err() {return Ok(Inventory{supported:true,driver_present:false,targets:Vec::new()});}
+        let scope=self.scope.lock().map_err(|_|Error::Platform("display owner is poisoned".into()))?.as_ref().map(|(id,_)|id.clone());
+        worker(move||demand::inventory(scope.as_deref()))?
     }
     fn activate(
         &self,
@@ -205,7 +233,7 @@ impl Backend for Windows {
         spec: Spec,
     ) -> std::result::Result<Target, ActivationFailure> {
         let key = key.clone();
-        worker(move || activate(&key, spec)).unwrap_or_else(|error| {
+        worker(move || configure_owned_mode(&key, spec)).unwrap_or_else(|error| {
             Err(ActivationFailure {
                 message: error.to_string(),
                 activated: false,
@@ -214,11 +242,11 @@ impl Backend for Windows {
     }
     fn deactivate(&self, key: &TargetKey) -> Result<()> {
         let key = key.clone();
-        worker(move || deactivate(&key))?
+        worker(move || demand::remove(&key))?
     }
     fn reconfigure(&self,key:&TargetKey,spec:Spec)->std::result::Result<Target,ActivationFailure> {
         let key=key.clone();
-        worker(move||configure_mode(&key,spec,true)).unwrap_or_else(|error|Err(ActivationFailure{message:error.to_string(),activated:false}))
+        worker(move||configure_owned_mode(&key,spec)).unwrap_or_else(|error|Err(ActivationFailure{message:error.to_string(),activated:false}))
     }
     fn prepare(&self, key: &TargetKey) -> Result<()> {
         let key = key.clone();
@@ -721,8 +749,15 @@ fn apply(topology: &Topology, apply_submitted: &mut bool) -> Result<()> {
     })
 }
 
-fn activate(key: &TargetKey, spec: Spec) -> std::result::Result<Target, ActivationFailure> {
-    configure_mode(key,spec,false)
+fn configure_owned_mode(key:&TargetKey,spec:Spec)->std::result::Result<Target,ActivationFailure> {
+    // A new PnP monitor may become active between enumeration and this call
+    // when Windows applies its saved connected-display configuration. The
+    // exact owned claim permits both states; observe it afresh under the lock.
+    let observed=(||->Result<_>{let owned=demand::owned_keys(key)?;let active=scene()?.active.paths.iter().any(|p|target_key(p).is_ok_and(|(candidate,_)|&candidate==key));Ok((owned,active))})();
+    let (owned,active)=observed.map_err(|error|ActivationFailure{message:error.to_string(),activated:true})?;
+    let target=configure_mode(key,spec,active)?;
+    let result=provision::capacity::persist_owned_live(&owned);
+    result.map(|()|target).map_err(|error|ActivationFailure{message:error.to_string(),activated:true})
 }
 fn configure_mode(key: &TargetKey, spec: Spec, existing:bool) -> std::result::Result<Target, ActivationFailure> {
     let mut apply_submitted = false;

@@ -11,7 +11,7 @@ use std::{
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
 
 #[path = "capacity_store_windows.rs"]
-mod store;
+pub(in crate::virtual_display) mod store;
 type Checkpoint<'a> = &'a (dyn Fn() -> preparation::Result<()> + Sync);
 fn fail(message: impl Into<String>) -> Error {
     Error::Platform(message.into())
@@ -21,6 +21,54 @@ fn unchanged(error: Error) -> preparation::Failure {
 }
 fn idle(checkpoint: Checkpoint<'_>) -> Result<()> {
     checkpoint().map_err(|e| fail(e.message))
+}
+/// An earlier Eclipse first-install receipt binds the exact original adapter
+/// and protected package directory. A capacity edit of a foreign installation
+/// is deliberately insufficient for adopting that adapter.
+pub(in crate::virtual_display) fn legacy_owned(directory:&Path) -> Result<Vec<String>> {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Devices::Properties::{DEVPKEY_Device_FirstInstallDate,DEVPROP_TYPE_FILETIME};
+    let root=store::root()?;
+    let mut owned=BTreeMap::<String,u64>::new();
+    for entry in std::fs::read_dir(&root).map_err(|e|fail(e.to_string()))? {
+        let entry=entry.map_err(|e|fail(e.to_string()))?;
+        if !entry.file_name().to_string_lossy().ends_with(".receipt.json") {continue;}
+        let record:serde_json::Value=serde_json::from_slice(&store::read(&entry.path())?).map_err(|e|fail(e.to_string()))?;
+        if record["schema"]=="eclipse-capacity-transaction/v1"
+            && record["phase"].as_str().is_some_and(|s|s.starts_with("committed"))
+            && record["installation_directory"].as_str().is_some_and(|p|Path::new(p)==directory)
+            && record["driver_version"]==driver_package().driver_version {
+            if let Some(instance)=record["instance"].as_str() {owned.insert(instance.to_ascii_lowercase(),entry.metadata().map_err(|e|fail(e.to_string()))?.creation_time());}
+        }
+    }
+    let devices=DeviceSet::displays()?;
+    for candidate in mtt(&devices)? {
+        if let Some(receipt_time)=owned.get(&candidate.instance).copied() {
+            verify_driver(&devices,&candidate,None)?;
+            // Root IDs can be reused after uninstall. An adapter installed
+            // after our first-install receipt is a different resource, even
+            // when it uses the identical signed driver and configuration path.
+            let (mut kind,mut length)=(0,0);let mut first_install=0u64;
+            win_ok(unsafe {SetupDiGetDevicePropertyW(devices.0,&candidate.device,&DEVPKEY_Device_FirstInstallDate,&mut kind,(&mut first_install as *mut u64).cast(),8,&mut length,0)},"verify original virtual adapter installation identity")?;
+            if kind!=DEVPROP_TYPE_FILETIME || length!=8 || first_install==0 || first_install>receipt_time {owned.remove(&candidate.instance);}
+        }
+    }
+    Ok(owned.into_keys().collect())
+}
+pub(in crate::virtual_display) fn retire_legacy_pool(directory:&Path, saved:&BTreeSet<TargetKey>) -> Result<()> {
+    let owned=legacy_owned(directory)?;
+    let devices=DeviceSet::displays()?;
+    for candidate in mtt(&devices)? {
+        if !owned.contains(&candidate.instance) {return Err(fail("another application owns the Mtt adapter; it was preserved"));}
+        let targets=targets_for_instance(&candidate.instance)?;
+        if targets.iter().any(|t|t.active&&!saved.contains(&t.key)) {return Err(fail("旧版虚拟显示器仍在使用，请先在原窗口关闭后重试。"));}
+        let mut claims=BTreeMap::new();claim_targets(&targets,&mut claims)?;
+        if crate::virtual_display::install_windows::current_configuration()?.as_deref()!=Some(directory) {return Err(fail("legacy driver configuration changed during migration"));}
+        verify_driver(&devices,&candidate,None)?;
+        deactivate_claimed(&targets,&claims)?;
+        crate::virtual_display::install_windows::remove_verified_legacy(&candidate.instance)?;
+    }
+    crate::virtual_display::install_windows::no_existing_mtt_node()
 }
 
 struct Existing {
@@ -392,6 +440,38 @@ fn modes(topology: &Topology) -> Result<Fingerprints> {
 pub(in crate::virtual_display) fn database() -> Result<Fingerprints> {
     modes(&query(QDC_DATABASE_CURRENT)?)
 }
+/// An explicitly added monitor creates a new connected-display combination.
+/// Windows persists that complete combination, not an isolated target. Save
+/// only the freshly applied desktop, proving that the save changes no active
+/// output; never replay a historical topology. Driver preparation never calls
+/// this path and therefore publishes or persists no monitor/layout.
+pub(in crate::virtual_display) fn persist_owned_live(owned:&BTreeSet<TargetKey>) -> Result<()> {
+    let baseline=active_signature()?;
+    if !baseline.keys().any(|key|owned.contains(key)) {return Err(fail("no owned active display to persist"));}
+    let saved=database()?;
+    let proposal=query(QDC_ONLY_ACTIVE_PATHS)?;
+    let expected=modes(&proposal)?;
+    let code=unsafe{SetDisplayConfig(proposal.paths.len() as u32,proposal.paths.as_ptr(),proposal.modes.len() as u32,proposal.modes.as_ptr(),SDC_USE_SUPPLIED_DISPLAY_CONFIG|SDC_VALIDATE)};
+    if code!=0 {return Err(error("validate owned display persistence",code as u32));}
+    if active_signature()?!=baseline || database()?!=saved {return Err(fail("display configuration changed before owned persistence; no saved policy was submitted"));}
+    let fresh=query(QDC_ONLY_ACTIVE_PATHS)?;
+    if modes(&fresh)?!=expected {return Err(fail("display modes changed before owned persistence"));}
+    let code=unsafe{SetDisplayConfig(fresh.paths.len() as u32,fresh.paths.as_ptr(),fresh.modes.len() as u32,fresh.modes.as_ptr(),SDC_USE_SUPPLIED_DISPLAY_CONFIG|SDC_APPLY|SDC_SAVE_TO_DATABASE)};
+    if code!=0 {return Err(error("save owned display persistence",code as u32));}
+    if active_signature()?!=baseline {return Err(fail("active displays changed while saving the current monitor combination; no historical layout was replayed"));}
+    let after=database()?;
+    // Saved IDD paths may be routed through the physical GPU with different
+    // adapter/source/target identifiers. They are not a live PnP inventory.
+    // Require the connected monitor identities; actual modes/ownership are
+    // verified against the unchanged active readback and the exact devnodes.
+    let expected_monitors:BTreeSet<_>=expected.keys().map(|key|key.monitor_path.as_str()).collect();
+    let saved_monitors:BTreeSet<_>=after.keys().map(|key|key.monitor_path.as_str()).collect();
+    if saved_monitors!=expected_monitors {
+        return Err(fail("Windows did not record the current connected monitor combination"));
+    }
+    Ok(())
+}
+
 fn owned_keys(pending: &Pending) -> BTreeSet<TargetKey> {
     pending.claims.keys().cloned().collect()
 }

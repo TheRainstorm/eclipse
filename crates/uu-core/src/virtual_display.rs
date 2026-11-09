@@ -57,6 +57,7 @@ pub struct DriverPackage {
     pub license: String,
     pub source_url: String,
     pub url: String,
+    pub api_url: String,
     pub zip_sha256: String,
     pub files: Vec<DriverFile>,
 }
@@ -99,6 +100,12 @@ pub fn install_signed(package_directory: &std::path::Path) -> Result<Status> {
         let manager = Manager::shared();
         {
             let ownership = manager.lock()?;
+            if manager.backend.on_demand() {
+                let package = read_pinned_package(package_directory)?;
+                manager.backend.prepare_on_demand(Some(&package))?;
+                drop(ownership);
+                return manager.status();
+            }
             if manager
                 .backend
                 .preparation_observation()?
@@ -206,6 +213,8 @@ pub struct Status {
     pub supports_lifetimes: bool,
     #[serde(default)]
     pub supports_configuration: bool,
+    #[serde(default)]
+    pub on_demand: bool,
     pub explanation: String,
     pub install_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -336,6 +345,10 @@ struct ActivationFailure {
 trait Claim: Send + Sync {}
 
 trait Backend: Send + Sync {
+    fn on_demand(&self) -> bool { false }
+    fn configure_store(&self, _directory:&std::path::Path, _saved:&[TargetKey]) -> Result<()> { Ok(()) }
+    fn prepare_on_demand(&self, _package:Option<&[(String,Vec<u8>)]>) -> Result<()> { Err(Error::Unsupported) }
+    fn allocate(&self, _id:LeaseId) -> Result<Option<(Target,Box<dyn Claim>)>> { Ok(None) }
     /// Finish this process's earlier partial mutation before admitting another.
     /// Read-only inventory/status calls do not trigger recovery.
     fn recover(&self) -> Result<()> {
@@ -419,7 +432,7 @@ impl Manager {
         MANAGER
             .get_or_init(|| {
                 #[cfg(windows)]
-                let backend: Box<dyn Backend> = Box::new(windows::Windows);
+                let backend: Box<dyn Backend> = Box::new(windows::Windows::default());
                 #[cfg(not(windows))]
                 let backend: Box<dyn Backend> = Box::new(Unsupported);
                 Arc::new(Self {
@@ -571,6 +584,7 @@ impl Manager {
     pub fn recover_preparation(&self) -> Result<Option<preparation::Status>> {
         let entries = self.lock()?;
         if self.manual_closing.load(Ordering::Acquire) {return Err(Error::HostClosing);}
+        if self.backend.on_demand() { self.backend.prepare_on_demand(None)?; return Ok(None); }
         if self.backend.preparation_observation()?.is_none() {
             return Ok(None);
         }
@@ -601,6 +615,7 @@ impl Manager {
         if self.manual_closing.load(Ordering::Acquire) {
             return Err(Error::HostClosing);
         }
+        if self.backend.on_demand() { return self.backend.prepare_on_demand(None); }
         if self.backend.preparation_observation()?.is_some() {
             let status = self
                 .preparation
@@ -642,7 +657,9 @@ impl Manager {
                 available_slots += 1;
             }
         }
-        let explanation = if !inventory.supported {
+        let explanation = if self.backend.on_demand() {
+            "Virtual displays are created and physically removed on demand. The creation limit reserves no disconnected Windows monitors. Persistent display settings are restored when their host starts."
+        } else if !inventory.supported {
             "Virtual displays are only supported on Windows."
         } else if !inventory.driver_present {
             "Creating a virtual display can prepare the pinned signed driver through an authorized management service. A foreground application without that service requires local administrator approval."
@@ -663,6 +680,7 @@ impl Manager {
             limit:self.limit.load(Ordering::Acquire),
             supports_lifetimes:true,
             supports_configuration:true,
+            on_demand:self.backend.on_demand(),
             explanation: explanation.into(),
             install_url: INSTALL_URL.into(),
             preparation: if self.backend.preparation_observation()?.is_some() {
@@ -814,6 +832,9 @@ impl Manager {
         }
         let limit=self.limit.load(Ordering::Acquire);
         if saved.is_none() && self.allocated_count(&entries)? >=usize::from(limit) {return Err(Error::LimitReached{limit});}
+        let id = LeaseId(saved.map_or_else(Uuid::new_v4,|s|s.id));
+        // Validate metadata before publishing any Windows device.
+        let display_name = match saved.filter(|s|!s.name.is_empty()) {Some(saved)=>saved.name.clone(),None=>self.next_display_name(&entries)?};
         let preparation_before = self.backend.preparation_observation()?;
         if self.preparation.recovery_pending()
             || preparation_before.is_some_and(|state| state.recovery_pending)
@@ -836,7 +857,8 @@ impl Manager {
         // Reuse an already safe slot immediately, even during another stream.
         // Pool expansion is an independent idle-only intent, never a condition
         // for consuming existing capacity.
-        let restored=if let Some(saved)=saved {
+        let allocated = self.backend.allocate(id)?;
+        let restored=if self.backend.on_demand() { allocated } else if let Some(saved)=saved {
             let targets=self.backend.inventory()?.targets;
             let matching:Vec<_>=targets.into_iter().filter(|t|t.key.monitor_path==saved.target.monitor_path&&t.key.target==saved.target.target).collect();
             if matching.len()>1{return Err(Error::Platform("saved virtual target is ambiguous".into()));}
@@ -880,20 +902,19 @@ impl Manager {
             }
         }
         let (target, claim) = selected.ok_or(Error::NoAvailableSlot)?;
-        let id = LeaseId(saved.map_or_else(Uuid::new_v4,|s|s.id));
         let mut display = Display {
             id,
             owner,
             spec,
             actual: target.actual,
-            name: match saved.filter(|s|!s.name.is_empty()) {Some(saved)=>saved.name.clone(),None=>self.next_display_name(&entries)?},
+            name: display_name,
             source: target.source.clone(),
             active: false,
             persistent:saved.is_some(),
             cleanup_pending: false,
             last_error: None,
         };
-        let activation=if saved.is_some()&&target.active {Ok(target.clone())}else{self.backend.activate(&target.key,spec)};
+        let activation=if self.backend.on_demand()&&target.active {self.backend.reconfigure(&target.key,spec)}else if saved.is_some()&&target.active {Ok(target.clone())}else{self.backend.activate(&target.key,spec)};
         match activation {
             Ok(observed) => {
                 display.active = observed.active;
@@ -926,7 +947,7 @@ impl Manager {
                 Ok(display)
             }
             Err(failure) => {
-                if !failure.activated {
+                if !failure.activated && !self.backend.on_demand() {
                     return Err(Error::Platform(failure.message));
                 }
                 match self.backend.deactivate(&target.key) {
@@ -999,7 +1020,7 @@ impl Manager {
         if owner.is_some_and(|owner| owner != entry.display.owner) {
             return Err(Error::WrongOwner);
         }
-        if entry.display.persistent {self.forget_saved(id)?;entry.display.persistent=false;}
+        if entry.display.persistent && !(self.backend.on_demand() && self.manual_closing.load(Ordering::Acquire)) {self.forget_saved(id)?;entry.display.persistent=false;}
         match self.backend.deactivate(&entry.target) {
             Ok(()) => {
                 entries.remove(&id);
@@ -1088,7 +1109,7 @@ impl Manager {
             self.manual_closing.store(true, Ordering::Release);
             // Persisted targets intentionally outlive this process. A later
             // host must reacquire the recorded target under a fresh claim.
-            _ownership.retain(|_,entry|entry.display.owner!=Owner::Manual||!entry.display.persistent);
+            if !self.backend.on_demand() { _ownership.retain(|_,entry|entry.display.owner!=Owner::Manual||!entry.display.persistent); }
         }
         self.release_manual()
     }

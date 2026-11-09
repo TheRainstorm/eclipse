@@ -2297,7 +2297,7 @@ mod tests {
     #[test]
     fn automatic_update_preserves_temporary_displays_and_unfinished_preparation() {
         use uu_core::virtual_display::{Display,LeaseId,Owner,Spec,Status,preparation};
-        let mut status=Status{supported:true,driver_present:true,available_slots:1,leased:0,allocated:0,keep_after_stream:false,limit:2,supports_lifetimes:true,supports_configuration:true,explanation:String::new(),install_url:String::new(),preparation:None};
+        let mut status=Status{supported:true,driver_present:true,available_slots:1,leased:0,allocated:0,keep_after_stream:false,limit:2,supports_lifetimes:true,supports_configuration:true,on_demand:false,explanation:String::new(),install_url:String::new(),preparation:None};
         let display=Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Manual,spec:Spec::default(),actual:None,name:"Generated".into(),source:"generated-source".into(),active:true,persistent:false,cleanup_pending:false,last_error:None};
         let response=|status:Status,displays|Response::VirtualDisplay{response:uu_core::native_virtual_display::Response::Snapshot{status,displays,slots:vec![]}};
         assert!(!automatic_restart_safe(&Response::Applied));

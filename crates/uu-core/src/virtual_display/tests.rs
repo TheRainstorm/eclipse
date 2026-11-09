@@ -8,6 +8,7 @@ const TEST_DISPLAY_LIMIT: u16 = 2;
 
 #[derive(Default)]
 struct Fake {
+    on_demand: AtomicBool,
     targets: Mutex<Vec<Target>>,
     fail_recover: AtomicBool,
     recover_calls: AtomicUsize,
@@ -41,6 +42,15 @@ impl Drop for FakeClaim {
     }
 }
 impl Backend for Arc<Fake> {
+    fn on_demand(&self)->bool {self.on_demand.load(Ordering::Relaxed)}
+    fn allocate(&self,_id:LeaseId)->Result<Option<(Target,Box<dyn Claim>)>> {
+        if !self.on_demand() {return Ok(None);}
+        let index=self.provision_calls.fetch_add(1,Ordering::SeqCst) as u32+1;
+        let target=capacity_target(index);
+        self.targets.lock().unwrap().push(target.clone());
+        let claim=self.claim(&target.key)?;
+        Ok(Some((target,claim)))
+    }
     fn recover_capacity(&self,checkpoint:&(dyn Fn()->preparation::Result<()>+Sync))->preparation::Result<()> {
         checkpoint()?;
         self.recover().map_err(|e|preparation::Failure::pending(e.to_string()))?;
@@ -210,6 +220,7 @@ impl Backend for Arc<Fake> {
             return Err(Error::Platform("busy".into()));
         }
         self.removed.lock().unwrap().push(key.clone());
+        if self.on_demand() {self.targets.lock().unwrap().retain(|t|&t.key!=key);return Ok(());}
         if let Some(target) = self
             .targets
             .lock()
@@ -1105,6 +1116,32 @@ fn saved_policy(manager:&Manager)->std::path::PathBuf {
     manager.configure_saved_displays(&path).unwrap();
     manager.set_limit_persisted(TEST_DISPLAY_LIMIT).unwrap();
     path
+}
+#[test]
+fn on_demand_limits_create_no_targets_and_shutdown_preserves_only_persistent_intent() {
+    let (_,backend)=fixture();backend.targets.lock().unwrap().clear();backend.on_demand.store(true,Ordering::Relaxed);
+    let first=another_manager(&backend);let path=saved_policy(&first);
+    first.set_limit_persisted(1).unwrap();first.set_limit_persisted(2).unwrap();
+    assert!(backend.targets.lock().unwrap().is_empty());
+    let persistent=first.create(Owner::Manual,Spec::default()).unwrap();
+    first.set_persistent(persistent.id,true).unwrap();
+    let temporary=first.create(Owner::Manual,Spec::default()).unwrap();
+    assert_eq!(backend.targets.lock().unwrap().len(),2);
+    first.remove(temporary.id).unwrap();
+    first.set_limit_persisted(1).unwrap();
+    assert_eq!(backend.targets.lock().unwrap().len(),1);
+    assert!(matches!(first.create(Owner::Manual,Spec::default()),Err(Error::LimitReached{limit:1})));
+    first.shutdown_manual().unwrap();
+    assert!(backend.targets.lock().unwrap().is_empty());
+    assert_eq!(first.saved_records().unwrap().len(),1);
+    let next=another_manager(&backend);next.configure_saved_displays(&path).unwrap();
+    next.restore_saved_displays().unwrap();
+    assert_eq!(backend.targets.lock().unwrap().len(),1);
+    assert_eq!(next.list().unwrap()[0].id,persistent.id);
+    next.remove(persistent.id).unwrap();
+    assert!(backend.targets.lock().unwrap().is_empty());
+    assert!(next.saved_records().unwrap().is_empty());
+    std::fs::remove_dir_all(path).unwrap();
 }
 
 #[test]
