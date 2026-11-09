@@ -11,10 +11,18 @@ pub(super) struct SavedDisplay {
     pub target: TargetKey,
     #[serde(default,skip_serializing_if="String::is_empty")]
     pub name: String,
+    #[serde(default="default_true")]
+    pub enabled:bool,
+    #[serde(default="default_true")]
+    pub persistent:bool,
+    #[serde(default="default_true")]
+    pub restore_layout:bool,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub position:Option<Position>,
 }
 impl SavedDisplay {
     pub(super) fn disconnected(&self)->Display {
-        Display{id:LeaseId(self.id),owner:Owner::Manual,spec:self.spec,actual:None,name:if self.name.is_empty(){uu_i18n::text("持久虚拟显示器").into()}else{self.name.clone()},source:String::new(),active:false,persistent:true,cleanup_pending:false,last_error:Some(uu_i18n::text("等待已保存的虚拟显示器恢复；请检查驱动及可用槽位").into())}
+        Display{id:LeaseId(self.id),owner:Owner::Manual,spec:self.spec,actual:None,name:self.name.clone(),source:String::new(),active:false,persistent:self.persistent,enabled:self.enabled,restore_layout:self.restore_layout,cleanup_pending:false,last_error:self.enabled.then(||uu_i18n::text("已请求启用，但尚未连接到 Windows；请重试启用或查看诊断详情。").into())}
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -35,7 +43,7 @@ impl Default for Settings {
 }
 impl Settings {
     fn validate(&self) -> Result<()> {
-        if self.version != 1 {
+        if !matches!(self.version,1|2) {
             return Err(Error::Platform("unsupported saved display policy".into()));
         }
         if self.displays.len()>usize::from(MAX_DISPLAY_LIMIT) {
@@ -47,8 +55,7 @@ impl Settings {
             display.spec.validate()?;
             validate_name(&display.name)?;
             if !ids.insert(display.id)
-                || !targets.insert((&display.target.monitor_path, display.target.target))
-                || display.target.monitor_path.is_empty()
+                || (display.enabled && !display.target.monitor_path.is_empty() && !targets.insert((&display.target.monitor_path, display.target.target)))
                 || display.target.monitor_path.len() > 2048
                 || display.target.monitor_path.chars().any(char::is_control)
             {
@@ -70,7 +77,7 @@ pub(super) struct File {
 }
 impl File {
     pub(super) fn save(&self,display:SavedDisplay)->Result<()> {
-        self.edit(|policy|{policy.displays.retain(|d|d.id!=display.id);policy.displays.push(display);Ok(())})
+        self.edit(|policy|{if let Some(old)=policy.displays.iter_mut().find(|d|d.id==display.id) {*old=display;}else{policy.displays.push(display);}Ok(())})
     }
     fn read(&self) -> Result<Settings> {
         let path = self.directory.join("virtual-displays.json");
@@ -86,6 +93,7 @@ impl File {
         let _lock = crate::device_trust::TrustStore::lock_at(&self.directory).map_err(platform)?;
         let mut value = self.read()?;
         change(&mut value)?;
+        value.version=2;
         value.validate()?;
         let bytes = serde_json::to_vec_pretty(&value).map_err(platform)?;
         if bytes.len() > 1024 * 1024 {
@@ -110,12 +118,80 @@ impl State {
     pub(super) fn directory(&self)->Option<PathBuf> {self.file.as_ref().map(|file|file.directory.clone())}
 }
 impl Manager {
+    pub(super) fn ensure_catalog(&self)->Result<()> {
+        if self.backend.on_demand()&&self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.file.is_none() {
+            let directory=crate::Config::from_env().map_err(platform)?.at("device-trust");
+            self.configure_saved_displays(directory)?;
+        }
+        Ok(())
+    }
+    /// Adding a definition is metadata only. No driver, target or claim is reserved.
+    pub fn add_display(&self)->Result<Display> {
+        self.ensure_catalog()?;
+        let entries=self.lock()?;
+        if self.manual_closing.load(Ordering::Acquire) {return Err(Error::HostClosing);}
+        if self.saved_records()?.len()>=usize::from(MAX_DISPLAY_LIMIT) {return Err(Error::LimitReached{limit:MAX_DISPLAY_LIMIT});}
+        let record=SavedDisplay{id:Uuid::new_v4(),spec:Spec::default(),name:self.next_display_name(&entries)?,target:TargetKey{adapter:(0,0),target:0,monitor_path:String::new()},enabled:false,persistent:true,restore_layout:true,position:None};
+        self.saved_file()?.save(record.clone())?;
+        Ok(record.disconnected())
+    }
+    pub fn set_enabled(&self,id:LeaseId,enabled:bool)->Result<Display> {
+        if !enabled {
+            self.remove_owned(id,None,false)?;
+        } else {
+            let record={
+                let mut entries=self.lock()?;
+                let record=self.saved_records()?.into_iter().find(|r|r.id==id.0);
+                if let Some(entry)=entries.get(&id) {
+                    if entry.display.cleanup_pending {return Err(Error::CleanupPending{id,message:entry.display.last_error.clone().unwrap_or_default()});}
+                    let current=self.backend.inventory()?.targets.into_iter().find(|t|t.key==entry.target).ok_or(Error::UnknownSlot)?;
+                    if current.active {return Ok(entry.display.clone());}
+                    let existing:Vec<_>=entries.values().map(|e|(e.target.clone(),e.display.spec)).collect();
+                    let position=record.as_ref().filter(|r|r.restore_layout).and_then(|r|r.position);
+                    let target=self.backend.reconnect(&entry.target,entry.display.spec,position,&existing)?;
+                    let entry=entries.get_mut(&id).unwrap();
+                    entry.display.active=target.active;entry.display.actual=target.actual;entry.display.source=target.source;
+                    return Ok(entry.display.clone());
+                }
+                self.saved_records()?.into_iter().find(|r|r.id==id.0).ok_or(Error::UnknownSlot)?
+            };
+            self.create_restored(&record)?;
+        }
+        self.list()?.into_iter().find(|d|d.id==id).ok_or(Error::UnknownSlot)
+    }
+    pub fn set_restore_layout(&self,id:LeaseId,restore:bool)->Result<()> {
+        let mut entries=self.lock()?;
+        self.saved_file()?.edit(|policy| {
+            policy.displays.iter_mut().find(|d|d.id==id.0).ok_or(Error::UnknownSlot)?.restore_layout=restore;
+            Ok(())
+        })?;
+        if let Some(entry)=entries.get_mut(&id) {entry.display.restore_layout=restore;}
+        Ok(())
+    }
+    pub(super) fn mark_disabled(&self,id:LeaseId,position:Option<Position>)->Result<()> {
+        if self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.file.is_none() {return Ok(());}
+        self.saved_file()?.edit(|policy| {
+            if let Some(record)=policy.displays.iter_mut().find(|d|d.id==id.0) {
+                record.enabled=false;
+                if position.is_some() {record.position=position;}
+            }
+            Ok(())
+        })
+    }
+    pub(super) fn remember_position(&self,id:LeaseId,position:Option<Position>)->Result<()> {
+        if position.is_none() {return Ok(());}
+        if self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.file.is_none() {return Ok(());}
+        self.saved_file()?.edit(|policy| {
+            if let Some(record)=policy.displays.iter_mut().find(|d|d.id==id.0) {record.position=position;}
+            Ok(())
+        })
+    }
     pub(super) fn saved_records(&self)->Result<Vec<SavedDisplay>> {
         let file=self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.file.clone();
         file.map(|file|file.read().map(|policy|policy.displays)).unwrap_or_else(||Ok(Vec::new()))
     }
     pub(super) fn allocated_count(&self,entries:&BTreeMap<LeaseId,Entry>)->Result<usize> {
-        Ok(entries.len()+self.saved_records()?.iter().filter(|saved|!entries.contains_key(&LeaseId(saved.id))).count())
+        Ok(entries.len()+self.saved_records()?.iter().filter(|saved|saved.enabled&&!entries.contains_key(&LeaseId(saved.id))).count())
     }
     pub fn configure_saved_displays(&self, directory: impl AsRef<Path>) -> Result<()> {
         let entries = self.lock()?;
@@ -123,7 +199,6 @@ impl Manager {
             directory: directory.as_ref().to_owned(),
         };
         let saved = file.read()?;
-        let limit=crate::device_book::Store::open(&file.directory).and_then(|store|store.read()).map_err(platform)?.sharing.virtual_display_limit;
         let mut state = self
             .policy
             .lock()
@@ -138,12 +213,16 @@ impl Manager {
                 "cannot switch saved-display owner while targets are held",
             ));
         }
-        self.backend.configure_store(&file.directory,&saved.displays.iter().map(|d|d.target.clone()).collect::<Vec<_>>())?;
+        if state.file.as_ref().is_none_or(|old|old.directory!=file.directory) {
+            self.backend.configure_store(&file.directory,&saved.displays.iter().filter(|d|!d.target.monitor_path.is_empty()).map(|d|d.target.clone()).collect::<Vec<_>>())?;
+            // A temporary screen never reconnects just because the host starts.
+            file.edit(|policy|{for display in &mut policy.displays {if !display.persistent {display.enabled=false;}}Ok(())})?;
+        }
         state.file = Some(file);
         state.keep_after_stream = saved.keep_after_stream;
         state.restore_pending = !saved.displays.is_empty();
         state.waiting_for_capacity = false;
-        self.limit.store(limit,Ordering::Release);
+        self.limit.store(MAX_DISPLAY_LIMIT,Ordering::Release);
         Ok(())
     }
     pub(super) fn saved_file(&self) -> Result<File> {
@@ -204,23 +283,13 @@ impl Manager {
     }
     pub fn set_persistent(&self, id: LeaseId, persistent: bool) -> Result<()> {
         let mut entries = self.lock()?;
-        let Some(entry)=entries.get_mut(&id) else {
-            if !persistent && self.saved_records()?.iter().any(|s|s.id==id.0) {return self.forget_saved(id);}
-            return Err(Error::UnknownSlot);
-        };
-        let saved = SavedDisplay {
-            id: id.0,
-            spec: entry.display.spec,
-            target: entry.target.clone(),
-            name: entry.display.name.clone(),
-        };
-        self.saved_file()?.edit(|policy| {
-            policy.displays.retain(|d| d.id != id.0);
-            if persistent {
-                policy.displays.push(saved);
-            }
+        let file=self.saved_file()?;
+        file.edit(|policy| {
+            let saved=policy.displays.iter_mut().find(|d|d.id==id.0).ok_or(Error::UnknownSlot)?;
+            saved.persistent=persistent;
             Ok(())
         })?;
+        let Some(entry)=entries.get_mut(&id) else {return Ok(());};
         entry.display.persistent = persistent;
         entry.explicit_temporary = !persistent;
         Ok(())
@@ -234,16 +303,18 @@ impl Manager {
     fn configure_display_inner(&self,id:LeaseId,name:String,spec:Spec,restore_mode:bool)->Result<Display> {
         spec.validate()?;
         let name=name.trim().to_owned();validate_name(&name)?;
+        if name.is_empty() {return Err(platform(uu_i18n::text("请填写虚拟显示器名称")));}
         let mut entries=self.lock()?;
         if self.manual_closing.load(Ordering::Acquire) {return Err(Error::HostClosing);}
         let Some(entry)=entries.get_mut(&id) else {
             let mut saved=self.saved_records()?.into_iter().find(|s|s.id==id.0).ok_or(Error::UnknownSlot)?;
             saved.name=name;saved.spec=spec;
             self.saved_file()?.save(saved.clone())?;
-            self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.restore_pending=true;
+            if saved.enabled {self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.restore_pending=true;}
             return Ok(saved.disconnected());
         };
         if entry.display.cleanup_pending {return Err(Error::CleanupPending{id,message:entry.display.last_error.clone().unwrap_or_default()});}
+        let saved_record=self.saved_records()?.into_iter().find(|r|r.id==id.0);
         let previous=entry.display.clone();
         let current=self.backend.inventory()?.targets.into_iter().find(|target|target.key==entry.target).ok_or(Error::UnknownSlot)?;
         // Actual HDR/mode may differ because of OS policy or an external mode
@@ -273,20 +344,13 @@ impl Manager {
             }
         }else{None};
         let next_name=if name.is_empty(){current.name}else{name};
-        if previous.persistent {
-            let record=SavedDisplay{id:id.0,spec,target:entry.target.clone(),name:next_name.clone()};
-            let file=self.saved_file()?;
-            if let Err(error)=file.save(record.clone()) {
-                // Atomic replacement may have completed before an IO error.
-                // Confirm the exact record before rolling hardware back.
-                if !file.read().is_ok_and(|p|p.displays.iter().any(|d|d==&record)) {
-                    let mut message=error.to_string();
-                    if mode_changed {
-                        if let Err(rollback)=self.backend.reconfigure(&entry.target,current.actual.unwrap()) {message.push_str(&format!("; rollback: {}",rollback.message));}
-                    }
-                    entry.display.last_error=Some(message.clone());
-                    return Err(platform(message));
-                }
+        self.backend.rename(&entry.target,&next_name)?;
+        if let Some(mut record)=saved_record {
+            record.spec=spec;record.name=next_name.clone();
+            if let Some(position)=self.backend.position(&entry.target)? {record.position=Some(position);}
+            if let Err(error)=self.saved_file()?.save(record) {
+                if mode_changed {let _=self.backend.reconfigure(&entry.target,current.actual.unwrap());}
+                return Err(error);
             }
         }
         entry.display.name=next_name;
@@ -311,6 +375,7 @@ impl Manager {
         Ok(display)
     }
     pub(super) fn forget_saved(&self, id: LeaseId) -> Result<()> {
+        if self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.file.is_none() {return Ok(());}
         self.saved_file()?.edit(|policy| {
             policy.displays.retain(|d| d.id != id.0);
             Ok(())
@@ -331,6 +396,7 @@ impl Manager {
                     spec: entry.display.spec,
                     target: entry.target.clone(),
                     name: entry.display.name.clone(),
+                    enabled:true,persistent:true,restore_layout:entry.display.restore_layout,position:self.backend.position(&entry.target)?,
                 });
             }
             Ok(())
@@ -350,7 +416,7 @@ impl Manager {
             .lock()
             .map_err(|_| platform("saved display policy is poisoned"))?
             .restore_pending = false;
-        for saved in policy.displays {
+        for saved in policy.displays.into_iter().filter(|d|d.enabled&&d.persistent) {
             if self.lock()?.contains_key(&LeaseId(saved.id)) {
                 continue;
             }
@@ -396,7 +462,7 @@ impl Manager {
         ids.extend(self.saved_records()?.into_iter().map(|saved|LeaseId(saved.id)));
         let mut first = None;
         for id in ids {
-            if let Err(error) = self.remove(id) {
+            if let Err(error) = self.remove_owned(id,None,false) {
                 if first.is_none() {
                     first = Some(error);
                 }

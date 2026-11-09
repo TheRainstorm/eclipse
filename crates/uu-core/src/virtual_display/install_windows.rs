@@ -454,7 +454,8 @@ impl DeviceNode {
         no_existing_mtt_node()?;
         Self::create_named("Virtual Display Driver")
     }
-    fn create_named(description: &str) -> Result<Self> {
+    fn create_named(description: &str) -> Result<Self> {Self::create_identity(description,None)}
+    fn create_identity(description:&str,identity:Option<&str>)->Result<Self> {
         let handle = unsafe { SetupDiCreateDeviceInfoList(&DISPLAY_CLASS, null_mut()) };
         if handle == INVALID_HANDLE_VALUE as isize {
             return Err(os_error("SetupDiCreateDeviceInfoList", unsafe {
@@ -468,11 +469,11 @@ impl DeviceNode {
             unsafe {
                 SetupDiCreateDeviceInfoW(
                     devices.0,
-                    wide("Display").as_ptr(),
+                    wide(identity.unwrap_or("Display")).as_ptr(),
                     &DISPLAY_CLASS,
                     wide(description).as_ptr(),
                     null_mut(),
-                    DICD_GENERATE_ID,
+                    if identity.is_some(){0}else{DICD_GENERATE_ID},
                     &mut info,
                 )
             },
@@ -763,9 +764,9 @@ pub(super) fn current_configuration() -> Result<Option<PathBuf>> {
     let end=value.iter().position(|c|*c==0).ok_or_else(||Error::Platform("invalid Mtt configuration path".into()))?;
     Ok(Some(PathBuf::from(OsString::from_wide(&value[..end]))))
 }
-pub(super) fn create_demand_device(directory:&Path, token:&str, registered:&mut dyn FnMut(&str)->Result<()>) -> Result<String> {
+pub(super) fn create_demand_device(directory:&Path, token:&str, id:Uuid, registered:&mut dyn FnMut(&str)->Result<()>) -> Result<String> {
     let description=format!("Eclipse Virtual Display {token}");
-    let mut device=DeviceNode::create_named(&description)?;
+    let mut device=DeviceNode::create_identity(&description,Some(&format!("ROOT\\DISPLAY\\{}",id.simple())))?;
     // Durable recovery owns the accepted registration, including an error or
     // process exit before SetupAPI returns its exact instance ID.
     device.keep=true;
@@ -1268,4 +1269,96 @@ pub(super) fn install_capacity_on_desktop(
             })
         }
     }
+}
+
+/// A per-instance configuration uses the signed driver's documented XML/EDID
+/// inputs. Existing isolated UMDF hosts retain their already loaded settings.
+pub(super) fn stage_monitor_configuration(base:&Path,token:Uuid,id:Uuid,name:&str,spec:Spec)->Result<PathBuf> {
+    let directory=base.join(format!("monitor-{token}"));
+    std::fs::create_dir(&directory).map_err(|e|Error::Platform(e.to_string()))?;
+    let xml=std::fs::read(base.join("vdd_settings.xml")).map_err(|e|Error::Platform(e.to_string()))?;
+    let xml=String::from_utf8(xml).map_err(|e|Error::Platform(e.to_string()))?;
+    let needle="<CustomEdid>false</CustomEdid>";
+    if xml.matches(needle).count()!=1 {return Err(Error::Platform("pinned CustomEdid setting is not unique".into()));}
+    let mut xml=xml.replace(needle,"<CustomEdid>true</CustomEdid>");
+    #[cfg(test)] {
+        xml=xml.replace("<logging>false</logging>","<logging>true</logging>").replace("<debuglogging>false</debuglogging>","<debuglogging>true</debuglogging>");
+        let sddl=wide("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LS)");
+        let mut descriptor=null_mut();
+        win_ok(unsafe{ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(),SDDL_REVISION_1,&mut descriptor,null_mut())},"fixture log security")?;
+        let mut attributes=SECURITY_ATTRIBUTES{nLength:size_of::<SECURITY_ATTRIBUTES>() as u32,lpSecurityDescriptor:descriptor,bInheritHandle:0};
+        let created=unsafe{CreateDirectoryW(path_wide(&directory.join("Logs")).as_ptr(),&mut attributes)};
+        unsafe{windows_sys::Win32::Foundation::LocalFree(descriptor);}
+        win_ok(created,"create own driver fixture log directory")?;
+    }
+    // Preserve the signed release's tested mode table. Add only the exact
+    // requested definition mode; advertising speculative modes can cause
+    // IddCxMonitorArrival to reject the entire monitor with STATUS_NOT_SUPPORTED.
+    let standard_size=[(800,600),(1366,768),(1920,1080),(2560,1440),(3840,2160)].contains(&(spec.width,spec.height));
+    let standard_rate=[30_000,60_000,90_000,120_000,144_000,165_000,244_000].contains(&spec.refresh_millihz);
+    let mut extra=String::new();
+    let mode=|rate:u32|format!("<resolution><width>{}</width><height>{}</height><refresh_rate>{}</refresh_rate></resolution>",spec.width,spec.height,rate as f64/1000.);
+    if !standard_size {extra.push_str(&mode(30_000));}
+    if !standard_rate {extra.push_str(&mode(spec.refresh_millihz));}
+    if !extra.is_empty() {xml=xml.replace("</resolutions>",&format!("{extra}</resolutions>"));}
+    crate::private_file::write_atomic(&directory.join("vdd_settings.xml"),xml.as_bytes()).map_err(|e|Error::Platform(e.to_string()))?;
+    crate::private_file::write_atomic(&directory.join("user_edid.bin"),&super::edid::monitor(id,name)).map_err(|e|Error::Platform(e.to_string()))?;
+    Ok(directory)
+}
+pub(super) fn switch_demand_configuration(expected:&Path,next:&Path)->Result<()> {
+    if current_configuration()?.as_deref()!=Some(expected) {return Err(Error::Platform("virtual display configuration ownership changed".into()));}
+    let mut key=null_mut();
+    let code=unsafe{RegOpenKeyExW(HKEY_LOCAL_MACHINE,wide(CONFIG_KEY).as_ptr(),0,KEY_QUERY_VALUE|KEY_SET_VALUE|KEY_WOW64_64KEY,&mut key)};
+    if code!=0 {return Err(os_error("open owned display configuration",code));}
+    let bytes=path_wide(next);
+    let code=unsafe{RegSetValueExW(key,wide("VDDPATH").as_ptr(),0,REG_SZ,bytes.as_ptr().cast(),(bytes.len()*2) as u32)};
+    unsafe{RegCloseKey(key);}
+    if code!=0 {return Err(os_error("select owned display configuration",code));}
+    Ok(())
+}
+pub(super) fn remove_monitor_configuration(base:&Path,token:Uuid)->Result<()> {
+    let directory=base.join(format!("monitor-{token}"));
+    if current_configuration()?.as_deref()==Some(directory.as_path()) {switch_demand_configuration(&directory,base)?;}
+    if !directory.try_exists().map_err(|e|Error::Platform(e.to_string()))? {return Ok(());}
+    let attrs=unsafe{GetFileAttributesW(path_wide(&directory).as_ptr())};
+    if attrs==INVALID_FILE_ATTRIBUTES||attrs&FILE_ATTRIBUTE_REPARSE_POINT!=0 {return Err(Error::Platform("owned monitor configuration was redirected".into()));}
+    for file in ["vdd_settings.xml","user_edid.bin"] {
+        match std::fs::remove_file(directory.join(file)) {Ok(())=>{},Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},Err(e)=>return Err(Error::Platform(e.to_string()))}
+    }
+    #[cfg(test)] {
+        let logs=directory.join("Logs");
+        if logs.exists() {
+            for item in std::fs::read_dir(&logs).map_err(|e|Error::Platform(e.to_string()))? {
+                let item=item.map_err(|e|Error::Platform(e.to_string()))?;
+                let name=item.file_name();let name=name.to_string_lossy();
+                if name.starts_with("log_")&&name.ends_with(".txt") {std::fs::remove_file(item.path()).map_err(|e|Error::Platform(e.to_string()))?;}
+            }
+            std::fs::remove_dir(logs).map_err(|e|Error::Platform(e.to_string()))?;
+        }
+    }
+    std::fs::remove_dir(directory).map_err(|e|Error::Platform(e.to_string()))
+}
+pub(super) fn rename_demand_monitor(key:&TargetKey,token:&str,name:&str)->Result<()> {
+    // Prove adapter ownership before opening a child monitor's registry data.
+    let matched=demand_instances()?.into_iter().find(|instance|super::windows::targets_for_instance(instance).is_ok_and(|targets|targets.iter().any(|t|t.key==*key))).ok_or(Error::UnknownSlot)?;
+    verify_demand_device(&matched,token,true)?;
+    let path=key.monitor_path.strip_prefix(r"\\?\").ok_or(Error::UnknownSlot)?;
+    let pieces:Vec<_>=path.split('#').collect();
+    if pieces.len()!=4||!pieces[0].eq_ignore_ascii_case("display") {return Err(Error::UnknownSlot);}
+    let instance=format!("{}\\{}\\{}",pieces[0],pieces[1],pieces[2]);
+    let handle=unsafe{SetupDiCreateDeviceInfoList(null(),null_mut())};
+    if handle==INVALID_HANDLE_VALUE as isize {return Err(os_error("open monitor device set",unsafe{GetLastError()}));}
+    let devices=DevInfoSet(handle);
+    let mut info:SP_DEVINFO_DATA=unsafe{zeroed()};info.cbSize=size_of::<SP_DEVINFO_DATA>() as u32;
+    win_ok(unsafe{SetupDiOpenDeviceInfoW(devices.0,wide(&instance).as_ptr(),null_mut(),0,&mut info)},"open exact owned monitor")?;
+    let bytes=wide(name);
+    win_ok(unsafe{SetupDiSetDeviceRegistryPropertyW(devices.0,&mut info,SPDRP_FRIENDLYNAME,bytes.as_ptr().cast(),(bytes.len()*2) as u32)},"set owned monitor name")?;
+    if property(devices.0,&info,SPDRP_FRIENDLYNAME)?!=name {return Err(Error::Platform("Windows monitor name did not match".into()));}
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn monitor_diagnostics(base:&Path,token:Uuid)->String {
+    let path=base.join(format!("monitor-{token}")).join("Logs");
+    std::fs::read_dir(path).into_iter().flatten().filter_map(|entry|entry.ok()).filter_map(|entry|std::fs::read_to_string(entry.path()).ok()).map(|text|text.lines().rev().take(100).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")).collect::<Vec<_>>().join("\n")
 }

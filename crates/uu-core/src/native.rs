@@ -754,6 +754,7 @@ async fn send_video(
     let video_e2e=crate::video_e2e::offered(&offer.sdp);
     let initial_request=crate::native_displays::InitialRequest::read(&offer.sdp)?;
     let initial_supported=displays.is_some() && !uses_desktop_portal();
+    let display_lifetime=virtuals.clone();
     let virtuals=virtuals.filter(|_|crate::native_virtual_display::offered(&offer.sdp));
     let cursor_requested=crate::native_cursor::offered(&offer.sdp)?;
     match stream.lan_peer() {
@@ -788,6 +789,7 @@ async fn send_video(
         ensure!(!initial_request.as_ref().is_some_and(|r|r.virtual_spec().is_some()),"initial virtual displays require a desktop host");
         None
     };
+    if let (Some(host),CaptureSource::Monitor(source))=(&display_lifetime,&config.source) {host.track_source(source)?;}
     // Accepted display mutations must finish before the outer connection
     // lifetime cleans up its leases, even if the viewer closes during setup.
     if *stop.borrow() {return Ok(HostReport::default());}

@@ -432,7 +432,7 @@ fn automatic_restart_ready()->anyhow::Result<bool> {
 }
 fn automatic_restart_safe(response:&Response)->bool {
     matches!(response,Response::VirtualDisplay{response:uu_core::native_virtual_display::Response::Snapshot{displays,status,..}}
-        if displays.iter().all(|d|d.persistent&&!d.cleanup_pending)
+        if displays.iter().all(|d|(!d.enabled||d.persistent)&&!d.cleanup_pending)
             && status.preparation.as_ref().is_none_or(|p|!super::virtual_display_ui::preparation_active(p)
                 && p.phase!=uu_core::virtual_display::preparation::Phase::RecoveryPending))
 }
@@ -2183,8 +2183,8 @@ mod tests {
         assert!(!h.has("密码配对"));
         assert!(!h.has("＋ 添加服务器"));
         h.click("虚拟显示器");
-        assert!(h.has("虚拟显示器上限"));
-        assert!(h.has("新建虚拟显示器"));
+        assert!(!h.has("虚拟显示器上限"));
+        assert!(h.has("＋"));
         assert!(!h.has("管理虚拟显示器"));
         assert!(!h.has("管理对象"));
     }
@@ -2299,13 +2299,14 @@ mod tests {
     #[test]
     fn automatic_update_preserves_temporary_displays_and_unfinished_preparation() {
         use uu_core::virtual_display::{Display,LeaseId,Owner,Spec,Status,preparation};
-        let mut status=Status{supported:true,driver_present:true,available_slots:1,leased:0,allocated:0,keep_after_stream:false,limit:2,supports_lifetimes:true,supports_configuration:true,on_demand:false,explanation:String::new(),install_url:String::new(),preparation:None};
-        let display=Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Manual,spec:Spec::default(),actual:None,name:"Generated".into(),source:"generated-source".into(),active:true,persistent:false,cleanup_pending:false,last_error:None};
+        let mut status=Status{supported:true,driver_present:true,available_slots:1,leased:0,allocated:0,keep_after_stream:false,limit:2,supports_lifetimes:true,supports_configuration:true,supports_catalog:true,on_demand:false,explanation:String::new(),install_url:String::new(),preparation:None};
+        let display=Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Manual,spec:Spec::default(),actual:None,name:"Generated".into(),source:"generated-source".into(),active:true,persistent:false,enabled:true,restore_layout:true,cleanup_pending:false,last_error:None};
         let response=|status:Status,displays|Response::VirtualDisplay{response:uu_core::native_virtual_display::Response::Snapshot{status,displays,slots:vec![]}};
         assert!(!automatic_restart_safe(&Response::Applied));
         assert!(automatic_restart_safe(&response(status.clone(),vec![])));
         assert!(!automatic_restart_safe(&response(status.clone(),vec![display.clone()])));
         assert!(automatic_restart_safe(&response(status.clone(),vec![Display{persistent:true,..display.clone()}])));
+        assert!(automatic_restart_safe(&response(status.clone(),vec![Display{enabled:false,active:false,..display.clone()}])),"disabled temporary definitions own no hardware and must not block an idle update");
         assert!(!automatic_restart_safe(&response(status.clone(),vec![Display{persistent:true,cleanup_pending:true,..display}])));
         status.preparation=Some(preparation::Status{phase:preparation::Phase::RecoveryPending,configured_capacity:None,targets:0,available:0,requested_capacity:2,queued:false,error:Some("generated pending recovery".into())});
         assert!(!automatic_restart_safe(&response(status,vec![])));

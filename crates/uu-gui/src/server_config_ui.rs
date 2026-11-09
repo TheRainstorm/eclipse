@@ -7,13 +7,9 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
     if section==0 {
         if naming {device_name(ui,s,true);}
         capture(ui,s,monitors,portal);
-        if virtual_limit {
-            ui.horizontal(|ui| {
-                ui.label(uu_i18n::text("虚拟显示器上限"));
-                ui.add(egui::DragValue::new(&mut s.virtual_display_limit).range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT));
-            });
-            ui.weak(uu_i18n::text("默认 1 个；临时和持久虚拟屏共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。"));
-        }
+        // Display definitions have a fixed catalog budget; old settings are
+        // retained for file compatibility but no longer exposed as a control.
+        let _=virtual_limit;
     } else if section==1 {
         ui.horizontal_wrapped(|ui| {
             ui.label(uu_i18n::text("允许的编码"));
@@ -148,8 +144,8 @@ mod tests {
     }
 
     #[test]
-    fn audio_video_can_hide_the_virtual_display_limit_owned_by_its_own_tab() {
+    fn audio_video_never_exposes_a_configurable_display_budget() {
         assert!(!texts(false).iter().any(|text| text == "虚拟显示器上限"));
-        assert!(texts(true).iter().any(|text| text == "虚拟显示器上限"));
+        assert!(!texts(true).iter().any(|text| text == "虚拟显示器上限"));
     }
 }

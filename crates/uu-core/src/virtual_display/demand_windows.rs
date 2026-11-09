@@ -140,6 +140,7 @@ fn recover_record(record: &Record) -> Result<()> {
     if let Some(instance) = instance {
         driver::remove_demand_device(&instance, &token, record.ready)?;
     }
+    if let Some(base)=load()?.directory {driver::remove_monitor_configuration(&base,record.token)?;}
     Ok(())
 }
 pub(super) fn reconcile_owner(scope: &str) -> Result<()> {
@@ -205,11 +206,20 @@ fn select_configuration(
     }
     driver::demand_configuration(directory)
 }
-pub(super) fn create(
-    scope: &str,
-    id: LeaseId,
-    saved: &BTreeSet<TargetKey>,
-) -> Result<(Target, Box<dyn Claim>)> {
+pub(super) fn create_configured(scope:&str,id:LeaseId,saved:&BTreeSet<TargetKey>,name:&str,spec:Spec,position:Option<Position>,existing:&[(TargetKey,Spec)])->Result<(Target,Box<dyn Claim>)> {
+    let before=snapshot()?;
+    let mut desired=owned_placements(&before.scene.active,existing)?;
+    let (target,claim)=create_named(scope,id,saved,name,spec)?;
+    desired.push((target.key.clone(),spec,position));
+    match configure_owned_set(&desired,Some(&before),None) {
+        Ok(())=>Ok((inventory(Some(scope))?.targets.into_iter().find(|t|t.key==target.key&&t.active).ok_or(Error::UnknownSlot)?,claim)),
+        Err(error)=>{
+            mark_pending(&target.key)?;
+            match remove_with_context(&target.key,Some((&before,&desired[..desired.len()-1]))) {Ok(())=>Err(error),Err(cleanup)=>Err(fail(format!("{error}; cleanup: {cleanup}")))}
+        }
+    }
+}
+pub(super) fn create_named(scope:&str,id:LeaseId,saved:&BTreeSet<TargetKey>,name:&str,spec:Spec)->Result<(Target,Box<dyn Claim>)> {
     crate::service_admin::windows::require_administrator()
         .map_err(|_| Error::AdministratorRequired)?;
     recover_uninstalled_legacy()?;
@@ -251,6 +261,10 @@ pub(super) fn create(
         None => return Err(Error::DriverMissing),
     };
     verify_package(&directory)?;
+    let current=driver::current_configuration()?;
+    if let Some(record)=state.records.iter().find(|r|current.as_ref()==Some(&directory.join(format!("monitor-{}",r.token)))) {
+        driver::switch_demand_configuration(&directory.join(format!("monitor-{}",record.token)),&directory)?;
+    }
     select_configuration(&state, &directory, saved)?;
     let token = Uuid::new_v4();
     state.records.push(Record {
@@ -263,8 +277,10 @@ pub(super) fn create(
     });
     save(&state)?;
     let result = (|| -> Result<(Target, Box<dyn Claim>)> {
+        let configuration=driver::stage_monitor_configuration(&directory,token,id.0,name,spec)?;
+        driver::switch_demand_configuration(&directory,&configuration)?;
         let instance =
-            driver::create_demand_device(&directory, &token.to_string(), &mut |instance| {
+            driver::create_demand_device(&directory, &token.to_string(), id.0, &mut |instance| {
                 state
                     .records
                     .iter_mut()
@@ -291,6 +307,11 @@ pub(super) fn create(
                 }
             }
             if Instant::now() >= deadline {
+                #[cfg(test)] eprintln!("Driver initialization log: {}",driver::monitor_diagnostics(&directory,token));
+                #[cfg(test)] {
+                    let observation=scene()?;
+                    eprintln!("pending adapter {:?}; targets {:?}",observation.supported_adapters,super::inventory(&observation).map(|v|v.targets));
+                }
                 return Err(fail(format!(
                     "新虚拟显示器未在十秒内就绪，正在清理本次设备。{}; enumeration: {last_observation}",
                     driver::demand_problem(&instance)
@@ -304,6 +325,8 @@ pub(super) fn create(
         record.target = Some(target.key.clone());
         record.ready = true;
         save(&state)?;
+        driver::switch_demand_configuration(&configuration,&directory)?;
+        driver::rename_demand_monitor(&target.key,&token.to_string(),name)?;
         Ok((target, claim))
     })();
     match result {
@@ -328,29 +351,43 @@ pub(super) fn create(
         }
     }
 }
-pub(super) fn remove(key: &TargetKey) -> Result<()> {
+pub(super) fn mark_pending(key:&TargetKey)->Result<()> {
+    let mut state=load()?;
+    state.records.iter_mut().find(|r|r.target.as_ref()==Some(key)).ok_or(Error::UnknownSlot)?.ready=false;
+    save(&state)
+}
+pub(super) fn rename(key:&TargetKey,name:&str)->Result<()> {
+    let state=load()?;
+    let record=state.records.iter().find(|r|r.target.as_ref()==Some(key)).ok_or(Error::UnknownSlot)?;
+    driver::rename_demand_monitor(key,&record.token.to_string(),name)
+}
+pub(super) fn remove(key:&TargetKey)->Result<()> {remove_with_context(key,None)}
+fn remove_with_context(key: &TargetKey,context:Option<(&DisplaySnapshot,&[(TargetKey,Spec,Option<Position>)])>) -> Result<()> {
     #[cfg(test)] let timer=Instant::now();
     let mut state = load()?;
-    let record = state
-        .records
-        .iter()
-        .find(|r| r.target.as_ref() == Some(key))
-        .cloned()
-        .ok_or(Error::UnknownSlot)?;
+    let record=state.records.iter().find(|r|r.target.as_ref()==Some(key)).cloned();
+    let Some(record)=record else {
+        // A preceding uninstall can have committed its ledger deletion before
+        // a later preference-cleanup error. Absence is idempotent only after
+        // freshly proving that this adapter no longer exists in CCD.
+        if !scene()?.supported_adapters.contains_key(&key.adapter) {return Ok(());}
+        return Err(Error::UnknownSlot);
+    };
+    let before=snapshot()?;
     let survivors:Vec<_>=inventory(Some(&record.scope))?.targets.into_iter().filter(|t|t.key!=*key&&t.active).filter_map(|t|t.actual.map(|spec|(t.key,spec))).collect();
+    let survivors=owned_placements(&before.scene.active,&survivors)?;
     if let Some(instance)=&record.instance {
         if driver::verify_demand_device(instance,&record.token.to_string(),record.ready)? {
             // Retire the path while Windows still knows its current topology.
             // Uninstalling a live IDD directly can replay a cached clone mode
             // for a surviving sibling even after a successful extension.
-            let owned:BTreeSet<_>=state.records.iter().filter(|r|r.ready&&r.scope==record.scope&&r.token!=record.token).filter_map(|r|r.target.clone()).collect();
-            deactivate(key,&owned)?;
-            #[cfg(test)] eprintln!("remove detached {:?}",timer.elapsed());
-            let live=mode_fingerprints(&query(QDC_ONLY_ACTIVE_PATHS)?,None)?;
-            if owned.iter().any(|key|live.contains_key(key)) {
-                capacity::persist_detached_live(&owned,key)?;
-                #[cfg(test)] eprintln!("remove persisted {:?}",timer.elapsed());
+            let mut detached=before.scene.active.clone();
+            detached.paths.retain(|path|target_key(path).is_ok_and(|(k,_)|k!=*key));
+            if !detached.paths.is_empty() {
+                let mut submitted=false;
+                if let Err(error)=apply(&detached,&mut submitted) {tracing::warn!(%error,"owned monitor detach will finish through exact device removal");}
             }
+            #[cfg(test)] eprintln!("remove detached {:?}",timer.elapsed());
         }
     }
     recover_record(&record)?;
@@ -358,12 +395,8 @@ pub(super) fn remove(key: &TargetKey) -> Result<()> {
     // Windows can select an older mode for the new connected combination.
     // Restore only this scope's surviving, exactly owned display specifications
     // from immediately before this removal; never replay a global layout.
-    for (key,spec) in survivors {
-        let target=inventory(Some(&record.scope))?.targets.into_iter().find(|t|t.key==key).ok_or(Error::UnknownSlot)?;
-        let unchanged=target.active && target.actual.is_some_and(|s|s.width==spec.width&&s.height==spec.height&&s.refresh_millihz.abs_diff(spec.refresh_millihz)<=1&&s.hdr==spec.hdr);
-        if !unchanged {configure_owned_mode(&key,spec,true).map_err(|e|fail(format!("remaining owned monitor mode recovery is pending: {}",e.message)))?;}
-        #[cfg(test)] eprintln!("remove surviving mode verified {:?}, corrected={}",timer.elapsed(),!unchanged);
-    }
+    let (baseline,survivors)=context.unwrap_or((&before,&survivors));
+    configure_owned_set(survivors,Some(baseline),Some(key))?;
     state.records.retain(|r| r.token != record.token);
     save(&state)?;
     if state.records.is_empty() && driver::demand_instances()?.is_empty() {
@@ -392,6 +425,9 @@ pub(super) fn inventory(scope: Option<&str>) -> Result<Inventory> {
         driver_present: state.directory.is_some(),
         targets,
     })
+}
+pub(super) fn scope_for(key:&TargetKey)->Result<String> {
+    load()?.records.into_iter().find(|r|r.target.as_ref()==Some(key)).map(|r|r.scope).ok_or(Error::UnknownSlot)
 }
 pub(super) fn owned_keys(key: &TargetKey) -> Result<BTreeSet<TargetKey>> {
     let state = load()?;
@@ -432,15 +468,16 @@ mod live_tests {
                 prepare(&package)?;
                 eprintln!("prepared {:?}",timer.elapsed());
                 if driver::demand_instances()?!=original_instances {return Err(fail("preparation published an unexpected device"));}
-                let (first,first_claim)=create(&scope,LeaseId(Uuid::new_v4()),&BTreeSet::new())?;
                 let spec=Spec{width:1920,height:1080,refresh_millihz:60000,hdr:false};
+                let first_id=LeaseId(Uuid::new_v4());
+                let (first,first_claim)=create_configured(&scope,first_id,&BTreeSet::new(),"Athena Luna",spec,None,&[])?;
                 eprintln!("first allocated {:?}",timer.elapsed());
-                configure_owned_mode(&first.key,spec,true).map_err(|e|fail(e.message))?;
+                if first.name!="Athena Luna" {return Err(fail(format!("per-display EDID name was not published: {}",first.name)));}
                 eprintln!("first configured {:?}",timer.elapsed());
                 if driver::demand_instances()?.len()!=original_instances.len()+1 {return Err(fail("first create did not publish exactly one adapter"));}
-                let (second,second_claim)=create(&scope,LeaseId(Uuid::new_v4()),&BTreeSet::new())?;
+                let (second,second_claim)=create_configured(&scope,LeaseId(Uuid::new_v4()),&BTreeSet::new(),"Apollo Sirius",spec,None,&[(first.key.clone(),spec)])?;
                 eprintln!("second allocated {:?}",timer.elapsed());
-                configure_owned_mode(&second.key,spec,true).map_err(|e|fail(e.message))?;
+                if second.name!="Apollo Sirius" {return Err(fail(format!("second EDID identity was not published: {}",second.name)));}
                 eprintln!("second configured {:?}",timer.elapsed());
                 if !inventory(Some(&scope))?.targets.iter().any(|t|t.key==first.key&&t.active) {return Err(fail("creating the second device deactivated the first"));}
                 if driver::demand_instances()?.len()!=original_instances.len()+2 {return Err(fail("second create did not publish exactly two adapters"));}
@@ -470,7 +507,7 @@ mod live_tests {
                 if source.position.x!=first_source.position.x+spec.width as i32 || source.position.y!=0 {return Err(fail("virtual clone was not split and saved at the right edge"));}
                 eprintln!("removing first {:?}",timer.elapsed());
                 let removing=Instant::now();
-                remove(&first.key)?;drop(first_claim);
+                remove(&first.key)?;drop(first_claim);remove(&first.key)?;
                 eprintln!("first removed {:?}",timer.elapsed());
                 if removing.elapsed()>=Duration::from_secs(10) {return Err(fail("owned removal waited for the driver stop timeout"));}
                 let settled=Instant::now()+Duration::from_secs(5);
@@ -483,6 +520,35 @@ mod live_tests {
                 }
                 remove(&second.key)?;drop(second_claim);
                 eprintln!("second removed {:?}",timer.elapsed());
+                // Re-enable the same logical identity above the primary, then
+                // add two siblings and remove in the opposite order.
+                let above=Position{x:0,y:-(spec.height as i32)};
+                let (restored,restored_claim)=create_configured(&scope,first_id,&BTreeSet::new(),"Athena Luna",spec,Some(above),&[])?;
+                if position_of(&query(QDC_ONLY_ACTIVE_PATHS)?,&restored.key)?!=Some(above) {return Err(fail("saved position above primary was not restored"));}
+                let expected=format!("root\\display\\{}",first_id.0.simple());
+                if load()?.records.iter().find(|r|r.lease==first_id.0).and_then(|r|r.instance.as_ref())!=Some(&expected) {return Err(fail("re-enable did not keep its logical PnP identity"));}
+                rename(&restored.key,"办公副屏 Atlas")?;
+                let sibling_spec=Spec{width:1920,height:1200,refresh_millihz:59_940,hdr:false};
+                let (sibling,sibling_claim)=create_configured(&scope,LeaseId(Uuid::new_v4()),&BTreeSet::new(),"Artemis Vega",sibling_spec,None,&[(restored.key.clone(),spec)])?;
+                if position_of(&query(QDC_ONLY_ACTIVE_PATHS)?,&restored.key)?!=Some(above) {return Err(fail("new sibling moved the screen above primary"));}
+                let before=snapshot()?;
+                let existing=[(restored.key.clone(),spec),(sibling.key.clone(),sibling_spec)];
+                let mut desired=owned_placements(&before.scene.active,&existing)?;
+                let third_spec=Spec{width:1280,height:720,..spec};
+                let (third,third_claim)=create_named(&scope,LeaseId(Uuid::new_v4()),&BTreeSet::new(),"Zeus Orion",third_spec)?;
+                // Simulate Windows disabling an existing sibling during PnP.
+                deactivate(&restored.key,&owned_keys(&third.key)?)?;
+                desired.push((third.key.clone(),third_spec,None));
+                configure_owned_set(&desired,Some(&before),None)?;
+                if position_of(&query(QDC_ONLY_ACTIVE_PATHS)?,&restored.key)?!=Some(above) {return Err(fail("hotplug did not reconnect the previously enabled screen"));}
+                if inventory(Some(&scope))?.targets.iter().filter(|t|t.active).count()!=3 {return Err(fail("third display left an enabled sibling disconnected"));}
+                remove(&third.key)?;drop(third_claim);
+                remove(&sibling.key)?;drop(sibling_claim);
+                remove(&restored.key)?;drop(restored_claim);
+                let (right,right_claim)=create_configured(&scope,first_id,&BTreeSet::new(),"Athena Luna",spec,None,&[])?;
+                if position_of(&query(QDC_ONLY_ACTIVE_PATHS)?,&right.key)?.is_none_or(|p|p.y!=0||p.x<=0) {return Err(fail("restore off did not extend to primary right"));}
+                remove(&right.key)?;drop(right_claim);
+                eprintln!("identity, both removal orders, saved position, restore off and third screen verified {:?}",timer.elapsed());
                 if driver::demand_instances()?!=original_instances {return Err(fail("deleted devices left disconnected adapter nodes"));}
                 let deadline=Instant::now()+Duration::from_secs(10);
                 loop {
@@ -516,5 +582,44 @@ mod live_tests {
             assert_eq!(serde_json::to_value(&load().unwrap().records).unwrap(),original_records,"fixture changed an existing display owner");
             assert!(result.is_ok(),"signed driver lifecycle failed: {result:?}");
         }).unwrap();
+        // Exercise the public owner command path and manager state against the
+        // signed driver too, outside the lifecycle lock acquired by each call.
+        let original=worker(||Ok::<_,Error>((active_signature()?,serde_json::to_value(load()?.records).map_err(|e|fail(e.to_string()))?))).unwrap().unwrap();
+        let directory=std::env::temp_dir().join(format!("eclipse-display-definitions-{}",Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let manager=Manager::shared();manager.configure_saved_displays(&directory).unwrap();
+        use crate::native_virtual_display::{execute_local_owner,Request,Response};
+        let command=|request:Request|execute_local_owner(request.into()).map_err(|e|fail(e.to_string()));
+        let result=(||->Result<()> {
+            let Response::Created{display}=command(Request::Add)? else{return Err(fail("definition command returned no record"));};
+            if display.active||display.enabled {return Err(fail("adding a definition published a device"));}
+            let spec=Spec{width:1920,height:1200,refresh_millihz:59_940,hdr:false};
+            command(Request::Configure{id:display.id,name:"Athena Luna".into(),spec})?;
+            command(Request::SetEnabled{id:display.id,enabled:true})?;
+            command(Request::SetPersistent{id:display.id,persistent:false})?;
+            let active=manager.list()?.remove(0);
+            if !active.active||active.actual!=Some(spec) {return Err(fail("public enable did not connect the configured mode"));}
+            let a=Uuid::new_v4();let b=Uuid::new_v4();let guard_a=manager.session_guard(a);let guard_b=manager.session_guard(b);
+            manager.track_session_source(a,&active.source)?;manager.track_session_source(b,&active.source)?;
+            manager.release_session(a)?;drop(guard_a);
+            if !manager.list()?[0].active {return Err(fail("temporary screen was disabled while another viewer used it"));}
+            manager.release_session(b)?;drop(guard_b);
+            let disabled=manager.list()?.remove(0);
+            if disabled.enabled||disabled.active||disabled.id!=display.id {return Err(fail("last disconnect failed to retain a disabled definition"));}
+            let owner=Uuid::new_v4();let guard=manager.session_guard(owner);
+            let reused=manager.create_for_session(owner,spec,false,None)?;
+            if reused.id!=display.id {return Err(fail("temporary reconnection created another definition"));}
+            manager.release_session(owner)?;drop(guard);
+            command(Request::Remove{id:display.id})?;
+            if !manager.list()?.is_empty() {return Err(fail("deleting the disabled definition left a record"));}
+            eprintln!("public Add/configure/enable, final-viewer disable and temporary reuse verified");
+            Ok(())
+        })();
+        let cleanup=manager.close_all();let shutdown=manager.shutdown_manual();
+        assert!(cleanup.is_ok()&&shutdown.is_ok(),"definition fixture cleanup pending: {cleanup:?}, {shutdown:?}");
+        let observed=worker(||Ok::<_,Error>((active_signature()?,serde_json::to_value(load()?.records).map_err(|e|fail(e.to_string()))?))).unwrap().unwrap();
+        assert_eq!(observed,original,"manager fixture changed an existing display or owner");
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(result.is_ok(),"public definition lifecycle failed: {result:?}");
     }
 }

@@ -141,8 +141,8 @@ pub(super) fn display_sources(tabs:&Tabs,group:&Group,ui:&mut egui::Ui,actions:&
     crate::theme::compact_menu_style(ui);
     if open_modes {ui.set_min_width((ui.ctx().screen_rect().width()-32.).clamp(220.,440.));}
     let sources=tabs.sources.iter().find(|(id,_)|*id==group.id).map(|(_,s)|s.as_slice()).unwrap_or_default();
-    for (kind,label) in [(SourceKind::Existing,"已有显示器"),(SourceKind::Persistent,"持久虚拟显示器"),(SourceKind::Temporary,"临时虚拟显示器")] {
-        let rows:Vec<_>=sources.iter().filter(|s|s.active&&s.kind==kind).collect();
+    for (managed,label) in [(false,"已有显示器"),(true,"Eclipse 显示器")] {
+        let rows:Vec<_>=sources.iter().filter(|s|s.active&&(s.kind!=SourceKind::Existing)==managed).collect();
         if rows.is_empty(){continue;}
         ui.label(egui::RichText::new(uu_i18n::text(label)).small().weak());
         for source in rows {

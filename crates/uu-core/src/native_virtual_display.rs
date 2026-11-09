@@ -32,6 +32,9 @@ pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Inspect,
+    Add,
+    SetEnabled {id:LeaseId,enabled:bool},
+    SetRestoreLayout {id:LeaseId,restore:bool},
     Create { spec: Spec },
     CreatePersistent { spec: Spec },
     SetLimit { limit:u16 },
@@ -89,7 +92,7 @@ pub fn error_message(error: &anyhow::Error) -> String {
             match &status.error {Some(details)=>format!("{message}\n{details}"),None=>message}
         },
         Some(Error::NoAvailableSlot) => {
-            uu_i18n::text("驱动没有可用虚拟屏，请在源机管理窗口准备驱动后重试").into()
+            uu_i18n::text("无法连接此虚拟显示器，请检查主机驱动状态后重试").into()
         }
         Some(Error::Claimed) => uu_i18n::text("虚拟显示器由其它共享进程使用").into(),
         Some(Error::AdministratorRequired) => uu_i18n::text("启用虚拟显示器需要管理员权限，请在源机管理窗口准备虚拟显示器").into(),
@@ -104,7 +107,7 @@ pub fn error_message(error: &anyhow::Error) -> String {
         Some(Error::LastActiveOutput) => {
             uu_i18n::text("不能停用最后一个活动显示器，请先保留另一个桌面输出").into()
         }
-        Some(Error::LimitReached{limit})=>uu_i18n::format!("已达到源机设置的虚拟显示器上限（{limit} 个）"),
+        Some(Error::LimitReached{limit})=>uu_i18n::format!("最多保存 {limit} 条虚拟显示器配置；请先启用或删除已有配置"),
         _ => format!("{error:#}"),
     }
 }
@@ -162,6 +165,9 @@ pub fn execute_local_owner(request: LocalRequest) -> Result<Response> {
             displays: manager.list()?,
             slots: manager.slots()?,
         },
+        Request::Add=>Response::Created{display:manager.add_display()?},
+        Request::SetEnabled{id,enabled}=>{manager.set_enabled(id,enabled)?;Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}},
+        Request::SetRestoreLayout{id,restore}=>{manager.set_restore_layout(id,restore)?;Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}},
         Request::Create { spec } => Response::Created {
             display: manager.create(Owner::Manual, spec)?,
         },
@@ -383,6 +389,7 @@ impl Host {
             Ok(display)
         })
     }
+    pub(crate) fn track_source(&self,source:&str)->Result<()> {self.manager.track_session_source(self.owner,source)?;Ok(())}
     pub fn permitted(context: &SessionContext) -> bool {
         context
             .access
@@ -418,6 +425,19 @@ impl Host {
                     .into_iter()
                     .collect(),
                 slots: self.manager.slots()?.into_iter().filter(|s|s.active).collect(),
+            },
+            Request::Add=>Response::Created{display:self.manager.add_display()?},
+            Request::SetRestoreLayout{id,restore}=>{
+                self.manager.set_restore_layout(id,restore)?;
+                Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:Vec::new()}
+            },
+            Request::SetEnabled{id,enabled}=>{
+                let owned=self.manager.list()?.into_iter().find(|d|d.id==id).context("unknown display definition")?;
+                ensure!(owned.owner==Owner::Manual||owned.owner==Owner::Session(self.owner),"display belongs to another connection");
+                ensure!(enabled||!displays.references_source(&owned.source),"{}",uu_i18n::text("请先切换到另一显示器，再禁用当前虚拟屏"));
+                self.manager.set_enabled(id,enabled)?;
+                displays.refresh()?;
+                Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:Vec::new()}
             },
             Request::SetLimit{limit}=>{
                 self.manager.set_limit_persisted(limit)?;
@@ -719,7 +739,7 @@ mod tests {
     fn initial_lease_is_connection_scoped_idempotent_and_never_repeats_an_accepted_mutation() {
         use std::sync::atomic::AtomicUsize;
         let calls=AtomicUsize::new(0);let spec=Spec::default();let owner=uuid::Uuid::new_v4();
-        let display=Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(owner),spec,actual:Some(spec),name:"generated".into(),source:"display-b".into(),active:true,persistent:false,cleanup_pending:false,last_error:None};
+        let display=Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(owner),spec,actual:Some(spec),name:"generated".into(),source:"display-b".into(),active:true,persistent:false,enabled:true,restore_layout:true,cleanup_pending:false,last_error:None};
         let lease=InitialLease::default();
         assert_eq!(lease.prepare(spec,||{calls.fetch_add(1,Ordering::SeqCst);Ok(display.clone())}).unwrap(),display);
         assert_eq!(lease.prepare(spec,||panic!("same connection must reuse its lease")).unwrap(),display);

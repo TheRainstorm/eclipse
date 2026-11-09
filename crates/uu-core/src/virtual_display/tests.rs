@@ -268,6 +268,7 @@ fn fixture() -> (Arc<Manager>, Arc<Fake>) {
             backend: Box::new(fake.clone()),
             entries: Mutex::new(BTreeMap::new()),
             sessions: Mutex::new(BTreeMap::new()),
+        viewers:Mutex::default(),
             manual_closing: AtomicBool::new(false),
             preparation: preparation::Coordinator::default(),
             preparation_owner: AtomicBool::new(true),
@@ -630,6 +631,7 @@ fn another_manager(backend: &Arc<Fake>) -> Arc<Manager> {
         backend: Box::new(backend.clone()),
         entries: Mutex::new(BTreeMap::new()),
         sessions: Mutex::new(BTreeMap::new()),
+        viewers:Mutex::default(),
         manual_closing: AtomicBool::new(false),
         preparation: preparation::Coordinator::default(),
         preparation_owner: AtomicBool::new(true),
@@ -850,12 +852,12 @@ fn passive_catalog_reads_skip_an_owned_display_mutation_without_observing_its_po
 #[test]
 fn new_display_names_cover_both_lifetimes_and_reserve_disconnected_saved_names() {
     let (manager,backend)=capacity_fixture(4);let path=saved_policy(&manager);manager.set_limit(4).unwrap();
-    let saved=policy::SavedDisplay{id:Uuid::new_v4(),spec:Spec::default(),target:backend.targets.lock().unwrap()[3].key.clone(),name:"APOLLO".into()};
+    let saved=policy::SavedDisplay{id:Uuid::new_v4(),spec:Spec::default(),target:backend.targets.lock().unwrap()[3].key.clone(),name:"APOLLO".into(),enabled:true,persistent:true,restore_layout:true,position:None};
     manager.saved_file().unwrap().save(saved.clone()).unwrap();
     let persistent=manager.create_manual(Spec::default(),true).unwrap();
     let temporary=manager.create_manual(Spec::default(),false).unwrap();
-    assert_eq!(persistent.name,"Athena");assert_eq!(temporary.name,"Artemis");
-    assert_eq!(manager.saved_records().unwrap().iter().find(|record|record.id==persistent.id.0).unwrap().name,"Athena");
+    assert_eq!(persistent.name,"Athena Luna");assert_eq!(temporary.name,"Apollo Sirius");
+    assert_eq!(manager.saved_records().unwrap().iter().find(|record|record.id==persistent.id.0).unwrap().name,"Athena Luna");
     let restored=manager.create_restored(&saved).unwrap();assert_eq!(restored.name,"APOLLO","restoration keeps the saved name");
     assert_eq!(backend.targets.lock().unwrap()[3].name,"prepared virtual screen","friendly names must not change driver identity");
     for display in [persistent,temporary,restored] {manager.remove(display.id).unwrap();}
@@ -965,7 +967,7 @@ fn initial_preparation_exempts_only_its_own_authenticated_pending_session() {
     manager.remove(display.id).unwrap();
 }
 #[test]
-fn lowering_the_limit_retargets_or_cancels_a_waiting_preparation_without_installing_an_old_batch() {
+fn legacy_limit_requests_cannot_reduce_the_fixed_sixteen_display_budget() {
     for limit in [0,1] {
         let (manager,backend)=capacity_fixture(0);
         let gate=Arc::new(crate::shared_host::SessionGate::default());manager.register_host(&gate);
@@ -975,8 +977,8 @@ fn lowering_the_limit_retargets_or_cancels_a_waiting_preparation_without_install
         assert!(manager.has_queued_preparation());
         manager.set_limit(limit).unwrap();drop(stream);
         manager.resume_preparation().unwrap();
-        assert_eq!(backend.targets.lock().unwrap().len(),usize::from(limit));
-        assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),usize::from(limit));
+        assert_eq!(backend.targets.lock().unwrap().len(),16);
+        assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),1);
         assert!(!manager.has_queued_preparation());
     }
 }
@@ -1130,7 +1132,7 @@ fn on_demand_limits_create_no_targets_and_shutdown_preserves_only_persistent_int
     first.remove(temporary.id).unwrap();
     first.set_limit_persisted(1).unwrap();
     assert_eq!(backend.targets.lock().unwrap().len(),1);
-    assert!(matches!(first.create(Owner::Manual,Spec::default()),Err(Error::LimitReached{limit:1})));
+    assert_eq!(first.status().unwrap().limit,16);
     first.shutdown_manual().unwrap();
     assert!(backend.targets.lock().unwrap().is_empty());
     assert_eq!(first.saved_records().unwrap().len(),1);
@@ -1187,7 +1189,7 @@ fn saved_manual_display_recovers_after_boot_luid_change_and_can_be_made_temporar
     second.set_persistent(display.id,false).unwrap();
     second.shutdown_manual().unwrap();assert_eq!(backend.removed.lock().unwrap().len(),1);
     let third=another_manager(&backend);third.configure_saved_displays(&path).unwrap();third.restore_saved_displays().unwrap();
-    assert!(third.list().unwrap().is_empty());std::fs::remove_dir_all(path).unwrap();
+    assert!(third.list().unwrap().iter().all(|d|!d.enabled&&!d.active));std::fs::remove_dir_all(path).unwrap();
 }
 
 #[test]
@@ -1226,7 +1228,7 @@ fn host_limit_counts_manual_and_session_allocations_without_changing_existing_ta
     assert_eq!(before,backend.inventory_calls.load(Ordering::SeqCst),"quota rejection precedes driver work");
     manager.set_limit(0).unwrap();
     assert_eq!(manager.list().unwrap().len(),2,"reducing the limit preserves existing outputs");
-    assert!(matches!(manager.create(Owner::Manual,Spec::default()),Err(Error::LimitReached{limit:0})));
+    assert_eq!(manager.status().unwrap().limit,16);
     manager.remove(manual.id).unwrap();manager.set_limit(2).unwrap();
     manager.create(Owner::Manual,Spec::default()).unwrap();
     manager.remove_session(owner,session.id).unwrap();
@@ -1234,15 +1236,15 @@ fn host_limit_counts_manual_and_session_allocations_without_changing_existing_ta
 }
 
 #[test]
-fn remote_limit_change_persists_through_the_service_book() {
+fn legacy_remote_limit_requests_preserve_the_fixed_budget() {
     let (manager,_backend)=fixture();
     let path=saved_policy(&manager);
     manager.set_limit_persisted(4).unwrap();
     let book=crate::device_book::Store::open(&path).unwrap().read().unwrap();
-    assert_eq!(book.sharing.virtual_display_limit,4);
+    assert_eq!(book.sharing.virtual_display_limit,16);
     let (next,_backend)=fixture();
     next.configure_saved_displays(&path).unwrap();
-    assert_eq!(next.status().unwrap().limit,4);
+    assert_eq!(next.status().unwrap().limit,16);
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -1253,13 +1255,13 @@ fn explicit_temporary_and_persistent_creation_have_distinct_disconnect_lifetimes
     let owner=Uuid::new_v4();let _guard=manager.session_guard(owner);
     let temporary=manager.create_for_session(owner,Spec::default(),false,None).unwrap();
     manager.release_session(owner).unwrap();
-    assert!(!manager.list().unwrap().iter().any(|d|d.id==temporary.id),"explicit temporary bypasses the legacy keep policy");
+    assert!(manager.list().unwrap().iter().any(|d|d.id==temporary.id&&!d.enabled&&!d.active),"temporary definitions survive automatic disconnection");
     let owner=Uuid::new_v4();let _guard=manager.session_guard(owner);
     let durable=manager.create_for_session(owner,Spec::default(),true,None).unwrap();
     assert!(durable.persistent);
     manager.release_session(owner).unwrap();
-    let displays=manager.list().unwrap();assert_eq!(displays.len(),1);
-    assert_eq!(displays[0].owner,Owner::Manual);assert_eq!(displays[0].id,durable.id);
+    let displays=manager.list().unwrap();assert_eq!(displays.len(),2);
+    let display=displays.iter().find(|d|d.id==durable.id).unwrap();assert_eq!(display.owner,Owner::Manual);assert!(display.enabled&&display.active);
     assert_eq!(backend.removed.lock().unwrap().len(),1);
     manager.set_persistent(durable.id,false).unwrap();manager.close_all().unwrap();
     std::fs::remove_dir_all(path).unwrap();
@@ -1330,19 +1332,19 @@ fn failed_mode_apply_rolls_back_to_the_exact_previous_mode() {
 }
 
 #[test]
-fn durable_write_failure_rolls_back_a_submitted_mode_change_without_overwriting_corruption() {
+fn corrupt_durable_intent_rejects_edits_before_changing_hardware() {
     let (manager,backend)=fixture();let path=saved_policy(&manager);
     let display=manager.create_manual(Spec::default(),true).unwrap();
     let policy=path.join("virtual-displays.json");let valid=std::fs::read(&policy).unwrap();
     std::fs::write(&policy,b"{broken policy}").unwrap();
     let next=Spec{width:2560,height:1600,refresh_millihz:75_000,hdr:false};
     assert!(manager.configure_display(display.id,"Desk".into(),next).is_err());
-    assert_eq!(backend.reconfigured.lock().unwrap().len(),2);
+    assert!(backend.reconfigured.lock().unwrap().is_empty());
     assert_eq!(backend.targets.lock().unwrap()[1].actual,Some(Spec::default()));
     assert!(manager.list().is_err(),"the corrupted durable record must not be silently hidden");
     assert_eq!(std::fs::read(&policy).unwrap(),b"{broken policy}");
     std::fs::write(&policy,valid).unwrap();
-    let listed=manager.list().unwrap();assert_eq!(listed[0].spec,Spec::default());assert_eq!(listed[0].actual,Some(Spec::default()));assert!(listed[0].last_error.is_some());
+    let listed=manager.list().unwrap();assert_eq!(listed[0].spec,Spec::default());assert_eq!(listed[0].actual,Some(Spec::default()));assert!(listed[0].last_error.is_none());
     manager.remove(display.id).unwrap();std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -1373,12 +1375,91 @@ fn saved_records_count_toward_limit_and_close_all_retires_them() {
     let second=another_manager(&backend);second.configure_saved_displays(&path).unwrap();
     let status=second.status().unwrap();assert_eq!(status.leased,0);assert_eq!(status.allocated,1);assert_eq!(status.allocation_count(),1);
     second.create_manual(Spec::default(),false).unwrap();
-    assert!(matches!(second.create(Owner::Manual,Spec::default()),Err(Error::LimitReached{limit:2})));
+    assert_eq!(second.status().unwrap().limit,16);
     second.close_all().unwrap();
-    assert!(second.list().unwrap().is_empty());
-    assert!(!second.saved_records().unwrap().iter().any(|saved|saved.id==saved_id.0));
+    assert!(second.list().unwrap().iter().all(|d|!d.enabled&&!d.active));
+    assert!(second.saved_records().unwrap().iter().any(|saved|saved.id==saved_id.0));
     assert!(backend.claims.lock().unwrap().is_empty());
     let third=another_manager(&backend);third.configure_saved_displays(&path).unwrap();third.restore_saved_displays().unwrap();
-    assert!(third.list().unwrap().is_empty());
+    assert!(third.list().unwrap().iter().all(|d|!d.enabled&&!d.active));
     std::fs::remove_dir_all(path).unwrap();
+}
+
+
+#[test]
+fn definitions_are_metadata_until_enabled_and_reuse_identity_on_every_enable() {
+    let (_,backend)=fixture();backend.on_demand.store(true,Ordering::Release);backend.targets.lock().unwrap().clear();
+    let manager=another_manager(&backend);let path=saved_policy(&manager);
+    let definition=manager.add_display().unwrap();
+    assert!(!definition.enabled&&!definition.active&&definition.restore_layout);
+    assert!(definition.name.contains("Athena")&&definition.name.contains("Luna"));
+    assert_eq!(backend.provision_calls.load(Ordering::SeqCst),0);
+    let custom=Spec{width:2560,height:1440,refresh_millihz:144_000,hdr:false};
+    manager.configure_display(definition.id,"Workspace".into(),custom).unwrap();
+    manager.set_restore_layout(definition.id,false).unwrap();
+    for _ in 0..2 {
+        let enabled=manager.set_enabled(definition.id,true).unwrap();
+        assert_eq!(enabled.id,definition.id);assert_eq!(enabled.spec,custom);assert_eq!(enabled.name,"Workspace");assert!(!enabled.restore_layout);
+        manager.set_enabled(definition.id,true).unwrap();
+        assert_eq!(backend.targets.lock().unwrap().len(),1);
+        let disabled=manager.set_enabled(definition.id,false).unwrap();assert!(!disabled.enabled&&!disabled.active);
+        manager.set_enabled(definition.id,false).unwrap();assert!(backend.targets.lock().unwrap().is_empty());
+    }
+    let next=another_manager(&backend);next.configure_saved_displays(&path).unwrap();next.restore_saved_displays().unwrap();
+    assert_eq!(next.list().unwrap()[0].id,definition.id);assert!(backend.targets.lock().unwrap().is_empty());
+    next.remove(definition.id).unwrap();assert!(next.list().unwrap().is_empty());std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn a_temporary_manual_display_disables_only_after_its_last_viewer_disconnects() {
+    let (manager,backend)=fixture();let path=saved_policy(&manager);
+    let display=manager.create_manual(Spec::default(),false).unwrap();
+    let a=Uuid::new_v4();let b=Uuid::new_v4();let _a=manager.session_guard(a);let _b=manager.session_guard(b);
+    manager.track_session_source(a,&display.source).unwrap();manager.track_session_source(b,&display.source).unwrap();
+    manager.release_session(a).unwrap();assert!(manager.list().unwrap()[0].active);
+    manager.release_session(b).unwrap();let disabled=manager.list().unwrap().remove(0);
+    assert_eq!(disabled.id,display.id);assert!(!disabled.active&&!disabled.enabled);assert_eq!(backend.removed.lock().unwrap().len(),1);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn fixed_catalog_limit_counts_disabled_definitions_without_publishing_devices() {
+    let (manager,backend)=fixture();let path=saved_policy(&manager);
+    for _ in 0..16 {manager.add_display().unwrap();}
+    assert!(matches!(manager.add_display(),Err(Error::LimitReached{limit:16})));
+    assert_eq!(manager.status().unwrap().allocated,0);
+    assert!(backend.activated.lock().unwrap().is_empty());
+    let id=manager.list().unwrap()[3].id;manager.remove(id).unwrap();manager.add_display().unwrap();
+    assert_eq!(manager.list().unwrap().len(),16);std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn repeated_temporary_connections_reuse_disabled_definitions_instead_of_filling_the_catalog() {
+    let (_,backend)=fixture();backend.on_demand.store(true,Ordering::Release);backend.targets.lock().unwrap().clear();
+    let manager=another_manager(&backend);let path=saved_policy(&manager);
+    let mut first=None;
+    for _ in 0..20 {
+        let owner=Uuid::new_v4();let guard=manager.session_guard(owner);
+        let display=manager.create_for_session(owner,Spec::default(),false,None).unwrap();
+        if let Some(id)=first {assert_eq!(display.id,id);}else{first=Some(display.id);}
+        assert_eq!(backend.targets.lock().unwrap().len(),1);
+        manager.release_session(owner).unwrap();drop(guard);
+        assert!(backend.targets.lock().unwrap().is_empty());
+        let list=manager.list().unwrap();assert_eq!(list.len(),1);assert!(!list[0].enabled);
+    }
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn legacy_saved_displays_migrate_as_enabled_persistent_definitions_without_renaming() {
+    let (manager,backend)=fixture();
+    let path=std::env::temp_dir().join(format!("eclipse-v1-displays-{}",Uuid::new_v4()));std::fs::create_dir(&path).unwrap();
+    let id=Uuid::new_v4();let target=backend.targets.lock().unwrap()[1].key.clone();
+    let old=serde_json::json!({"version":1,"keep_after_stream":false,"displays":[{"id":id,"spec":Spec::default(),"target":target,"name":"Saved workspace"}]});
+    crate::private_file::write_atomic(&path.join("virtual-displays.json"),&serde_json::to_vec(&old).unwrap()).unwrap();
+    manager.configure_saved_displays(&path).unwrap();
+    let saved=manager.list().unwrap().remove(0);assert!(saved.enabled&&saved.persistent&&saved.restore_layout);assert_eq!(saved.name,"Saved workspace");
+    manager.restore_saved_displays().unwrap();assert!(manager.list().unwrap()[0].active);
+    manager.set_enabled(LeaseId(id),false).unwrap();
+    let next=another_manager(&backend);next.configure_saved_displays(&path).unwrap();next.restore_saved_displays().unwrap();
+    let restored=next.list().unwrap().remove(0);assert_eq!(restored.id,LeaseId(id));assert!(!restored.enabled&&!restored.active);
+    assert_eq!(restored.name,"Saved workspace");std::fs::remove_dir_all(path).unwrap();
 }

@@ -34,6 +34,10 @@ mod install_windows;
 mod ownership_windows;
 pub mod preparation;
 mod policy;
+#[cfg(any(windows,test))]
+mod placement;
+#[cfg(any(windows,test))]
+mod edid;
 #[cfg(any(windows, test))]
 mod provision_policy;
 #[cfg(windows)]
@@ -214,6 +218,8 @@ pub struct Status {
     #[serde(default)]
     pub supports_configuration: bool,
     #[serde(default)]
+    pub supports_catalog:bool,
+    #[serde(default)]
     pub on_demand: bool,
     pub explanation: String,
     pub install_url: String,
@@ -238,6 +244,11 @@ pub struct Display {
     pub active: bool,
     #[serde(default,skip_serializing_if="is_false")]
     pub persistent: bool,
+    /// Desired connection state. A disabled definition owns no Windows device.
+    #[serde(default="default_true",skip_serializing_if="is_true")]
+    pub enabled: bool,
+    #[serde(default="default_true",skip_serializing_if="is_true")]
+    pub restore_layout: bool,
     /// A failed removal retains ownership; callers can retry the same ID.
     pub cleanup_pending: bool,
     pub last_error: Option<String>,
@@ -290,11 +301,17 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-pub const DEFAULT_DISPLAY_LIMIT:u16=1;
+pub const DEFAULT_DISPLAY_LIMIT:u16=16;
 /// Current native display catalog and management envelopes contain at most 16 outputs.
 pub const MAX_DISPLAY_LIMIT:u16=16;
 pub fn default_display_limit()->u16 {DEFAULT_DISPLAY_LIMIT}
 fn is_false(value:&bool)->bool{!*value}
+fn default_true()->bool {true}
+fn is_true(value:&bool)->bool {*value}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Position { x:i32, y:i32 }
 
 // Full target identity remains host-private. In particular, a remote caller
 // cannot turn an arbitrary adapter/target number into a cleanup capability.
@@ -349,6 +366,11 @@ trait Backend: Send + Sync {
     fn configure_store(&self, _directory:&std::path::Path, _saved:&[TargetKey]) -> Result<()> { Ok(()) }
     fn prepare_on_demand(&self, _package:Option<&[(String,Vec<u8>)]>) -> Result<()> { Err(Error::Unsupported) }
     fn allocate(&self, _id:LeaseId) -> Result<Option<(Target,Box<dyn Claim>)>> { Ok(None) }
+    fn allocate_configured(&self,id:LeaseId,_name:&str,_spec:Spec,_position:Option<Position>,_existing:&[(TargetKey,Spec)]) -> Result<Option<(Target,Box<dyn Claim>)>> {self.allocate(id)}
+    fn allocation_configures_mode(&self)->bool {false}
+    fn reconnect(&self,key:&TargetKey,spec:Spec,_position:Option<Position>,_existing:&[(TargetKey,Spec)])->Result<Target> {self.reconfigure(key,spec).map_err(|e|Error::Platform(e.message))}
+    fn position(&self,_key:&TargetKey)->Result<Option<Position>> {Ok(None)}
+    fn rename(&self,_key:&TargetKey,_name:&str)->Result<()> {Ok(())}
     /// Finish this process's earlier partial mutation before admitting another.
     /// Read-only inventory/status calls do not trigger recovery.
     fn recover(&self) -> Result<()> {
@@ -417,6 +439,7 @@ pub struct Manager {
     backend: Box<dyn Backend>,
     entries: Mutex<BTreeMap<LeaseId, Entry>>,
     sessions: Mutex<BTreeMap<Uuid, Weak<AtomicBool>>>,
+    viewers:Mutex<BTreeMap<Uuid,std::collections::BTreeSet<LeaseId>>>,
     manual_closing: AtomicBool,
     preparation: preparation::Coordinator,
     preparation_owner: AtomicBool,
@@ -439,6 +462,7 @@ impl Manager {
                     backend,
                     entries: Mutex::new(BTreeMap::new()),
                     sessions: Mutex::new(BTreeMap::new()),
+                    viewers:Mutex::default(),
                     manual_closing: AtomicBool::new(false),
                     preparation: preparation::Coordinator::default(),
                     preparation_owner: AtomicBool::new(false),
@@ -539,7 +563,7 @@ impl Manager {
         // host-owned metadata separate from the driver's capture identity.
         for suffix in 1..=used.len()+1 {
             for name in NAMES {
-                let candidate=if suffix==1 {name.to_owned()}else{format!("{name} {suffix}")};
+                let candidate=if suffix==1 {format!("{name} {}", ["Luna","Sirius","Vega","Orion","Lyra","Io","Nova","Polaris","Titan","Io","Ceres","Sol","Io","Pluto","Sol","Vega"][NAMES.iter().position(|n|*n==name).unwrap()])}else{format!("{name} {suffix}")};
                 if !used.contains(&candidate.to_lowercase()) {return Ok(candidate);}
             }
         }
@@ -658,7 +682,7 @@ impl Manager {
             }
         }
         let explanation = if self.backend.on_demand() {
-            "Virtual displays are created and physically removed on demand. The creation limit reserves no disconnected Windows monitors. Persistent display settings are restored when their host starts."
+            uu_i18n::text("加号只添加配置；启用时连接到 Windows，禁用时移除设备并保留配置。临时屏在最后一个串流断开后自动禁用，最多保存 16 条配置。")
         } else if !inventory.supported {
             "Virtual displays are only supported on Windows."
         } else if !inventory.driver_present {
@@ -680,6 +704,7 @@ impl Manager {
             limit:self.limit.load(Ordering::Acquire),
             supports_lifetimes:true,
             supports_configuration:true,
+            supports_catalog:true,
             on_demand:self.backend.on_demand(),
             explanation: explanation.into(),
             install_url: INSTALL_URL.into(),
@@ -714,17 +739,12 @@ impl Manager {
                 entry.display.source.clone_from(&target.source);
             }
         }
-        let mut result:Vec<_>=entries
-            .values()
-            .map(|entry| entry.display.clone())
-            .collect();
-        // A removed driver must not hide durable intent. These records can be
-        // renamed, edited or deleted without recreating a driver unattended.
-        for saved in self.saved_records()? {
-            if !entries.contains_key(&LeaseId(saved.id)) {
-                result.push(saved.disconnected());
-            }
+        let records=self.saved_records()?;
+        let mut result=Vec::new();
+        for saved in &records {
+            result.push(entries.get(&LeaseId(saved.id)).map(|e|e.display.clone()).unwrap_or_else(||saved.disconnected()));
         }
+        result.extend(entries.values().filter(|e|!records.iter().any(|r|r.id==e.display.id.0)).map(|e|e.display.clone()));
         Ok(result)
     }
 
@@ -780,8 +800,8 @@ impl Manager {
     pub fn set_limit(&self,limit:u16)->Result<()> {
         if limit>MAX_DISPLAY_LIMIT {return Err(Error::Platform("virtual display limit exceeds the native catalog budget".into()));}
         let _entries=self.lock()?;
-        self.limit.store(limit,Ordering::Release);
-        self.preparation.limit_changed(u32::from(limit));
+        self.limit.store(MAX_DISPLAY_LIMIT,Ordering::Release);
+        self.preparation.limit_changed(u32::from(MAX_DISPLAY_LIMIT));
         Ok(())
     }
     /// Remote management changes the same canonical service setting used by
@@ -791,7 +811,7 @@ impl Manager {
         let directory=self.policy.lock().map_err(|_| Error::Platform("saved display policy is poisoned".into()))?.directory();
         if let Some(directory)=directory {
             crate::device_book::Store::open(directory).and_then(|store|store.edit(|book|{
-                book.sharing.virtual_display_limit=limit;
+                book.sharing.virtual_display_limit=MAX_DISPLAY_LIMIT;
                 Ok(())
             })).map_err(|error|Error::Platform(error.to_string()))?;
         }
@@ -813,6 +833,7 @@ impl Manager {
     }
     fn create_target(&self,owner:Owner,spec:Spec,initial_session:Option<&str>,saved:Option<&policy::SavedDisplay>,retention:Option<bool>)->Result<Display> {
         spec.validate()?;
+        self.ensure_catalog()?;
         let mut entries = self.lock()?;
         if owner == Owner::Manual && self.manual_closing.load(Ordering::Acquire) {
             return Err(Error::HostClosing);
@@ -830,8 +851,16 @@ impl Manager {
                 return Err(Error::SessionClosed);
             }
         }
+        // A temporary connection enables an idle matching definition again.
+        // Its normal disconnect preserves that definition, so repeated use of
+        // the stream + button must not fill the sixteen-row catalog.
+        let reusable=if saved.is_none()&&self.backend.on_demand()&&matches!(owner,Owner::Session(_))&&retention==Some(false) {
+            self.saved_records()?.into_iter().find(|r|!r.enabled&&!r.persistent&&r.spec==spec&&!entries.contains_key(&LeaseId(r.id)))
+        }else{None};
+        let saved=saved.or(reusable.as_ref());
         let limit=self.limit.load(Ordering::Acquire);
-        if saved.is_none() && self.allocated_count(&entries)? >=usize::from(limit) {return Err(Error::LimitReached{limit});}
+        if saved.is_none() && self.saved_records()?.len()>=usize::from(MAX_DISPLAY_LIMIT) {return Err(Error::LimitReached{limit:MAX_DISPLAY_LIMIT});}
+        if saved.is_none_or(|s|!s.enabled) && self.allocated_count(&entries)? >=usize::from(limit) {return Err(Error::LimitReached{limit});}
         let id = LeaseId(saved.map_or_else(Uuid::new_v4,|s|s.id));
         // Validate metadata before publishing any Windows device.
         let display_name = match saved.filter(|s|!s.name.is_empty()) {Some(saved)=>saved.name.clone(),None=>self.next_display_name(&entries)?};
@@ -857,7 +886,9 @@ impl Manager {
         // Reuse an already safe slot immediately, even during another stream.
         // Pool expansion is an independent idle-only intent, never a condition
         // for consuming existing capacity.
-        let allocated = self.backend.allocate(id)?;
+        let position=saved.filter(|s|s.restore_layout).and_then(|s|s.position);
+        let existing:Vec<_>=entries.values().filter(|e|!e.display.cleanup_pending).map(|e|(e.target.clone(),e.display.spec)).collect();
+        let allocated = self.backend.allocate_configured(id,&display_name,spec,position,&existing)?;
         let restored=if self.backend.on_demand() { allocated } else if let Some(saved)=saved {
             let targets=self.backend.inventory()?.targets;
             let matching:Vec<_>=targets.into_iter().filter(|t|t.key.monitor_path==saved.target.monitor_path&&t.key.target==saved.target.target).collect();
@@ -910,20 +941,21 @@ impl Manager {
             name: display_name,
             source: target.source.clone(),
             active: false,
-            persistent:saved.is_some(),
+            persistent:saved.is_some_and(|s|s.persistent)||retention==Some(true),
+            enabled:true,restore_layout:saved.is_none_or(|s|s.restore_layout),
             cleanup_pending: false,
             last_error: None,
         };
-        let activation=if self.backend.on_demand()&&saved.is_some()&&target.active {self.backend.reconfigure(&target.key,spec)}else if self.backend.on_demand() {self.backend.activate(&target.key,spec)}else if saved.is_some()&&target.active {Ok(target.clone())}else{self.backend.activate(&target.key,spec)};
+        let activation=if self.backend.allocation_configures_mode() {Ok(target.clone())}else if self.backend.on_demand()&&saved.is_some()&&target.active {self.backend.reconfigure(&target.key,spec)}else if self.backend.on_demand() {self.backend.activate(&target.key,spec)}else if saved.is_some()&&target.active {Ok(target.clone())}else{self.backend.activate(&target.key,spec)};
         match activation {
             Ok(observed) => {
                 display.active = observed.active;
                 display.actual = observed.actual;
                 display.source = observed.source;
-                if retention==Some(true) {
-                    let record=policy::SavedDisplay{id:id.0,spec,target:target.key.clone(),name:display.name.clone()};
-                    let saved=self.saved_file().and_then(|file|file.save(record));
-                    if let Err(error)=saved {
+                let catalog_bound=self.policy.lock().map_err(|_|Error::Platform("saved display policy is poisoned".into()))?.directory().is_some();
+                if catalog_bound || display.persistent {
+                    let record=policy::SavedDisplay{id:id.0,spec,target:target.key.clone(),name:display.name.clone(),enabled:true,persistent:display.persistent,restore_layout:display.restore_layout,position:self.backend.position(&target.key).unwrap_or_else(|error|{tracing::warn!(%error,"display position was not recorded");None})};
+                    if let Err(error)=self.saved_file().and_then(|file|file.save(record)) {
                         if let Err(cleanup)=self.backend.deactivate(&target.key) {
                             display.cleanup_pending=true;
                             let message=format!("{error}; rollback: {cleanup}");
@@ -933,7 +965,6 @@ impl Manager {
                         }
                         return Err(error);
                     }
-                    display.persistent=true;
                 }
                 entries.insert(
                     id,
@@ -941,7 +972,7 @@ impl Manager {
                         _claim: claim,
                         target: target.key,
                         display: display.clone(),
-                        explicit_temporary:retention==Some(false),
+                        explicit_temporary:retention==Some(false)||saved.is_some_and(|s|!s.persistent),
                     },
                 );
                 Ok(display)
@@ -1003,24 +1034,29 @@ impl Manager {
     }
 
     pub fn remove(&self, id: LeaseId) -> Result<()> {
-        self.remove_owned(id, None)
+        self.remove_owned(id, None, true)
     }
 
     /// The authenticated remote control path must use this ownership check.
     pub fn remove_session(&self, session_id: Uuid, id: LeaseId) -> Result<()> {
-        self.remove_owned(id, Some(Owner::Session(session_id)))
+        self.remove_owned(id, Some(Owner::Session(session_id)), true)
     }
 
-    fn remove_owned(&self, id: LeaseId, owner: Option<Owner>) -> Result<()> {
+    fn remove_owned(&self, id: LeaseId, owner: Option<Owner>, delete:bool) -> Result<()> {
         let mut entries = self.lock()?;
         let Some(entry) = entries.get_mut(&id) else {
-            if owner.is_none() && self.saved_records()?.iter().any(|saved|saved.id==id.0) {self.forget_saved(id)?;}
+            if owner.is_none() && self.saved_records()?.iter().any(|saved|saved.id==id.0) {if delete {self.forget_saved(id)?;}else{self.mark_disabled(id,None)?;}}
             return Ok(());
         };
         if owner.is_some_and(|owner| owner != entry.display.owner) {
             return Err(Error::WrongOwner);
         }
-        if entry.display.persistent && !(self.backend.on_demand() && self.manual_closing.load(Ordering::Acquire)) {self.forget_saved(id)?;entry.display.persistent=false;}
+        let position=self.backend.position(&entry.target)?;
+        // Commit intent before unplugging. An IO failure leaves working
+        // hardware intact; retries never depend on a second metadata write.
+        if delete {self.forget_saved(id)?;}
+        else if self.manual_closing.load(Ordering::Acquire)&&entry.display.persistent {}
+        else {self.mark_disabled(id,position)?;}
         match self.backend.deactivate(&entry.target) {
             Ok(()) => {
                 entries.remove(&id);
@@ -1035,6 +1071,13 @@ impl Manager {
         }
     }
 
+    pub(crate) fn track_session_source(&self,session:Uuid,source:&str)->Result<()> {
+        let entries=self.lock()?;
+        if let Some(entry)=entries.values().find(|e|e.display.source==source) {
+            self.viewers.lock().map_err(|_|Error::Platform("display viewers are poisoned".into()))?.entry(session).or_default().insert(entry.display.id);
+        }
+        Ok(())
+    }
     pub fn release_session(&self, session_id: Uuid) -> Result<()> {
         let mut persistence_error=None;
         let ids: Vec<_> = {
@@ -1051,23 +1094,26 @@ impl Manager {
             {
                 closed.store(true, Ordering::Release);
             }
+            let mut viewers=self.viewers.lock().map_err(|_|Error::Platform("display viewers are poisoned".into()))?;
+            let departing=viewers.remove(&session_id).unwrap_or_default();
+            let still_viewed:std::collections::BTreeSet<_>=viewers.values().flat_map(|ids|ids.iter().copied()).collect();
             let keep=self.keep_after_stream()?&&!self.manual_closing.load(Ordering::Acquire);
             let saved=if keep&&entries.values().any(|entry|entry.display.owner==Owner::Session(session_id)&&!entry.display.cleanup_pending) {match self.save_disconnected(&entries,session_id){Ok(())=>true,Err(error)=>{persistence_error=Some(error);false}}}else{false};
             for entry in entries.values_mut().filter(|e|e.display.owner==Owner::Session(session_id)) {
-                if (entry.display.persistent||(saved&&!entry.explicit_temporary))&&!entry.display.cleanup_pending {
-                    entry.display.owner=Owner::Manual;entry.display.persistent=true;
+                if (entry.display.persistent||still_viewed.contains(&entry.display.id)||(saved&&!entry.explicit_temporary))&&!entry.display.cleanup_pending {
+                    entry.display.owner=Owner::Manual;if saved&&!entry.explicit_temporary {entry.display.persistent=true;}
                 }
             }
             entries
                 .iter()
                 .filter_map(|(id, entry)| {
-                    (entry.display.owner == Owner::Session(session_id)).then_some(*id)
+                    (entry.display.owner == Owner::Session(session_id) || (departing.contains(id)&&!still_viewed.contains(id)&&!entry.display.persistent)).then_some(*id)
                 })
                 .collect()
         };
         let mut first_error = persistence_error;
         for id in ids {
-            if let Err(error) = self.remove_session(session_id, id) {
+            if let Err(error) = self.remove_owned(id,None,false) {
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
@@ -1089,7 +1135,7 @@ impl Manager {
             .collect();
         let mut first_error = None;
         for id in ids {
-            if let Err(error) = self.remove_owned(id, Some(Owner::Manual)) {
+            if let Err(error) = self.remove_owned(id, Some(Owner::Manual), false) {
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
@@ -1107,6 +1153,9 @@ impl Manager {
         {
             let mut _ownership = self.lock()?;
             self.manual_closing.store(true, Ordering::Release);
+            for (id,entry) in _ownership.iter().filter(|(_,e)|e.display.owner==Owner::Manual) {
+                self.remember_position(*id,self.backend.position(&entry.target)?)?;
+            }
             // Persisted targets intentionally outlive this process. A later
             // host must reacquire the recorded target under a fresh claim.
             if !self.backend.on_demand() { _ownership.retain(|_,entry|entry.display.owner!=Owner::Manual||!entry.display.persistent); }

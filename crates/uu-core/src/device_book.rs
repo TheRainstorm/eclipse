@@ -66,6 +66,8 @@ pub struct Sharing {
     pub extensions: std::collections::BTreeMap<String,serde_json::Value>,
     pub ip_enabled: bool,
     pub auto_start: bool,
+    /// Kept for older configuration readers. Native display definitions use
+    /// the fixed MAX_DISPLAY_LIMIT budget; this value is no longer editable.
     pub virtual_display_limit: u16,
 }
 impl Default for Sharing {

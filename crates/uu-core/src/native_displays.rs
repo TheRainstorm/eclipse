@@ -115,9 +115,16 @@ mod initial_display {
     }
     #[derive(Deserialize)]
     struct StrictSpec(#[serde(with="initial_spec")] crate::virtual_display::Spec);
-    pub fn serialize<S:serde::Serializer>(value:&Option<crate::virtual_display::Display>,serializer:S)->std::result::Result<S::Ok,S::Error> {value.serialize(serializer)}
+    pub fn serialize<S:serde::Serializer>(value:&Option<crate::virtual_display::Display>,serializer:S)->std::result::Result<S::Ok,S::Error> {
+        // Configuration flags belong to management snapshots, not the strict
+        // v1 initial-target contract. Old viewers must also be able to open a
+        // reused temporary definition whose layout restoration is disabled.
+        let mut value=serde_json::to_value(value).map_err(serde::ser::Error::custom)?;
+        if let serde_json::Value::Object(fields)=&mut value {fields.remove("enabled");fields.remove("restore_layout");}
+        value.serialize(serializer)
+    }
     pub fn deserialize<'de,D:serde::Deserializer<'de>>(deserializer:D)->std::result::Result<Option<crate::virtual_display::Display>,D::Error> {
-        Ok(Option::<Strict>::deserialize(deserializer)?.map(|v|crate::virtual_display::Display{id:v.id,owner:v.owner,spec:v.spec,actual:v.actual.map(|s|s.0),name:v.name,source:v.source,active:v.active,persistent:v.persistent,cleanup_pending:v.cleanup_pending,last_error:v.last_error}))
+        Ok(Option::<Strict>::deserialize(deserializer)?.map(|v|crate::virtual_display::Display{id:v.id,owner:v.owner,spec:v.spec,actual:v.actual.map(|s|s.0),name:v.name,source:v.source,active:v.active,persistent:v.persistent,enabled:true,restore_layout:true,cleanup_pending:v.cleanup_pending,last_error:v.last_error}))
     }
 }
 impl InitialReply {
@@ -554,6 +561,16 @@ impl Client {
 mod tests {
     use super::*;
     #[test]
+    fn initial_reply_keeps_layout_preferences_out_of_the_strict_v1_contract() {
+        let mut reply=virtual_reply();
+        reply.virtual_display.as_mut().unwrap().restore_layout=false;
+        let wire=serde_json::to_value(&reply).unwrap();
+        let display=wire["virtual_display"].as_object().unwrap();
+        assert!(!display.contains_key("enabled")&&!display.contains_key("restore_layout"));
+        let decoded:InitialReply=serde_json::from_value(wire).unwrap();
+        decoded.validate().unwrap();
+    }
+    #[test]
     fn windows_catalog_uses_system_number_order_and_preserves_exact_source_identity() {
         let host=Host::default();
         let source=host.prepare_monitors(vec![monitor(r"\\.\DISPLAY17",false),monitor(r"\\.\DISPLAY2",false),monitor(r"\\.\DISPLAY1",true)]).unwrap();
@@ -569,7 +586,7 @@ mod tests {
     fn virtual_reply()->InitialReply {
         use crate::virtual_display::*;
         let request=InitialRequest::Virtual{spec:Spec::default()};
-        InitialReply{request,id:1,source:"display-b".into(),virtual_display:Some(Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(uuid::Uuid::new_v4()),spec:Spec::default(),actual:Some(Spec::default()),name:"test virtual".into(),source:"display-b".into(),active:true,persistent:false,cleanup_pending:false,last_error:None})}
+        InitialReply{request,id:1,source:"display-b".into(),virtual_display:Some(Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(uuid::Uuid::new_v4()),spec:Spec::default(),actual:Some(Spec::default()),name:"test virtual".into(),source:"display-b".into(),active:true,persistent:false,enabled:true,restore_layout:true,cleanup_pending:false,last_error:None})}
     }
     #[test]
     fn persistent_initial_intent_roundtrips_and_rejects_a_temporary_reply() {

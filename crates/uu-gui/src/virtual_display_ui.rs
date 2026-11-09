@@ -150,14 +150,14 @@ pub struct State {
 impl State {
     #[cfg(test)]
     pub(super) fn generated_preview()->Self {
-        let displays=[("办公副屏",true,Spec::default()),("游戏副屏",false,Spec{width:2560,height:1440,refresh_millihz:120_000,hdr:true})]
+        let displays=[("Athena Luna",true,Spec::default()),("Apollo Sirius",false,Spec{width:2560,height:1440,refresh_millihz:120_000,hdr:true})]
             .into_iter().enumerate().map(|(index,(name,persistent,spec))|Display {
                 id:uu_core::virtual_display::LeaseId(uuid::Uuid::from_u128(index as u128+1)),owner:Owner::Manual,
-                spec,actual:Some(spec),name:name.into(),source:format!("generated-source-{index}"),active:true,persistent,cleanup_pending:false,last_error:None,
+                spec,actual:(index!=0).then_some(spec),name:name.into(),source:format!("generated-source-{index}"),active:index!=0,persistent,enabled:index!=0,restore_layout:true,cleanup_pending:false,last_error:None,
             }).collect();
         let mut state=Self{local_owner:Some(LocalOwner::Background),..Default::default()};
         state.receive(Response::Snapshot {
-            status:Status{supported:true,driver_present:true,available_slots:14,leased:2,allocated:2,keep_after_stream:false,limit:2,supports_lifetimes:true,supports_configuration:true,on_demand:false,explanation:String::new(),install_url:String::new(),preparation:None},
+            status:Status{supported:true,driver_present:true,available_slots:14,leased:1,allocated:1,keep_after_stream:false,limit:16,supports_lifetimes:true,supports_configuration:true,supports_catalog:true,on_demand:false,explanation:String::new(),install_url:String::new(),preparation:None},
             displays,slots:Vec::new(),
         },Some(LocalOwner::Background));
         state
@@ -433,10 +433,10 @@ impl State {
         if owner == Some(LocalOwner::Foreground) {
             match &response {
                 Response::Snapshot { displays, .. } => {
-                    self.foreground_displays = displays.iter().map(|display| display.id).collect()
+                    self.foreground_displays = displays.iter().filter(|d|d.enabled||d.cleanup_pending).map(|display| display.id).collect()
                 }
                 Response::Created { display } => {
-                    self.foreground_displays.insert(display.id);
+                    if display.enabled||display.cleanup_pending {self.foreground_displays.insert(display.id);}
                 }
                 Response::Removed { id } => {
                     self.foreground_displays.remove(id);
@@ -495,9 +495,10 @@ impl State {
                     self.source = Some((display.source.clone(), Instant::now()));
                     self.source_timed_out = false;
                 }
+                let enabled=display.enabled;
                 self.displays.retain(|d| d.id != display.id);
                 self.displays.push(display);
-                self.message(Kind::Success, uu_i18n::text("虚拟副屏已创建").into());
+                self.message(Kind::Success, uu_i18n::text(if enabled {"虚拟副屏已创建"}else{"显示器配置已添加，点击启用连接到 Windows"}).into());
                 // Capacity changed. Ask explicitly before the next creation.
                 self.status = None;
                 self.preparation = None;
@@ -721,18 +722,22 @@ impl State {
         } else {
             self.local_mutations_blocked()
         };
-        let background_unavailable = client.is_none()
+        let _background_unavailable = client.is_none()
             && self.local_owner == Some(LocalOwner::Background)
             && self.status.is_none()
             && self.preparation.is_none()
             && !self.details.is_empty();
         let mut command = None;
-        let mut local_command = None;
+        let local_command:Option<LocalRequest> = None;
         let mut selected_owner = None;
         let mut preparation_action = None;
         ui.horizontal(|ui| {
             ui.strong(uu_i18n::text("虚拟显示器"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let supports_catalog=self.status.as_ref().is_some_and(|s|s.supports_catalog);
+                if ui.add_enabled(can_edit&&!mutations_blocked&&supports_catalog&&self.displays.len()<16,crate::theme::primary_button("＋")).on_hover_text(uu_i18n::text("添加显示器配置；启用后才连接到 Windows")).clicked() {
+                    command=Some(Request::Add);
+                }
                 if ui.add_enabled(!busy, crate::theme::secondary_button(uu_i18n::text("刷新"))).clicked() {
                     command = Some(Request::Inspect);
                 }
@@ -755,164 +760,16 @@ impl State {
             if busy { ui.weak(uu_i18n::text("操作完成前，管理对象保持不变。")); }
             ui.separator();
         }
-        if client.is_some() {
-            ui.weak(uu_i18n::text("临时屏在所属串流断开时回收；持久屏保留并在开机恢复。"));
-        } else if let Some(owner) = self.local_owner {
-            if embedded {
-                ui.weak(uu_i18n::text("临时屏随所属串流或服务退出回收；持久屏保留并在开机恢复。"));
-            } else {
-                ui.strong(uu_i18n::format!("管理对象：{}", owner.label()));
-                ui.weak(owner.lifetime());
-            }
-            if administrator_required(owner) {
-                ui.label(uu_i18n::text("请在服务管理中准备后台，再创建虚拟副屏；已有副屏不会因打开设置而断开。"));
-                if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("打开后台准备"))).clicked(){preparation_action=Some(preparation_ui::Action::BackgroundSetup);}
-                self.feedback.show(ui, Scope::VirtualDisplays);
-                return;
-            }
-        } else {
-            ui.label(uu_i18n::text("请选择前台进程或后台服务；两者的虚拟屏分别管理。"));
-            return;
-        }
-        ui.add_space(8.);
-        if mutations_blocked {
-            ui.weak(uu_i18n::text("上一次操作结果未知，请刷新当前管理对象的列表后再操作。"));
-        }
-        if let Some(status)=&self.status {
-            ui.horizontal_wrapped(|ui|{
-                let allocated=status.allocation_count();let limit=status.limit;
-                ui.weak(uu_i18n::format!("已创建：{allocated} / {limit}"));
-                ui.add_space(12.);
-                ui.label(uu_i18n::text("虚拟显示器上限"))
-                    .on_hover_text(uu_i18n::text("默认 2 个；临时和持久虚拟显示器共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。"));
-                let mut limit=self.limit_draft.unwrap_or(status.limit);
-                ui.add_enabled_ui(can_edit,|ui| {
-                    if crate::theme::number_input(ui,egui::DragValue::new(&mut limit).range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT)).changed() {
-                        self.limit_draft=(limit!=status.limit).then_some(limit);
-                    }
-                    if ui.add_enabled(self.limit_draft.is_some()&&!busy&&!mutations_blocked,crate::theme::primary_button(uu_i18n::text("保存上限"))).clicked() {
-                        command=Some(Request::SetLimit{limit});
-                    }
-                });
-                ui.weak(uu_i18n::format!("/ {} 个",uu_core::virtual_display::MAX_DISPLAY_LIMIT));
-            });
-        } else {
-            ui.horizontal(|ui| {ui.label(uu_i18n::text("虚拟显示器上限"));ui.weak("—");});
-        }
-        ui.add_space(8.);
-        ui.separator();
-        ui.add_space(8.);
-        ui.strong(uu_i18n::text("创建设置"));
-        ui.add_enabled_ui(can_edit, |ui| {
-            crate::virtual_display_presets::spec_editor(ui, &mut self.spec);
-        });
-        ui.horizontal_wrapped(|ui| {
-            if client.is_none() || self.status.as_ref().is_some_and(|s|s.supports_lifetimes) {
-                ui.add_enabled_ui(can_edit, |ui| {
-                    crate::theme::compact_switch(ui,self.persistent_new.get_or_insert(client.is_none()),uu_i18n::text("持久保存，开机恢复"));
-                });
-            }
-            let can_create=!busy && !mutations_blocked && !background_unavailable && (client.is_none() || self.remote_create_supported)
-                && self.status.as_ref().is_some_and(|s|s.supported && (!s.supports_lifetimes||s.allocation_count()<usize::from(s.limit)))
-                && preparation_ui::can_create(self.preparation.as_ref(),self.status.as_ref().map_or(0,|s|s.available_slots),self.local_owner==Some(LocalOwner::Foreground)&&client.is_none());
-            if ui.add_enabled(can_create,crate::theme::primary_button(uu_i18n::text("新建虚拟显示器"))).clicked() {
-                command=Some(Request::Create{spec:self.spec});
-            }
-        });
-        if let Some(preparation)=&self.preparation {
-            if preparation.phase != uu_core::virtual_display::preparation::Phase::Ready {
-                ui.weak(uu_core::native_virtual_display::preparation_message(preparation));
-            }
-            if preparation_ui::active(preparation) {
-                ui.weak(uu_i18n::text("已登记的准备会在空闲时继续；无需重复点击，也不会中断正在使用的副屏。"));
-                if let Some(at)=self.next_preparation_check {ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));}
-            }
-            if client.is_none() {
-                if let Some(action)=preparation_ui::action(preparation,self.local_owner==Some(LocalOwner::Foreground)) {
-                    let label=match action {
-                        preparation_ui::Action::Prepare=>if embedded {uu_i18n::text("准备虚拟显示器")}else{uu_i18n::text("准备虚拟副屏")},
-                        preparation_ui::Action::Recover=>uu_i18n::text("修复未完成的驱动操作"),
-                        preparation_ui::Action::BackgroundSetup=>if embedded {uu_i18n::text("准备虚拟显示器")}else{uu_i18n::text("打开后台准备")},
-                    };
-                    if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(label)).clicked(){preparation_action=Some(action);}
-                    if action==preparation_ui::Action::Recover {
-                        ui.weak(uu_i18n::text("核对上次日志、驱动、配置及显示状态，确认操作已完成或撤销本次未完成变更；驱动已卸载时核验后封存旧记录。不会重装驱动、新建屏幕或恢复历史桌面布局。"));
-                    } else if action==preparation_ui::Action::Prepare {
-                        ui.weak(uu_i18n::text("准备驱动容量以当前创建上限为准；新建一次只激活一块屏幕。首次安装会短暂枚举驱动目标。"));
-                    }
-                }
-            }
-        } else if let Some(status) = &self.status {
-            let explanation = if !status.supported {
-                uu_i18n::text("虚拟副屏仅支持 Windows")
-            } else if status.on_demand && status.allocation_count()<usize::from(status.limit) {
-                uu_i18n::text("创建一块才出现一块，删除后从 Windows 移除；上限不会预留断开的显示器。首次创建会检查并准备签名驱动。")
-            } else if !status.driver_present {
-                uu_i18n::text("源机尚未安装支持的签名虚拟副屏驱动")
-            } else if status.supports_lifetimes&&status.allocation_count()>=usize::from(status.limit) {
-                uu_i18n::text("已达到创建上限；提高上限或删除已有显示器后可继续创建。")
-            } else if status.available_slots == 0 {
-                uu_i18n::text("驱动没有可用虚拟屏，请在源机管理窗口准备驱动后重试")
-            } else { "" };
-            if !explanation.is_empty() { ui.weak(explanation); }
-            if !status.driver_present && !status.on_demand {
-                ui.hyperlink_to(
-                    uu_i18n::text("下载签名虚拟副屏驱动"),
-                    uu_core::virtual_display::INSTALL_URL,
-                );
-
-            }
-            #[cfg(windows)]
-            if client.is_none() && !status.on_demand && status.driver_present && status.available_slots == 0 {
-                let label = if embedded {
-                    uu_i18n::text("准备虚拟显示器")
-                } else {
-                    uu_i18n::text("打开后台准备")
-                };
-                if ui.add_enabled(!busy && !mutations_blocked, crate::theme::secondary_button(label))
-                    .on_hover_text(uu_i18n::text("准备已安装的虚拟显示设备，完成后刷新当前管理对象的列表。"))
-                    .clicked() {preparation_action=Some(if embedded {preparation_ui::Action::Prepare} else {preparation_ui::Action::BackgroundSetup});}
-            }
-            if client.is_none()&&!status.driver_present&&!status.on_demand {
-                ui.weak(if embedded {
-                    uu_i18n::text("更新或启用服务后，可自动准备虚拟显示器。")
-                } else {
-                    uu_i18n::text("更新或启用源机后台后，可自动准备虚拟副屏。")
-                });
-                let label = if embedded {
-                    uu_i18n::text("准备虚拟显示器")
-                } else {
-                    uu_i18n::text("打开后台准备")
-                };
-                if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(label)).clicked(){preparation_action=Some(if embedded {preparation_ui::Action::Prepare} else {preparation_ui::Action::BackgroundSetup});}
-            }
-            if client.is_none() && status.on_demand {
-                if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("检查驱动准备"))).clicked() {
-                    preparation_action=Some(if embedded {preparation_ui::Action::Prepare} else {preparation_ui::Action::BackgroundSetup});
-                }
-                ui.weak(uu_i18n::text("校验签名驱动文件；缺失时下载并准备。此操作不创建显示器，也不恢复历史桌面布局。"));
-            }
-        }
-        if background_unavailable {
-            ui.weak(if embedded {
-                uu_i18n::text("请先准备虚拟显示器驱动；已有显示器不会因打开设置而断开。")
-            } else {
-                uu_i18n::text("请在服务管理中准备后台，再创建虚拟副屏；已有副屏不会因打开设置而断开。")
-            });
-            let label = if embedded {
-                uu_i18n::text("准备虚拟显示器")
-            } else {
-                uu_i18n::text("打开后台准备")
-            };
-            if ui.add_enabled(!busy,crate::theme::secondary_button(label)).clicked(){preparation_action=Some(if embedded {preparation_ui::Action::Prepare} else {preparation_ui::Action::BackgroundSetup});}
+        if mutations_blocked {ui.weak(uu_i18n::text("上一次操作结果未知，请刷新确认后再操作。"));}
+        if self.status.as_ref().is_some_and(|s|!s.supports_catalog) {
+            ui.weak(uu_i18n::text("请更新主机服务，以使用显示器配置列表和启用、禁用操作。"));
         }
         self.feedback.show(ui, Scope::VirtualDisplays);
         ui.add_space(8.);
         ui.separator();
         ui.add_space(8.);
-        ui.strong(uu_i18n::text("已创建的显示器"));
         if self.displays.is_empty() {
-            ui.weak(uu_i18n::text("还没有由 Eclipse 创建的虚拟显示器。可以在上方创建持久或临时显示器。"));
+            ui.weak(uu_i18n::text("点击右上角加号添加显示器配置，编辑后点击启用。"));
         }
         let displays=self.displays.clone();
         let mut save_edit=None;
@@ -923,7 +780,8 @@ impl State {
         let client_is_none=client.is_none();
         let supports_lifetimes=self.status.as_ref().is_some_and(|s|s.supports_lifetimes);
         let supports_configuration=self.status.as_ref().is_some_and(|s|s.supports_configuration);
-        let row_width=ui.available_width().max(1000.);
+        let supports_catalog=self.status.as_ref().is_some_and(|s|s.supports_catalog);
+        let row_width=ui.available_width().max(860.);
         egui::ScrollArea::horizontal().id_salt("virtual-display-property-rows").auto_shrink([false,true]).show(ui,|ui| {
           ui.set_min_width(row_width);
           list.show(ui, |ui| {
@@ -938,28 +796,33 @@ impl State {
                         ui.horizontal(|ui| {
                             ui.add_enabled_ui(can_edit&&supports_configuration,|ui| {
                                 ui.label(uu_i18n::text("名称"));
-                                ui.add(crate::theme::Input::new(&mut draft.name).desired_width(148.).char_limit(64));
+                                ui.add(crate::theme::Input::new(&mut draft.name).desired_width(148.).char_limit(64)).on_hover_text(uu_i18n::text("名称同步到 Windows 设备属性；显示设置中的名称在下次启用时更新。"));
                                 crate::virtual_display_presets::display_spec_row(ui,&mut draft.spec);
                             });
                             let dirty=draft!=original;
-                            let mut persistent=display.persistent;
-                            if ui.add_enabled_ui(!busy&&!mutations_blocked&&(client_is_none||supports_lifetimes),|ui|crate::theme::compact_switch(ui,&mut persistent,uu_i18n::text("持久"))).inner.changed() {
-                                if client.is_some(){command=Some(Request::SetPersistent{id:display.id,persistent});}
-                                else {local_command=Some(LocalRequest::SetPersistent{id:display.id,persistent});}
-                            }
                             if ui.add_enabled(dirty&&supports_configuration&&!busy&&!mutations_blocked,crate::theme::primary_button(uu_i18n::text("保存")))
                                 .on_hover_text(uu_i18n::text("名称可立即修改；规格变更需先结束此主机的串流。")).clicked() {
                                 save_edit=Some(draft.clone());
                             }
                             if dirty && ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("还原修改"))).clicked() {cancel=true;}
-                            if ui.add_enabled(!busy&&!mutations_blocked&&!fixed_current,crate::theme::secondary_button(if display.cleanup_pending {uu_i18n::text("重试移除")}else{uu_i18n::text("删除")}))
+                            if ui.add_enabled(can_edit&&!mutations_blocked&&supports_catalog&&!dirty&&(!display.enabled||!display.active)&&!display.cleanup_pending,crate::theme::primary_button(uu_i18n::text("启用"))).on_hover_text(uu_i18n::text("连接到 Windows；编辑后的属性请先保存。")).clicked() {command=Some(Request::SetEnabled{id:display.id,enabled:true});}
+                            if ui.add_enabled(can_edit&&!mutations_blocked&&supports_catalog&&display.enabled&&!fixed_current,crate::theme::secondary_button(uu_i18n::text("禁用"))).on_hover_text(uu_i18n::text("从 Windows 移除设备，保留此配置和上次位置。")).clicked() {command=Some(Request::SetEnabled{id:display.id,enabled:false});}
+                            if ui.add_enabled(!busy&&!mutations_blocked&&!fixed_current,crate::theme::secondary_button(if display.cleanup_pending {uu_i18n::text("重试删除")}else{uu_i18n::text("删除")}))
                                 .on_disabled_hover_text(uu_i18n::text("关闭此串流标签即可断开并移除它的临时虚拟屏")).clicked() {
                                 command=Some(Request::Remove{id:display.id});
                             }
-                            let status=ui.weak(if display.active {uu_i18n::text("已启用")}else{uu_i18n::text("等待恢复")});
-                            if let Some(actual)=display.actual {
-                                status.on_hover_text(uu_i18n::format!("实际模式：{} × {} · {} Hz · {}",actual.width,actual.height,actual.refresh_millihz as f64/1000.,if actual.hdr {"HDR"}else{"SDR"}));
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            let mut temporary=!display.persistent;
+                            if ui.add_enabled_ui(can_edit&&!mutations_blocked&&(client_is_none||supports_lifetimes),|ui|crate::theme::compact_switch(ui,&mut temporary,uu_i18n::text("断开串流后自动禁用"))).inner.changed() {
+                                command=Some(Request::SetPersistent{id:display.id,persistent:!temporary});
                             }
+                            let mut restore=display.restore_layout;
+                            if ui.add_enabled_ui(can_edit&&!mutations_blocked&&supports_catalog,|ui|crate::theme::compact_switch(ui,&mut restore,uu_i18n::text("恢复上次布局"))).inner.on_hover_text(uu_i18n::text("启用时恢复此屏上次位置；首次启用或位置冲突时向主屏右侧扩展。关闭后始终向右扩展，已有显示器保持启用。")).changed() {
+                                command=Some(Request::SetRestoreLayout{id:display.id,restore});
+                            }
+                            let status=ui.weak(if display.active {uu_i18n::text("已启用")}else if display.enabled {uu_i18n::text("未连接，重试启用")}else{uu_i18n::text("已禁用")});
+                            if let Some(actual)=display.actual {status.on_hover_text(format!("{} × {} · {} Hz",actual.width,actual.height,actual.refresh_millihz as f64/1000.));}
                         });
                         if !supports_configuration {
                             ui.weak(uu_i18n::text("当前后台尚不支持属性编辑，请更新并重启后台服务。"));
@@ -977,6 +840,13 @@ impl State {
         if let Some(draft)=save_edit {
             self.submitted_editor=Some(draft.id);
             command=Some(Request::Configure{id:draft.id,name:draft.name,spec:draft.spec});
+        }
+        if client.is_none() {
+            egui::CollapsingHeader::new(uu_i18n::text("驱动与诊断")).id_salt("vdd-driver-actions").show(ui,|ui| {
+                if let Some(status)=&self.preparation {ui.weak(uu_core::native_virtual_display::preparation_message(status));}
+                if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("检查驱动准备"))).on_hover_text(uu_i18n::text("检查签名驱动文件，缺失时准备；不新建显示器。")).clicked() {preparation_action=Some(if embedded {preparation_ui::Action::Prepare}else{preparation_ui::Action::BackgroundSetup});}
+                if self.preparation.as_ref().is_some_and(|s|s.phase==uu_core::virtual_display::preparation::Phase::RecoveryPending) && ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("修复未完成的驱动操作"))).clicked() {preparation_action=Some(preparation_ui::Action::Recover);}
+            });
         }
         let provider_error=self.preparation.as_ref().and_then(|s|s.error.as_deref());
         // Typed preparation states already have localized explanations above.
@@ -1331,7 +1201,7 @@ mod tests {
             name: "Generated virtual display".into(),
             source: "generated-source".into(),
             active: true,
-            persistent:false,
+            persistent:false,enabled:true,restore_layout:true,
             cleanup_pending: false,
             last_error: None,
         }
@@ -1344,7 +1214,7 @@ mod tests {
                 available_slots: 1,
                 leased: displays.len(),
                 allocated: displays.len(),
-                keep_after_stream:false,limit:uu_core::virtual_display::DEFAULT_DISPLAY_LIMIT,supports_lifetimes:true,supports_configuration:true,on_demand:false,
+                keep_after_stream:false,limit:uu_core::virtual_display::DEFAULT_DISPLAY_LIMIT,supports_lifetimes:true,supports_configuration:true,supports_catalog:true,on_demand:false,
                 explanation: String::new(),
                 install_url: String::new(),
                 preparation: None,
@@ -1394,9 +1264,8 @@ mod tests {
         for shape in output.shapes {
             collect(&shape.shape, &mut texts);
         }
-        assert!(texts.iter().any(|text| text == "新建虚拟显示器"));
-        assert!(texts.iter().any(|text| text == "虚拟显示器上限"));
-        assert!(texts.iter().any(|text| text == "已创建：1 / 1"));
+        assert!(texts.iter().any(|text| text == "＋"));
+        assert!(!texts.iter().any(|text| text == "虚拟显示器上限"||text=="创建设置"));
         assert!(texts.iter().any(|text| text.contains("Generated desk")));
         assert!(!texts.iter().any(|text| text == "选择管理对象"));
         assert!(!texts.iter().any(|text| text.starts_with("管理对象：")));
@@ -1480,7 +1349,7 @@ mod tests {
         let after=inventory_frame(&mut state,&ctx,vec![],1280.);
         assert_eq!(state.notice,"Generated operation failed");
         assert_eq!(state.details,"Generated exact driver failure");
-        for label in ["Generated operation failed","新建虚拟显示器","诊断详情"] {
+        for label in ["Generated operation failed","＋","诊断详情"] {
             let rect=|texts:&Vec<(String,egui::Rect)>|texts.iter().find(|(s,_)|s==label).unwrap().1;
             assert_eq!(rect(&before),rect(&during),"refresh changed {label}");
             assert_eq!(rect(&before),rect(&after),"readback changed {label}");
@@ -1533,9 +1402,9 @@ mod tests {
             let (_send,receive)=mpsc::channel();state.worker=Some(receive);state.inspect_inflight=true;
             let ctx=egui::Context::default();
             let texts=inventory_frame(&mut state,&ctx,vec![],width);
-            let rows_start=texts.iter().find(|(text,_)|text=="已创建的显示器").unwrap().1.bottom();
+            let rows_start=texts.iter().find(|(text,_)|text=="虚拟显示器").unwrap().1.bottom();
             let rows:Vec<_>=texts.iter().filter(|(_,rect)|rect.center().y>rows_start).collect();
-            let labels=["名称","分辨率","刷新率","HDR","持久","保存","删除"];
+            let labels=["名称","分辨率","刷新率","HDR","启用","禁用","删除"];
             if width>=1000. {
                 for label in labels {
                     assert_eq!(rows.iter().filter(|(text,_)|text==label).count(),2,"{label} at {width}: {texts:?}");
@@ -1547,7 +1416,8 @@ mod tests {
                     assert!(bottom-top<10.,"one horizontal property row per display: {centers:?}");
                 }
             }
-            assert_eq!(texts.iter().filter(|(text,_)|text=="虚拟显示器上限").count(),1);
+            assert!(!texts.iter().any(|(text,_)|text=="虚拟显示器上限"||text=="创建设置"));
+            if width>=1000. {assert_eq!(texts.iter().filter(|(text,_)|text=="恢复上次布局").count(),2);}
             assert!(!texts.iter().any(|(text,_)|text=="编辑"));
             let point=texts.iter().find(|(text,_)|text==&first.name).unwrap().1.center();
             let button=|pressed|egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:egui::Modifiers::NONE};

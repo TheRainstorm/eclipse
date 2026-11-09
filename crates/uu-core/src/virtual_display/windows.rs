@@ -173,7 +173,8 @@ impl Backend for Windows {
         };
         scoped_worker(|| demand::prepare(package))?
     }
-    fn allocate(&self, id:LeaseId) -> Result<Option<(Target,Box<dyn Claim>)>> {
+    fn allocation_configures_mode(&self)->bool {true}
+    fn allocate_configured(&self,id:LeaseId,name:&str,spec:Spec,position:Option<Position>,existing:&[(TargetKey,Spec)])->Result<Option<(Target,Box<dyn Claim>)>> {
         if !scoped_worker(demand::prepared)?? {self.prepare_on_demand(None)?;}
         let (scope,saved) = {
             let mut selected=self.scope.lock().map_err(|_|Error::Platform("display owner is poisoned".into()))?;
@@ -183,7 +184,23 @@ impl Backend for Windows {
             }
             selected.as_ref().unwrap().clone()
         };
-        scoped_worker(|| demand::create(&scope,id,&saved))?.map(Some)
+        scoped_worker(||demand::create_configured(&scope,id,&saved,name,spec,position,existing)).map(|value|value.map(Some))?
+    }
+    fn reconnect(&self,key:&TargetKey,spec:Spec,position:Option<Position>,existing:&[(TargetKey,Spec)])->Result<Target> {
+        scoped_worker(|| {
+            let before=snapshot()?;
+            let mut desired=owned_placements(&before.scene.active,existing)?;
+            desired.retain(|(k,_,_)|k!=key);desired.push((key.clone(),spec,position));
+            configure_owned_set(&desired,Some(&before),None)?;
+            let scope=demand::scope_for(key)?;
+            demand::inventory(Some(&scope))?.targets.into_iter().find(|t|t.key==*key&&t.active).ok_or(Error::UnknownSlot)
+        })?
+    }
+    fn position(&self,key:&TargetKey)->Result<Option<Position>> {
+        worker({let key=key.clone();move||position_of(&query(QDC_ONLY_ACTIVE_PATHS)?,&key)})?
+    }
+    fn rename(&self,key:&TargetKey,name:&str)->Result<()> {
+        scoped_worker(||demand::rename(key,name))?
     }
     fn recover(&self) -> Result<()> {
         Ok(())
@@ -422,6 +439,7 @@ impl Drop for DeviceSet {
     }
 }
 
+#[derive(Clone)]
 struct Topology {
     paths: Vec<DISPLAYCONFIG_PATH_INFO>,
     modes: Vec<DISPLAYCONFIG_MODE_INFO>,
@@ -777,7 +795,10 @@ fn apply(topology: &Topology, apply_submitted: &mut bool) -> Result<()> {
 
 /// Supply an independent source for an explicitly owned target. Existing
 /// outputs retain their paths/modes, including the source of a cloned sibling.
-fn plan_owned_mode(mut active: Topology, all: &Topology, selected: Option<usize>, key: &TargetKey, spec: Spec, extend_right: bool) -> Result<Topology> {
+fn plan_owned_mode(active:Topology,all:&Topology,selected:Option<usize>,key:&TargetKey,spec:Spec,extend_right:bool)->Result<Topology> {
+    plan_owned_mode_at(active,all,selected,key,spec,extend_right,None)
+}
+fn plan_owned_mode_at(mut active: Topology, all: &Topology, selected: Option<usize>, key: &TargetKey, spec: Spec, extend_right: bool, remembered:Option<Position>) -> Result<Topology> {
     let identity = |path:&DISPLAYCONFIG_PATH_INFO| (adapter(path.sourceInfo.adapterId),path.sourceInfo.id);
     let used:BTreeSet<_> = active.paths.iter().enumerate().filter(|(i,_)|Some(*i)!=selected).map(|(_,path)|identity(path)).collect();
     let current = selected.map(|i|active.paths[i]);
@@ -794,16 +815,16 @@ fn plan_owned_mode(mut active: Topology, all: &Topology, selected: Option<usize>
     let mut path = if let Some(path)=current.filter(|p|!used.contains(&identity(p))) {path} else {
         all.paths.iter().find(|p|p.targetInfo.targetAvailable!=0 && !used.contains(&identity(p)) && target_key(p).is_ok_and(|(candidate,_)|&candidate==key)).copied().ok_or(Error::NoAvailableSlot)?
     };
-    let mut right=0i64;
+    let mut rectangles=Vec::new();
     for (_,other) in active.paths.iter().enumerate().filter(|(i,_)|Some(*i)!=selected) {
         let mode=active.modes.get(source_mode_index(other) as usize).ok_or(Error::UnknownSlot)?;
         if mode.infoType!=DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE {return Err(Error::UnknownSlot);}
         let source=unsafe{mode.Anonymous.sourceMode};
-        right=right.max(i64::from(source.position.x)+i64::from(source.width));
+        rectangles.push((Position{x:source.position.x,y:source.position.y},source.width,source.height));
     }
-    let position = if !extend_right && !cloned {
-        current.and_then(|p|active.modes.get(source_mode_index(&p) as usize)).map(|m|unsafe{m.Anonymous.sourceMode.position})
-    }else{None}.unwrap_or(POINTL{x:i32::try_from(right).map_err(|_|Error::Platform("desktop coordinate overflow".into()))?,y:0});
+    let previous=if !extend_right&&!cloned {current.and_then(|p|active.modes.get(source_mode_index(&p) as usize)).map(|m|{let p=unsafe{m.Anonymous.sourceMode.position};Position{x:p.x,y:p.y}})}else{None};
+    let position=super::placement::choose(spec,remembered.or(previous),&rectangles)?;
+    let position=POINTL{x:position.x,y:position.y};
     let mut source:DISPLAYCONFIG_MODE_INFO=unsafe{zeroed()};
     source.infoType=DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;source.adapterId=path.sourceInfo.adapterId;source.id=path.sourceInfo.id;
     source.Anonymous.sourceMode=DISPLAYCONFIG_SOURCE_MODE{width:spec.width,height:spec.height,pixelFormat:DISPLAYCONFIG_PIXELFORMAT_32BPP,position};
@@ -820,6 +841,102 @@ fn plan_owned_mode(mut active: Topology, all: &Topology, selected: Option<usize>
     Ok(active)
 }
 
+struct DisplaySnapshot { scene:Scene, fingerprints:Fingerprints }
+fn snapshot()->Result<DisplaySnapshot> {
+    let scene=scene()?;
+    let fingerprints=mode_fingerprints(&scene.active,None)?;
+    Ok(DisplaySnapshot{scene,fingerprints})
+}
+/// CCD mode indices refer to this call's array. Discard orphaned modes from
+/// removed adapters and rebind all three virtual-mode indices, retaining
+/// foreign clone groups and exact timing records.
+fn compact_topology(mut topology:Topology)->Result<Topology> {
+    let mut required=BTreeSet::new();
+    for path in &topology.paths {
+        let virtual_mode=path.flags&DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE!=0;
+        let invalid=if virtual_mode {0xffff}else{u32::MAX};
+        for index in [source_mode_index(path),target_mode_index(path)] {if index!=invalid {required.insert(index);}}
+        if virtual_mode {let desktop=unsafe{path.targetInfo.Anonymous.modeInfoIdx}&0xffff;if desktop!=0xffff {required.insert(desktop);}}
+    }
+    let mut modes=Vec::new();let mut indices=BTreeMap::new();
+    for index in required {
+        let value=topology.modes.get(index as usize).ok_or(Error::UnknownSlot)?;
+        indices.insert(index,modes.len() as u32);modes.push(*value);
+    }
+    let map=|index:u32,invalid:u32|->Result<u32> {if index==invalid {Ok(invalid)}else{indices.get(&index).copied().ok_or(Error::UnknownSlot)}};
+    for path in &mut topology.paths {
+        let source=unsafe{path.sourceInfo.Anonymous.modeInfoIdx};let target=unsafe{path.targetInfo.Anonymous.modeInfoIdx};
+        if path.flags&DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE!=0 {
+            path.sourceInfo.Anonymous.modeInfoIdx=(map(source>>16,0xffff)?<<16)|(source&0xffff);
+            path.targetInfo.Anonymous.modeInfoIdx=(map(target>>16,0xffff)?<<16)|map(target&0xffff,0xffff)?;
+        }else {
+            path.sourceInfo.Anonymous.modeInfoIdx=map(source,u32::MAX)?;
+            path.targetInfo.Anonymous.modeInfoIdx=map(target,u32::MAX)?;
+        }
+    }
+    topology.modes=modes;Ok(topology)
+}
+fn position_of(topology:&Topology,key:&TargetKey)->Result<Option<Position>> {
+    let Some(path)=topology.paths.iter().find(|p|target_key(p).is_ok_and(|(k,_)|&k==key)) else {return Ok(None);};
+    let source=topology.modes.get(source_mode_index(path) as usize).ok_or(Error::UnknownSlot)?;
+    let p=unsafe{source.Anonymous.sourceMode.position};Ok(Some(Position{x:p.x,y:p.y}))
+}
+fn owned_placements(before:&Topology,existing:&[(TargetKey,Spec)])->Result<Vec<(TargetKey,Spec,Option<Position>)>> {
+    existing.iter().map(|(key,spec)| {
+        let path=before.paths.iter().find(|p|target_key(p).is_ok_and(|(k,_)|k==*key));
+        Ok((key.clone(),path.map(|p|actual(p,&before.modes)).transpose()?.flatten().unwrap_or(*spec),position_of(before,key)?))
+    }).collect()
+}
+fn configure_owned_set(desired:&[(TargetKey,Spec,Option<Position>)],before:Option<&DisplaySnapshot>,retiring:Option<&TargetKey>)->Result<()> {
+    if desired.is_empty()&&retiring.is_none() {return Ok(());}
+    let mut owned:BTreeSet<_>=desired.iter().map(|(k,_,_)|k.clone()).collect();
+    if let Some(key)=retiring {owned.insert(key.clone());}
+    // Every desired path must still be backed by our exact same-scope ledger.
+    let anchor=desired.first().map(|v|&v.0).or(retiring).ok_or(Error::UnknownSlot)?;
+    let mut authorized=demand::owned_keys(anchor)?;
+    if let Some(key)=retiring {authorized.insert(key.clone());}
+    if !owned.is_subset(&authorized) {return Err(Error::WrongOwner);}
+    let fresh=scene()?;
+    let foreign=|topology:&Topology|->Result<_> {
+        let paths=topology.paths.iter().filter_map(|p|target_key(p).ok().filter(|(k,_)|!owned.contains(k)).map(|_|*p)).collect();
+        mode_fingerprints(&Topology{paths,modes:topology.modes.clone()},None)
+    };
+    let baseline=before.map_or(&fresh.active,|s|&s.scene.active);
+    let preserved=match before {
+        Some(before)=>before.fingerprints.iter().filter(|(k,_)|!owned.contains(*k)).map(|(k,v)|(k.clone(),v.clone())).collect(),
+        None=>foreign(baseline)?,
+    };
+    if let Some(before)=before {
+        // This is compensation for the just-submitted PnP operation, using
+        // the snapshot from immediately before it. Never replay a saved
+        // desktop or overwrite a concurrently added/removed external device.
+        let available=|topology:&Topology|topology.paths.iter().filter(|p|p.targetInfo.targetAvailable!=0).filter_map(|p|target_key(p).ok().map(|v|v.0)).filter(|k|!owned.contains(k)).collect::<BTreeSet<_>>();
+        if available(&before.scene.all)!=available(&fresh.all) {return Err(Error::Platform("external display identities changed during virtual display connection".into()));}
+    }
+    let mut proposal=baseline.clone();
+    proposal.paths.retain(|p|target_key(p).is_ok_and(|(k,_)|!owned.contains(&k)));
+    for (key,spec,position) in desired {
+        proposal=plan_owned_mode_at(proposal,&fresh.all,None,key,*spec,true,*position)?;
+    }
+    let proposal=compact_topology(proposal)?;
+    let mut submitted=false;
+    apply(&proposal,&mut submitted)?;
+    let active=query(QDC_ONLY_ACTIVE_PATHS)?;
+    for (key,spec,_) in desired {
+        let path=active.paths.iter().find(|p|target_key(p).is_ok_and(|(k,_)|&k==key)).ok_or(Error::UnknownSlot)?;
+        set_color(path,spec.hdr)?;
+    }
+    let committed=query(QDC_ONLY_ACTIVE_PATHS)?;
+    if foreign(&committed)?!=preserved {return Err(Error::Platform("another display changed during owned display connection".into()));}
+    for (key,spec,_) in desired {
+        let path=committed.paths.iter().find(|p|target_key(p).is_ok_and(|(k,_)|&k==key)).ok_or(Error::UnknownSlot)?;
+        if !actual(path,&committed.modes)?.is_some_and(|s|s.width==spec.width&&s.height==spec.height&&s.refresh_millihz.abs_diff(spec.refresh_millihz)<=1&&s.hdr==spec.hdr) {return Err(Error::Platform("owned display connection did not match the requested mode".into()));}
+    }
+    // Preference storage is not ownership or device removal. The application
+    // retains its own per-definition position even if the Windows cache lags.
+    if let Err(error)=provision::capacity::persist_owned_live(&authorized) {tracing::warn!(%error,"Windows connected-display preference was not saved");}
+    Ok(())
+}
 fn configure_owned_mode(key:&TargetKey,spec:Spec,creation:bool)->std::result::Result<Target,ActivationFailure> {
     // A new PnP monitor may become active between enumeration and this call
     // when Windows applies its saved connected-display configuration. The
@@ -992,6 +1109,23 @@ fn deactivate_keys(keys: &BTreeSet<TargetKey>, require_other_active: bool, mode_
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_modes_drops_removed_adapters_and_preserves_foreign_virtual_clone_indices() {
+        let mut modes=vec![unsafe{zeroed::<DISPLAYCONFIG_MODE_INFO>()};6];
+        for (i,mode) in modes.iter_mut().enumerate() {mode.id=i as u32;}
+        let mut virtual_path:DISPLAYCONFIG_PATH_INFO=unsafe{zeroed()};
+        virtual_path.flags=DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE;
+        virtual_path.sourceInfo.Anonymous.modeInfoIdx=(4<<16)|23;
+        virtual_path.targetInfo.Anonymous.modeInfoIdx=(2<<16)|3;
+        let mut legacy:DISPLAYCONFIG_PATH_INFO=unsafe{zeroed()};
+        legacy.sourceInfo.Anonymous.modeInfoIdx=4;legacy.targetInfo.Anonymous.modeInfoIdx=2;
+        let result=compact_topology(Topology{paths:vec![virtual_path,legacy],modes}).unwrap();
+        assert_eq!(result.modes.iter().map(|m|m.id).collect::<Vec<_>>(),vec![2,3,4]);
+        assert_eq!(unsafe{result.paths[0].sourceInfo.Anonymous.modeInfoIdx},(2<<16)|23);
+        assert_eq!(unsafe{result.paths[0].targetInfo.Anonymous.modeInfoIdx},1);
+        assert_eq!(source_mode_index(&result.paths[1]),2);
+        assert_eq!(target_mode_index(&result.paths[1]),0);
+    }
     #[test]
     fn virtual_modes_use_packed_indices_and_clear_only_the_owned_clone_group() {
         let mut path:DISPLAYCONFIG_PATH_INFO=unsafe{zeroed()};
