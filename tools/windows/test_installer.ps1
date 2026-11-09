@@ -53,6 +53,9 @@ try {
     $new = New-TestPackage 'new'
     & $Installer -SourceDir $old -InstallDir $target -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null
     [IO.File]::WriteAllText((Join-Path $target 'user-config.json'), 'preserved user settings', $utf8)
+    $profile = Join-Path $target 'eclipse-data\data'
+    New-Item -ItemType Directory -Path $profile -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $profile 'gui-settings.json'), 'preserved portable settings', $utf8)
     $before = Get-TestHashes
     # Denying delete on the last DLL forces a failure after earlier EXE/DLL replacements.
     $locked = [IO.File]::Open((Join-Path $target 'libpyrowave-shared-1.dll'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
@@ -68,6 +71,11 @@ try {
         Assert-Test ((Get-FileHash -LiteralPath (Join-Path $target $file)).Hash -eq (Get-FileHash -LiteralPath (Join-Path $new $file)).Hash) "New payload mismatch: $file"
     }
     Assert-Test ([IO.File]::ReadAllText((Join-Path $target 'user-config.json')) -eq 'preserved user settings') 'User settings changed'
+    Assert-Test ([IO.File]::ReadAllText((Join-Path $profile 'gui-settings.json')) -eq 'preserved portable settings') 'Portable settings changed'
+    # This path must not invoke UAC or touch a real service, even if one exists.
+    $portableUpgrade = (& $Installer -SourceDir $new -InstallDir $target -ArchiveRoot $archive -NoShortcut) | ConvertFrom-Json
+    Assert-Test ($portableUpgrade.ServiceUpdate -eq 'manual-update-for-profile') 'Portable upgrade attempted a machine-wide service update'
+    Assert-Test ([IO.File]::ReadAllText((Join-Path $profile 'gui-settings.json')) -eq 'preserved portable settings') 'Portable upgrade changed settings'
     # Exercise a legal non-canonical input; the installer returns full paths.
     $defaultTarget = Join-Path $root 'installed/../default-archive-installed'
     & $Installer -SourceDir $old -InstallDir $defaultTarget -NoShortcut -SkipServiceUpdate | Out-Null

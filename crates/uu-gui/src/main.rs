@@ -25,6 +25,7 @@ mod plugin_ui;
 mod theme;
 mod sessions;
 mod single_instance;
+mod storage_ui;
 mod platform;
 mod shortcuts;
 mod shortcuts_ui;
@@ -190,6 +191,7 @@ struct App {
     platform: std::rc::Rc<platform::Platform>,
     build_label: String,
     executable_path: String,
+    _launcher_identity: Option<single_instance::WindowMarker>,
     context: window_context::Context,
     status: String,
     config: Option<uu_core::Config>,
@@ -453,6 +455,13 @@ impl App {
         }
         let workspace = workspace_ui::Workspace::load(config.as_ref(),(preferences.lan_service_port,preferences.lan_discovery_port));
         let onboarding_open = stream_target.is_none() && workspace.book.devices.is_empty() && !preferences.onboarding_dismissed;
+        let launcher_identity = if stream_target.is_none() {
+            config.as_ref().and_then(|config| {
+                single_instance::mark_window(platform.window_id(), config)
+                    .map_err(|error| eprintln!("Unable to identify the launcher configuration: {error}"))
+                    .ok().flatten()
+            })
+        } else { None };
         let mut app = Self {
             plugins,plugin_client_error,client_support,
             instance_id:NEXT_INSTANCE.fetch_add(1,std::sync::atomic::Ordering::Relaxed),
@@ -475,6 +484,7 @@ impl App {
             platform,
             build_label: build_info::label(),
             executable_path: std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
+            _launcher_identity: launcher_identity,
             context: window_context::Context::new(ctx),
             status: String::new(),
             preview_writer:Default::default(),recorded_connection:false,
@@ -1355,7 +1365,8 @@ impl App {
         self.poll_application_settings();
         self.plugins.poll();
         #[cfg(windows)]
-        self.workspace.background_service.set_loaded_plugins(self.plugins.loaded_manifests(),self.plugins.service_preferences());
+        self.workspace.background_service.set_loaded_plugins(self.plugins.loaded_manifests(),self.plugins.service_preferences(),
+            self.config.as_ref().is_some_and(|config| config.profile_dir().is_none()));
         // A hidden/minimized viewport can buffer both focus loss and recovery
         // before its next UI pass. Preserve that boundary even if focused=true.
         if ctx.input(|i|i.events.iter().any(|event|matches!(event,egui::Event::WindowFocused(false)))){self.pause_video_observation();}
@@ -1606,7 +1617,8 @@ fn main() -> eframe::Result {
         }
     }else{None};
     let _launcher=if stream_target.is_none() {
-        match single_instance::launcher() {
+        let config = uu_core::Config::from_env().map_err(|error| eframe::Error::AppCreation(Box::new(error)))?;
+        match single_instance::launcher(&config) {
             Ok(Some(guard))=>Some(guard),
             Ok(None)=>return Ok(()),
             Err(error)=>return Err(eframe::Error::AppCreation(Box::new(error))),
@@ -1615,7 +1627,8 @@ fn main() -> eframe::Result {
     let origin = platform::startup_origin(stream_target.is_some());
     let title = match &stream_target {
         Some(target) => format!("{} · {}", target.alias, brand::NAME),
-        None => brand::NAME.into(),
+        None => single_instance::window_title(&uu_core::Config::from_env()
+            .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?),
     };
     // Vertical sync is on by default (tear-free). `UU_VSYNC=0` disables it
     // (e.g. for very low latency on a tearing-tolerant setup).

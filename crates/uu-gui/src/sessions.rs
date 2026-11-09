@@ -230,6 +230,11 @@ impl StreamTarget {
     }
     fn command(&self, exe: &Path, origin: Option<(i32, i32)>) -> Command {
         let mut command = Command::new(exe);
+        // Keep the parent's selected profile even if the portable marker is
+        // moved while it is running or a helper executable lives elsewhere.
+        if let Ok(config) = uu_core::Config::from_env() {
+            if let Some(root) = config.profile_dir() { command.env("ECLIPSE_PROFILE_DIR", root); }
+        }
         match self.connection.base() {
             ConnectionTarget::NativeLoopback => {command.arg("--self-stream");}
             ConnectionTarget::Plugin{plugin,identity}=>{command.arg("--plugin").arg(plugin).arg(identity).stdin(Stdio::piped());}

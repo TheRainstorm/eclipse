@@ -51,6 +51,8 @@ Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应
 
 从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包，保留包内全部运行库与清单。
 
+需要独立体验首次使用或按版本保存配置，可在程序旁新建空的 `eclipse-data` 文件夹启用便携模式；退出后复制整个程序目录即可携带客户端配置。已有 Windows 主机服务仍由本机统一管理。[配置位置、便携模式与迁移](docs/configuration-storage.md)
+
 **Windows**：解压 `eclipse-windows-x64-<提交号>.zip`，在解压目录执行：
 
 ```powershell

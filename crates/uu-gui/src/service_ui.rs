@@ -35,10 +35,12 @@ pub(super) struct Entry {
     deployment_error: String,
 }
 impl Entry {
-    pub fn set_loaded_plugins(&mut self,plugins:Vec<uu_plugin_sdk::Manifest>,preferences:Option<uu_core::plugins::Preferences>) {
+    pub fn set_loaded_plugins(&mut self,plugins:Vec<uu_plugin_sdk::Manifest>,preferences:Option<uu_core::plugins::Preferences>,automatic_sync:bool) {
         self.loaded_plugins=plugins;
         self.plugin_preferences=preferences;
-        self.automatic_sync_enabled=true;
+        // A test/portable profile must not silently replace the machine-wide
+        // host or publish its fresh plugin preferences to the existing host.
+        self.automatic_sync_enabled=automatic_sync;
     }
     pub fn poll(&mut self, ctx: &egui::Context, _host: &mut super::sharing_ui::HostUi) -> bool {
         if self.manager.is_none() {
@@ -150,6 +152,7 @@ impl Entry {
         self.manager.as_ref().and_then(|m| m.keep_displays)
     }
     fn schedule_automatic_sync(&mut self) {
+        if !self.automatic_sync_enabled {return;}
         let Some(manager)=&self.manager else{return;};
         if manager.busy || manager.confirm.is_some() || manager.dirty || manager.state==0 {return;}
         let idle=manager.state==SERVICE_STOPPED || manager.snapshot.as_ref().is_some_and(|s|s.connections.is_empty());
@@ -335,7 +338,9 @@ impl Entry {
                 if outdated {
                     ui.colored_label(
                         crate::theme::palette(ui.visuals()).warning,
-                        uu_i18n::text("Eclipse 更新尚未完成；空闲时会自动继续，Windows 可能请求系统授权。"),
+                        uu_i18n::text(if self.automatic_sync_enabled {
+                            "Eclipse 更新尚未完成；空闲时会自动继续，Windows 可能请求系统授权。"
+                        }else {"本机服务与当前便携版本不同；需要使用此版本提供共享时，请手动更新服务。"}),
                     );
                 }
             }
@@ -904,7 +909,9 @@ impl Manager {
                     if ready {
                         ui.weak(uu_i18n::text("已就绪"));
                     }else{
-                        ui.weak(uu_i18n::text("正在完成插件配置；串流空闲后会自动应用。"));
+                        ui.weak(uu_i18n::text(if uu_core::Config::from_env().ok().is_some_and(|c|c.profile_dir().is_some()) {
+                            "此便携配置尚未同步到本机服务，可手动完成配置。"
+                        }else {"正在完成插件配置；串流空闲后会自动应用。"}));
                         if ui.add_enabled(enabled,crate::theme::secondary_button(uu_i18n::text("完成配置"))).clicked() {
                             self.request_action(if self.update_needed(){Confirmation::Update}else{Confirmation::ImportPlugins});
                         }
@@ -2223,7 +2230,7 @@ mod tests {
         let (mut manager,send,_jobs,_stop)=fixture();send.send(state(true,Sharing::default())).unwrap();manager.poll();
         manager.build=Some(BuildStatus{state:SERVICE_RUNNING,process_id:42,installed:Some(BuildVersion{revision:"a".repeat(40)}),running:None,running_error:None});
         active_stream(&mut manager);
-        let mut entry=Entry{manager:Some(manager),..Default::default()};
+        let mut entry=Entry{manager:Some(manager),automatic_sync_enabled:true,..Default::default()};
         entry.schedule_automatic_sync();assert!(entry.deployment.is_none());
         entry.manager.as_mut().unwrap().snapshot.as_mut().unwrap().connections.clear();
         entry.schedule_automatic_sync();assert!(matches!(entry.deployment.take(),Some(Deployment::Install)));
@@ -2252,10 +2259,27 @@ mod tests {
             manager.loaded_plugins=if enabled{vec![generated_plugin()]}else{vec![]};
             manager.apply_plugin_snapshot(PluginSnapshot{directory:"generated".into(),plugins:vec![uu_core::service_admin::PluginInfo{id:"fixture".into(),name:"Generated extension".into(),version:"1".into(),enabled:true,compatible:true,error:String::new(),preferences:before.clone()}]});
             let mut preferences=uu_core::plugins::Preferences::default();preferences.plugins.insert("fixture".into(),after.clone());
-            let mut entry=Entry{manager:Some(manager),plugin_preferences:Some(preferences),..Default::default()};
+            let mut entry=Entry{manager:Some(manager),plugin_preferences:Some(preferences),automatic_sync_enabled:true,..Default::default()};
             entry.schedule_automatic_sync();assert!(entry.deployment.is_none());
             assert!(matches!(jobs.try_recv(),Ok(Job::Rpc(Request::Plugins{request:PluginRequest::Save{id,expected,value}})) if id=="fixture"&&expected==before&&value==after));
         }
+    }
+
+    #[test]
+    fn independent_profiles_never_schedule_service_updates_or_plugin_changes() {
+        let (mut manager, send, jobs, _stop) = fixture();
+        send.send(state(true, Sharing::default())).unwrap();
+        manager.poll();
+        manager.build = Some(BuildStatus { state:SERVICE_RUNNING, process_id:42,
+            installed:Some(BuildVersion { revision:"a".repeat(40) }), running:None, running_error:None });
+        let mut entry = Entry { manager:Some(manager), ..Default::default() };
+        entry.set_loaded_plugins(vec![generated_plugin()], Some(Default::default()), false);
+        entry.schedule_automatic_sync();
+        assert!(entry.deployment.is_none());
+        assert!(!matches!(jobs.try_recv(), Ok(Job::Rpc(Request::Plugins { .. }))));
+        entry.set_loaded_plugins(vec![], None, true);
+        entry.schedule_automatic_sync();
+        assert!(matches!(entry.deployment, Some(Deployment::Install)));
     }
 
 }

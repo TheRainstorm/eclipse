@@ -19,6 +19,11 @@ CLI：~/.local/bin/eclipse-cli（保留 uu-rust 别名）
 
 运行需要 libva、libgbm、libpulse、libpipewire-0.3、libxkbcommon、libxkbcommon-x11、ALSA（桌面推荐 PipeWire ALSA 插件）、OpenGL/EGL。
 登录/设置：$XDG_DATA_HOME/uu-remote 或 ~/.local/share/uu-remote。
+便携模式：将完整包解压到可写的独立目录，在实际 eclipse 程序旁创建空的 eclipse-data
+文件夹后直接运行。设置与插件数据在 eclipse-data/data，日志在 eclipse-data/state。
+空目录可体验首次使用，原用户配置保留；不同版本各用一份目录。退出全部窗口和托盘
+后复制整个程序目录即可携带配置，更新时保留 eclipse-data。应用设置 → 常规可查看路径。
+说明：https://github.com/TheRainstorm/eclipse/blob/master/docs/configuration-storage.md
 支持 Wayland/X11；Wayland 系统快捷键捕获取决于合成器支持 shortcuts-inhibit 协议。
 默认保留被控端原有显示布局，独占虚拟屏仅在显式选择时启用。
 

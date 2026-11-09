@@ -377,6 +377,8 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
             crate::theme::switch(ui,&mut s.close_to_tray,uu_i18n::text("关闭主窗口时最小化到系统托盘"));
             note(ui,uu_i18n::text("共享服务继续运行；从托盘菜单重新打开或退出 Eclipse。"));
         }
+        ui.add_space(12.0);
+        super::storage_ui::show(ui);
     }),
     SoftwareSection::Appearance=>{
         group(ui,uu_i18n::text("界面主题"),|ui| {

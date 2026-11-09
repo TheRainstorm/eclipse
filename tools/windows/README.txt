@@ -14,6 +14,20 @@ Eclipse — Windows / Linux 远程串流客户端（Windows x64 包）
 构建提交和程序路径。保留包内运行 DLL；libvpl.dll 是 MIT 许可的标准 Intel VPL
 调度器，不含 GPU 驱动。实际硬件功能需要系统驱动及 GPU runtime。
 
+配置与便携模式
+
+用户设置、设备与插件数据默认在 %USERPROFILE%\.local\share\uu-remote，
+日志在 %USERPROFILE%\.local\state\uu-remote；应用设置 → 常规可查看实际目录。
+要体验首次使用或分别保存不同版本的配置，将完整包解压到可写的独立目录，
+在 eclipse.exe 旁新建空的 eclipse-data 文件夹，再双击启动，无需删除原配置。
+便携设置保存在 eclipse-data\data，日志与状态在 eclipse-data\state。
+退出此配置的所有窗口和托盘后，复制整个程序目录即可携带其中的配置和插件；
+更新时保留 eclipse-data。不同版本各使用独立的目录和配置副本。
+Windows 主机服务仍共用 %ProgramData%\EclipseRemoteHost 中的受保护设置和配对；
+空白便携副本不会重置服务，也不会自动更新其程序或插件，手动管理仍作用于本机服务。
+迁移到新电脑仍需注册后台服务并安装所需驱动。外部证书等自选文件需要一并迁移。
+说明：https://github.com/TheRainstorm/eclipse/blob/master/docs/configuration-storage.md
+
 连接设备
 
 原生模式使用本项目主机和客户端。被控端在“共享本机”设置画面、声音和权限，

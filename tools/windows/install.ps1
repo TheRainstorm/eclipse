@@ -191,7 +191,14 @@ foreach ($name in $required) {
     }
 }
 $serviceUpdate = 'not-installed'
-if (!$SkipServiceUpdate -and (Test-Path -LiteralPath (Join-Path $env:ProgramData 'EclipseRemoteHost\service.json') -PathType Leaf)) {
+$independentProfile = (Test-Path -LiteralPath (Join-Path $InstallDir 'eclipse-data')) -or
+    ![string]::IsNullOrWhiteSpace($env:ECLIPSE_PROFILE_DIR)
+if (!$SkipServiceUpdate -and $independentProfile) {
+    # Updating a portable/test copy must not replace the machine-wide host.
+    # Explicit service management in that GUI remains available.
+    $serviceUpdate = 'manual-update-for-profile'
+}
+elseif (!$SkipServiceUpdate -and (Test-Path -LiteralPath (Join-Path $env:ProgramData 'EclipseRemoteHost\service.json') -PathType Leaf)) {
     $dataHome = if ([string]::IsNullOrWhiteSpace($env:XDG_DATA_HOME)) { Join-Path $env:USERPROFILE '.local\share' } else { $env:XDG_DATA_HOME }
     $sourceData = Join-Path $dataHome 'uu-remote'
     try {

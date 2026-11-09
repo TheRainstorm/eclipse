@@ -540,6 +540,15 @@ impl Store {
             value.version = 4;
         }
         if value.version==4 {value.version=5;}
+        for service in &mut value.services {
+            for file in std::iter::once(&mut service.token_file).chain(service.certificate.iter_mut()) {
+                if file.is_relative() {
+                    ensure!(!file.as_os_str().is_empty() && file.components().all(|part| matches!(part, std::path::Component::Normal(_))),
+                        "service credential path must remain within its configuration store");
+                    *file = self.directory.join(&*file);
+                }
+            }
+        }
         value.validate()?;
         Ok(value)
     }
@@ -548,6 +557,19 @@ impl Store {
         let mut value = self.read()?;
         f(&mut value)?;
         value.validate()?;
+        // Managed files move with the store. Callers and launch snapshots see
+        // resolved paths; only the persistent record stores relative paths.
+        // Explicit files outside the store keep their original location.
+        for service in &mut value.services {
+            for file in std::iter::once(&mut service.token_file).chain(service.certificate.iter_mut()) {
+                if let Ok(relative) = file.strip_prefix(&self.directory) {
+                    if !relative.as_os_str().is_empty()
+                        && relative.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
+                        *file = relative.to_path_buf();
+                    }
+                }
+            }
+        }
         let encoded=serde_json::to_vec_pretty(&value)?;
         ensure!(encoded.len()<=1024*1024,"{}", uu_i18n::format!("设备与配置记录总量超过1 MiB，请先移除不再使用的记录"));
         let original=self.directory.join("connections.json");
@@ -1071,7 +1093,7 @@ mod tests {
             id: uuid::Uuid::new_v4().to_string(),
             name: "Server".into(),
             address: "signal.example:8443".into(),
-            token_file: "server.token".into(),
+            token_file: root.join("server.token"),
             certificate: None,
             host_enabled: false,
             published_name: "desktop".into(),
@@ -1161,6 +1183,40 @@ mod tests {
         let mut stale=saved.clone();stale.display_clients.clear();
         store.save_device(stale).unwrap();
         assert_eq!(store.display_client_settings(&profile.id,"display:Generated source").unwrap(),Some(display));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn moving_a_store_keeps_managed_credentials_and_launches_in_the_new_directory() {
+        let root = std::env::temp_dir().join(format!("eclipse-move-profile-{}", uuid::Uuid::new_v4()));
+        let original = root.join("old/device-trust");
+        let moved = root.join("new/device-trust");
+        let store = Store::open(&original).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let token = store.store_service_credential(&id, &"ab".repeat(32)).unwrap();
+        let external = root.join("external.pem");
+        let service = Service { id:id.clone(), name:"Generated".into(), address:"signal.example:8443".into(),
+            token_file:token.clone(), certificate:Some(external.clone()), host_enabled:false, published_name:"Generated".into() };
+        store.save_service(service).unwrap();
+        let profile = Profile::new("Generated", Destination::Vps { service:id, device:"a".repeat(64) });
+        store.save_device(profile.clone()).unwrap();
+        let persisted: serde_json::Value = serde_json::from_slice(&std::fs::read(original.join("connections.json")).unwrap()).unwrap();
+        assert_eq!(persisted["services"][0]["token_file"], token.file_name().unwrap().to_str().unwrap());
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::rename(&original, &moved).unwrap();
+        let relocated = Store::open(&moved).unwrap();
+        let launch = relocated.launch(&profile.id).unwrap();
+        let service = launch.service.unwrap();
+        assert_eq!(service.token_file.parent(), Some(moved.as_path()));
+        assert_eq!(std::fs::read_to_string(&service.token_file).unwrap(), "ab".repeat(32));
+        assert_eq!(service.certificate, Some(external), "user-selected external files must not be redirected");
+        assert_eq!(Launch::read(&relocated.publish_launch(&profile.id).unwrap()).unwrap().service.unwrap().token_file, service.token_file);
+        let mut invalid = persisted;
+        for path in ["", "../outside.token"] {
+            invalid["services"][0]["token_file"] = path.into();
+            std::fs::write(moved.join("connections.json"), serde_json::to_vec(&invalid).unwrap()).unwrap();
+            assert!(relocated.read().is_err());
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 }
