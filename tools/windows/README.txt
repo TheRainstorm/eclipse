@@ -24,8 +24,8 @@ Eclipse — Windows / Linux 远程串流客户端（Windows x64 包）
 便携设置保存在 eclipse-data\data，日志与状态在 eclipse-data\state。
 退出此配置的所有窗口和托盘后，复制整个程序目录即可携带其中的配置和插件；
 更新时保留 eclipse-data。不同版本各使用独立的目录和配置副本。
-Windows 主机服务仍共用 %ProgramData%\EclipseRemoteHost 中的受保护设置和配对；
-空白便携副本不会重置服务，也不会自动更新其程序或插件，手动管理仍作用于本机服务。
+每份配置的服务端设置和配对保存在 data/server，服务使用独立的受保护运行副本。
+一台电脑同时运行一个服务端；服务管理可在空闲时切换到本配置。复制目录前先停止服务。
 迁移到新电脑仍需注册后台服务并安装所需驱动。外部证书等自选文件需要一并迁移。
 说明：https://github.com/TheRainstorm/eclipse/blob/master/docs/configuration-storage.md
 

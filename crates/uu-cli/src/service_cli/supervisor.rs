@@ -95,7 +95,7 @@ pub fn dispatch() -> Result<()> {
     winok(unsafe { StartServiceCtrlDispatcherW(table.as_ptr()) })
         .context("请通过 Windows 服务管理器启动后台服务")
 }
-fn enable(name: &str) -> Result<()> {
+pub(super) fn enable(name: &str) -> Result<()> {
     let mut token = ptr::null_mut();
     winok(unsafe {
         OpenProcessToken(
@@ -416,7 +416,6 @@ fn run() -> Result<()> {
                 .canonicalize()?,
         "后台服务必须从受保护的安装位置运行"
     );
-    let _profile_mirror = super::profile_mirror::Mirror::start(&paths, &installed)?;
     if let Err(error) = enable_running_version_query() {
         tracing::error!(%error, "background running-version query access unavailable; sharing continues");
     }
@@ -427,6 +426,7 @@ fn run() -> Result<()> {
     ] {
         enable(name)?;
     }
+    let _profile_mirror = super::profile_mirror::Mirror::start(&paths, &installed)?;
     let _management = management::Management::start(installed.clone())?;
     report(SERVICE_RUNNING, 0);
     let mut child: Option<Child> = None;

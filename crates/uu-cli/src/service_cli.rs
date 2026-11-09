@@ -138,7 +138,10 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
             independent_profile,
         } => {
             let source = source_data.unwrap_or(config.data_dir.clone());
-            let independent = independent_profile || config.profile_dir().is_some();
+            // Elevation may start with another environment. Portable profiles
+            // always use <profile>/data, unlike the normal Eclipse user root.
+            let independent = independent_profile || config.profile_dir().is_some()
+                || source.file_name().is_some_and(|name|name=="data");
             tokio::task::spawn_blocking(move || install::install_profile(source, independent)).await??;
             if open_manager {
                 manage()?;

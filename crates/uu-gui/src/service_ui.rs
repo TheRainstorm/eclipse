@@ -2282,6 +2282,19 @@ mod tests {
         entry.schedule_automatic_sync();assert!(entry.deployment.is_none());
     }
     #[test]
+    fn another_configuration_is_read_only_and_never_automatically_redeployed() {
+        let (mut manager,send,jobs,_stop)=fixture();send.send(state(true,Sharing::default())).unwrap();manager.poll();
+        manager.expected_profile=Some("a".repeat(64));manager.allow_legacy_profile=false;
+        manager.build=Some(BuildStatus{state:SERVICE_RUNNING,process_id:42,installed:Some(BuildVersion{revision:"b".repeat(40)}),running:None,running_error:None,profile:Some("c".repeat(64))});
+        let mut entry=Entry{manager:Some(manager),automatic_sync_enabled:true,..Default::default()};
+        assert!(!entry.online());assert_eq!(entry.keep_displays(),None);
+        entry.schedule_automatic_sync();assert!(entry.deployment.is_none());assert!(jobs.try_recv().is_err());
+        entry.manager.as_mut().unwrap().build.as_mut().unwrap().profile=None;
+        entry.schedule_automatic_sync();assert!(entry.deployment.is_none(),"a historical service must be activated explicitly");
+        entry.manager.as_mut().unwrap().build.as_mut().unwrap().profile=Some("a".repeat(64));
+        assert!(entry.online());assert_eq!(entry.keep_displays(),Some(true));
+    }
+    #[test]
     fn automatic_update_preserves_temporary_displays_and_unfinished_preparation() {
         use uu_core::virtual_display::{Display,LeaseId,Owner,Spec,Status,preparation};
         let mut status=Status{supported:true,driver_present:true,available_slots:1,leased:0,allocated:0,keep_after_stream:false,limit:2,supports_lifetimes:true,supports_configuration:true,explanation:String::new(),install_url:String::new(),preparation:None};

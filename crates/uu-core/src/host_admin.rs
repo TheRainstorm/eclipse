@@ -112,6 +112,7 @@ impl Service {
     pub fn restart_local_manager(&self)->Result<()> {(self.restart)()}
     fn execute_granted(&self,access:&crate::shared_host::Access,grant:Permissions,request:Request)->Result<Response> {
         grant.validate()?;
+        ensure!(matches!(request,Request::Inspect)||!access.sessions.configuration_switching(),"服务正在切换配置，请稍后重试。");
         if !matches!(request,Request::Inspect) {ensure!(grant.details().manage_server,"{}", uu_i18n::format!("本机未授予管理服务和连接权限"));}
         match request {
             Request::Inspect=>{
@@ -199,6 +200,12 @@ mod tests {
         changed.virtual_display_limit=1;
         changed.service_port=changed.service_port.saturating_sub(1);
         let initial=service.defaults();
+        let switching=uuid::Uuid::new_v4().to_string();
+        context.access.sessions.reserve_configuration_switch(&switching,false).unwrap();
+        assert!(service.execute(&context,Request::Inspect).is_ok());
+        assert!(service.execute(&context,Request::Save{revision:server.revision.clone(),settings:changed.clone(),restart:false}).is_err());
+        assert!(store.read().unwrap().sharing.audio,"switching must preserve the original host settings");
+        context.access.sessions.reserve_configuration_switch(&switching,true).unwrap();
         assert!(matches!(service.execute(&context,Request::Save{revision:server.revision.clone(),settings:changed.clone(),restart:false}).unwrap(),Response::Saved{restart:false}));
         assert!(!store.read().unwrap().sharing.audio);
         let live=service.defaults();

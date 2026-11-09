@@ -246,7 +246,33 @@ fn console_owner(session: u32) -> Result<String> {
 fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Result<()> {
     install_from_profile(source, package, enforce_console, false)
 }
-struct IdleReservation { profile: Option<String>, token: String }
+/// Import user-writable configuration with that user's token. In particular a
+/// junction raced into the source must never turn installation into a reader
+/// of protected System/administrator files that are later exported to a user.
+fn as_source_user<T>(owner:&str, operation:impl FnOnce()->Result<T>) -> Result<T> {
+    let token = if process_user(unsafe{GetCurrentProcess()})?==owner {
+        let mut original=ptr::null_mut();
+        winok(unsafe{OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY|TOKEN_DUPLICATE,&mut original)})?;
+        let original=Handle(original);let mut limited=ptr::null_mut();
+        // A linked token can be identification-only. A restricted primary
+        // token retains this user's filesystem identity, disables privileged
+        // groups, and can be impersonated for the bounded source operation.
+        winok(unsafe{CreateRestrictedToken(original.0,LUA_TOKEN|DISABLE_MAX_PRIVILEGE,0,ptr::null(),0,ptr::null(),0,ptr::null(),&mut limited)})?;
+        Handle(limited)
+    } else {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetShellWindow,GetWindowThreadProcessId};
+        let shell=unsafe{GetShellWindow()};ensure!(!shell.is_null(),"无法取得配置所属用户的桌面令牌；请从该用户的 Eclipse 窗口启用服务。");
+        let mut pid=0;unsafe{GetWindowThreadProcessId(shell,&mut pid);}
+        let process=Handle(unsafe{OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,0,pid)});
+        ensure!(!process.0.is_null()&&process_user(process.0)?==owner,"配置所属用户与当前桌面不一致，原配置已保留。");
+        let mut token=ptr::null_mut();winok(unsafe{OpenProcessToken(process.0,TOKEN_QUERY|TOKEN_DUPLICATE,&mut token)})?;Handle(token)
+    };
+    winok(unsafe{ImpersonateLoggedOnUser(token.0)}).context("无法以配置所属用户读取便携资料")?;
+    struct User;
+    impl Drop for User {fn drop(&mut self){if unsafe{RevertToSelf()}==0 {panic!("cannot restore installer identity after reading user configuration");}}}
+    let _user=User;operation()
+}
+struct IdleReservation { profile: Option<String>, token: String, armed:bool }
 impl IdleReservation {
     fn acquire(profile: Option<&uu_core::service_profile::Binding>) -> Result<Self> {
         use uu_core::service_admin::{Request, Response};
@@ -267,11 +293,24 @@ impl IdleReservation {
             }
             Ok::<_,anyhow::Error>(())
         })?;
-        Ok(Self { profile, token })
+        Ok(Self { profile, token, armed:true })
+    }
+    fn renew(&self)->Result<()> {
+        use uu_core::service_admin::{Request,Response};
+        let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(async {
+            ensure!(matches!(request_owner(Request::Status).await?,Response::Status{snapshot,..} if snapshot.connections.is_empty()),"当前仍有串流连接，请断开后再切换服务配置。");
+            if let Some(profile)=&self.profile {
+                let response=request_owner(Request::Scoped{profile:profile.clone(),request:Box::new(Request::ConfigurationSwitch{token:self.token.clone(),release:false})}).await?;
+                match response {Response::Applied=>{},Response::Error{message}=>anyhow::bail!("{message}"),_=>anyhow::bail!("服务尚未确认空闲，已保留原服务。")}
+            }
+            Ok(())
+        })
     }
 }
 impl Drop for IdleReservation {
     fn drop(&mut self) {
+        if !self.armed {return;}
         let Some(profile) = &self.profile else { return; };
         if let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
             let _ = runtime.block_on(request_owner(uu_core::service_admin::Request::Scoped {
@@ -377,7 +416,7 @@ fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool
         serde_json::to_vec(&manifest)?,
     )?;
     protect(&destination.join("version.json"))?;
-    let _idle = if before == Some(SERVICE_RUNNING) { Some(IdleReservation::acquire(previous_profile.as_ref())?) } else { None };
+    let mut idle = if before == Some(SERVICE_RUNNING) { Some(IdleReservation::acquire(previous_profile.as_ref())?) } else { None };
     directory(&paths.root.join("data"))?;
     directory(&paths.root.join("state"))?;
     let config = profile.as_ref().map_or_else(|| paths.config(), |p| p.config(&paths.root));
@@ -385,7 +424,8 @@ fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool
         let profile_root = paths.root.join("profiles").join(&profile.info.id);
         for dir in [paths.root.join("profiles"), profile_root.clone(), profile_root.join("data"), profile_root.join("state"), config.state_dir.clone()] { directory(&dir)?; }
         if !config.data_dir.try_exists()? {
-            let seed = if !independent && existing && previous_profile.is_none() {
+            let legacy_seed = !independent && existing && previous_profile.is_none();
+            let seed = if legacy_seed {
                 paths.config().data_dir
             } else { profile.source() };
             ensure!(seed.join("device-trust/identity.pk8").is_file() && seed.join("device-trust/connections.json").is_file(),
@@ -393,7 +433,9 @@ fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool
             let stage = profile_root.join("data").join(format!(".prepare-{}", uuid::Uuid::new_v4()));
             directory(&stage)?;
             let staged = (|| -> Result<()> {
-                uu_core::service_profile::copy_data(&seed, &stage)?;
+                let snapshot=if legacy_seed {uu_core::service_profile::DataSnapshot::capture(&seed)?}
+                    else {as_source_user(&installed.owner_sid,||uu_core::service_profile::DataSnapshot::capture(&seed))?};
+                snapshot.publish(&stage)?;
                 protect_tree(&stage)?;
                 // Rebase owned absolute credentials to the final directory
                 // before publishing the complete profile in one rename.
@@ -479,7 +521,9 @@ fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool
     // Stage and verify the complete version before interrupting an old host.
     // Keep both SCM registration and the manifest recoverable on normal errors.
     if before.is_some() {
+        if let Some(reservation)=&idle {reservation.renew()?;}
         super::stop()?;
+        if let Some(reservation)=&mut idle {reservation.armed=false;}
     }
     let mut created = false;
     let mut switched = false;
@@ -499,10 +543,10 @@ fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool
         paths.save_manifest(&installed)?;
         protect(&paths.root.join("service.json"))?;
         super::start()?;
-        uu_core::device_book::Store::open(source.join("device-trust"))?.edit(|book| {
+        as_source_user(&installed.owner_sid,||uu_core::device_book::Store::open(source.join("device-trust"))?.edit(|book| {
             book.sharing.auto_start = false;
             Ok(())
-        })?;
+        }))?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -748,6 +792,26 @@ pub fn import_plugins(source: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore="explicit elevated console-user fixture; no SCM or real configuration changes"]
+    fn elevated_profile_import_cannot_read_administrator_only_source_files() {
+        require_administrator().unwrap();
+        let owner=process_user(unsafe{GetCurrentProcess()}).unwrap();assert_ne!(owner,"S-1-5-18");
+        let data=PathBuf::from(std::env::var_os("ECLIPSE_IMPORT_TEST_DATA").expect("explicit disposable user fixture"));
+        assert!(data.is_absolute()&&data.join("fixture-marker").is_file());
+        let root=Paths::discover().unwrap().root.with_file_name(format!("EclipseImportTest-{}",uuid::Uuid::new_v4()));
+        directory(&root).unwrap();
+        struct Fixture(PathBuf);impl Drop for Fixture{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
+        let _fixture=Fixture(root.clone());
+        fs::write(root.join("protected"),b"administrator fixture").unwrap();protect(&root.join("protected")).unwrap();
+        fs::write(data.join("ordinary"),b"owner fixture").unwrap();
+        assert_eq!(as_source_user(&owner,||Ok(fs::read(data.join("ordinary"))?)).unwrap(),b"owner fixture");
+        assert!(as_source_user(&owner,||Ok(fs::read(root.join("protected"))?)).is_err());
+        assert_eq!(fs::read(root.join("protected")).unwrap(),b"administrator fixture");
+        let mut token=ptr::null_mut();
+        assert_eq!(unsafe{OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,1,&mut token)},0);
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(),Some(ERROR_NO_TOKEN as i32));
+    }
     use uu_core::{
         device_trust::{Permissions, TrustStore},
         host_admin,

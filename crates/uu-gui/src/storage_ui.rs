@@ -32,7 +32,7 @@ pub fn show(ui: &mut egui::Ui) {
     ui.add(egui::Label::new(uu_i18n::text("体验首次使用：退出该目录的程序，在程序旁新建空的 eclipse-data 文件夹，然后重新打开。各程序目录的配置独立，原用户配置会保留。")).wrap());
     ui.add(egui::Label::new(uu_i18n::text("迁移便携配置时，退出此配置的所有窗口，再复制整个程序目录；升级时保留 eclipse-data 文件夹。")).wrap());
     #[cfg(windows)]
-    ui.add(egui::Label::new(uu_i18n::text("Windows 主机服务由整台电脑共用，服务配置和配对仍保存在 ProgramData；切换便携配置不会重置它们。便携模式仅在手动操作时更新服务程序和插件。")).wrap());
+    ui.add(egui::Label::new(uu_i18n::text("每份配置都有独立的服务端设置和配对，随 data/server 一起保存。一台电脑同时运行一个服务端；在服务管理中切换配置，有串流时请先断开。复制目录前先停止本配置的服务。")).wrap());
 }
 
 fn open_directory(path: &Path) -> io::Result<()> {
