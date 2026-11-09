@@ -1,6 +1,6 @@
-//! Elevated, pinned first installation of the original signed MttVDD package.
+//! Elevated lifecycle of the original signed MttVDD package and owned devices.
 //! No certificate import, signature-policy override, driver-global reload,
-//! forced upgrade or removal of an existing device is permitted here.
+//! forced upgrade or removal of an unproven existing device is permitted here.
 
 use super::*;
 use std::{
@@ -846,9 +846,38 @@ pub(super) fn find_unbound_demand(token:&str) -> Result<Option<String>> {
     }
     Ok(found)
 }
+/// The pinned Mtt driver stops its blocking pipe listener by connecting to a
+/// shared pipe name. With several independent hosts that connection can wake
+/// another instance, leaving its own stop waiting for UMDF's 60-second timeout.
+/// During an exact owned uninstall, empty anonymous connections wake idle
+/// listeners; no driver command or data is ever sent and active clients remain
+/// connected. This compatibility path is confined to our isolated Mtt devices.
+fn uninstall_isolated_device(device: &mut DeviceNode) -> Result<()> {
+    use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
+    use windows_sys::Win32::{Foundation::{CloseHandle,GENERIC_READ},Storage::FileSystem::{OPEN_EXISTING,SECURITY_SQOS_PRESENT,SECURITY_ANONYMOUS}};
+    let finished=Arc::new(AtomicBool::new(false));
+    let stopping=finished.clone();
+    let wake=std::thread::Builder::new().name("eclipse-vdd-stop-wakeup".into()).spawn(move||{
+        let name=wide(r"\\.\pipe\MTTVirtualDisplayPipe");
+        while !stopping.load(Ordering::Acquire) {
+            // Anonymous SQOS prevents a substituted local pipe server from
+            // impersonating this privileged installer. Never wait for a busy
+            // instance or write/read protocol bytes.
+            let handle=unsafe{CreateFileW(name.as_ptr(),GENERIC_READ|GENERIC_WRITE,0,null(),OPEN_EXISTING,SECURITY_SQOS_PRESENT|SECURITY_ANONYMOUS,null_mut())};
+            if handle!=INVALID_HANDLE_VALUE {unsafe{CloseHandle(handle);}}
+            std::thread::park_timeout(Duration::from_millis(20));
+        }
+    }).map_err(|e|Error::Platform(e.to_string()))?;
+    let result=device.rollback();
+    finished.store(true,Ordering::Release);wake.thread().unpark();
+    wake.join().map_err(|_|Error::Platform("isolated device wakeup worker panicked".into()))?;
+    result
+}
 pub(super) fn remove_demand_device(instance:&str,token:&str,ready:bool) -> Result<()> {
     if !verify_demand_device(instance,token,ready)? { return Ok(()); }
-    if let Some(mut device)=open_demand_device(instance)? { device.rollback()?; }
+    if let Some(mut device)=open_demand_device(instance)? {
+        if device.value("WUDF","DeviceGroupId").is_ok_and(|group|group==format!("EclipseVDD-{token}")) {uninstall_isolated_device(&mut device)?;} else {device.rollback()?;}
+    }
     if open_demand_device(instance)?.is_some() { return Err(Error::Platform("exact virtual device removal is not yet complete".into())); }
     Ok(())
 }

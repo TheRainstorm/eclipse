@@ -329,6 +329,7 @@ pub(super) fn create(
     }
 }
 pub(super) fn remove(key: &TargetKey) -> Result<()> {
+    #[cfg(test)] let timer=Instant::now();
     let mut state = load()?;
     let record = state
         .records
@@ -344,13 +345,16 @@ pub(super) fn remove(key: &TargetKey) -> Result<()> {
             // for a surviving sibling even after a successful extension.
             let owned:BTreeSet<_>=state.records.iter().filter(|r|r.ready&&r.scope==record.scope&&r.token!=record.token).filter_map(|r|r.target.clone()).collect();
             deactivate(key,&owned)?;
+            #[cfg(test)] eprintln!("remove detached {:?}",timer.elapsed());
             let live=mode_fingerprints(&query(QDC_ONLY_ACTIVE_PATHS)?,None)?;
             if owned.iter().any(|key|live.contains_key(key)) {
                 capacity::persist_detached_live(&owned,key)?;
+                #[cfg(test)] eprintln!("remove persisted {:?}",timer.elapsed());
             }
         }
     }
     recover_record(&record)?;
+    #[cfg(test)] eprintln!("remove uninstalled {:?}",timer.elapsed());
     // Windows can select an older mode for the new connected combination.
     // Restore only this scope's surviving, exactly owned display specifications
     // from immediately before this removal; never replay a global layout.
@@ -358,6 +362,7 @@ pub(super) fn remove(key: &TargetKey) -> Result<()> {
         let target=inventory(Some(&record.scope))?.targets.into_iter().find(|t|t.key==key).ok_or(Error::UnknownSlot)?;
         let unchanged=target.active && target.actual.is_some_and(|s|s.width==spec.width&&s.height==spec.height&&s.refresh_millihz.abs_diff(spec.refresh_millihz)<=1&&s.hdr==spec.hdr);
         if !unchanged {configure_owned_mode(&key,spec,true).map_err(|e|fail(format!("remaining owned monitor mode recovery is pending: {}",e.message)))?;}
+        #[cfg(test)] eprintln!("remove surviving mode verified {:?}, corrected={}",timer.elapsed(),!unchanged);
     }
     state.records.retain(|r| r.token != record.token);
     save(&state)?;
@@ -464,8 +469,10 @@ mod live_tests {
                 let source=unsafe{extended.modes[source_mode_index(path) as usize].Anonymous.sourceMode};
                 if source.position.x!=first_source.position.x+spec.width as i32 || source.position.y!=0 {return Err(fail("virtual clone was not split and saved at the right edge"));}
                 eprintln!("removing first {:?}",timer.elapsed());
+                let removing=Instant::now();
                 remove(&first.key)?;drop(first_claim);
                 eprintln!("first removed {:?}",timer.elapsed());
+                if removing.elapsed()>=Duration::from_secs(10) {return Err(fail("owned removal waited for the driver stop timeout"));}
                 let settled=Instant::now()+Duration::from_secs(5);
                 loop {
                     let remaining=inventory(Some(&scope))?;
