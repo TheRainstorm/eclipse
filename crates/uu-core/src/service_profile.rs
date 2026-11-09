@@ -259,7 +259,29 @@ impl DataSnapshot {
                             self.files.iter().any(|(relative, _)| relative == suffix),
                             "服务凭据缺失，原配置已保留。"
                         );
-                        *path = destination.join(suffix);
+                        if let Ok(inside_store) = suffix.strip_prefix("device-trust") {
+                            // Persist store-relative paths: a raw directory copy
+                            // must not keep references to its previous location.
+                            *path = inside_store.to_path_buf();
+                        } else {
+                            // Historical hosts kept credentials beside the trust
+                            // store. Materialize those inside it before persisting
+                            // a relative reference; never use '..' escape paths.
+                            let alias = PathBuf::from("host-credentials").join(hex::encode(
+                                Sha256::digest(suffix.as_os_str().as_encoded_bytes()),
+                            ));
+                            let bytes = &self
+                                .files
+                                .iter()
+                                .find(|(relative, _)| relative == suffix)
+                                .expect("validated captured credential")
+                                .1;
+                            let relative = PathBuf::from("device-trust").join(&alias);
+                            crate::private_file::write_atomic(&destination.join(&relative), bytes)?;
+                            published
+                                .insert(relative, hex::encode(Sha256::digest(bytes.as_slice())));
+                            *path = alias;
+                        }
                     }
                 }
                 bytes = zeroize::Zeroizing::new(serde_json::to_vec_pretty(&book)?);
@@ -353,6 +375,28 @@ mod tests {
         assert!(copied_book.services[0]
             .token_file
             .starts_with(&a.config(&root).data_dir));
+        let assert_movable = || {
+            let destination = a.config(&root).data_dir;
+            let moved = root.join("transported-server");
+            fs::rename(&destination, &moved).unwrap();
+            let moved_book = crate::device_book::Store::open(moved.join("device-trust"))
+                .unwrap()
+                .read()
+                .unwrap();
+            assert!(moved_book.services[0].token_file.starts_with(&moved));
+            assert_eq!(
+                fs::read_to_string(&moved_book.services[0].token_file).unwrap(),
+                "ab".repeat(32)
+            );
+            fs::rename(&moved, &destination).unwrap();
+        };
+        assert_movable();
+        let legacy_credential = a.source().join("service-credentials/legacy-token");
+        crate::private_file::write_atomic(&legacy_credential, "ab".repeat(32).as_bytes()).unwrap();
+        service.token_file = legacy_credential;
+        store.save_service(service.clone()).unwrap();
+        copy_data(&a.source(), &a.config(&root).data_dir).unwrap();
+        assert_movable();
         service.token_file = root.join("outside-profile-secret");
         store.save_service(service.clone()).unwrap();
         assert!(
