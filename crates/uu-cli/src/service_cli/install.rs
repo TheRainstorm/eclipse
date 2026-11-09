@@ -152,12 +152,15 @@ pub fn install(source: PathBuf) -> Result<()> {
     install_profile(source, false)
 }
 pub fn install_profile(source: PathBuf, independent: bool) -> Result<()> {
+    install_with_policy(source, independent, false)
+}
+pub fn install_with_policy(source: PathBuf, independent: bool, defer_if_busy: bool) -> Result<()> {
     administrator_file_owner()?;
     let package = std::env::current_exe()?
         .parent()
         .context("无法确定安装包目录")?
         .to_path_buf();
-    install_from_profile(source.clone(), package, true, independent)?;
+    install_from_profile(source.clone(), package, true, independent, defer_if_busy)?;
     // The package installer is one product update. Reuse the exact, bounded
     // import transaction for extensions the console owner already enabled.
     // An import failure leaves the updated core running and reports the
@@ -244,7 +247,7 @@ fn console_owner(session: u32) -> Result<String> {
     sid_string(sid.as_mut_ptr().cast())
 }
 fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Result<()> {
-    install_from_profile(source, package, enforce_console, false)
+    install_from_profile(source, package, enforce_console, false, false)
 }
 /// Import user-writable configuration with that user's token. In particular a
 /// junction raced into the source must never turn installation into a reader
@@ -272,6 +275,24 @@ fn as_source_user<T>(owner:&str, operation:impl FnOnce()->Result<T>) -> Result<T
     impl Drop for User {fn drop(&mut self){if unsafe{RevertToSelf()}==0 {panic!("cannot restore installer identity after reading user configuration");}}}
     let _user=User;operation()
 }
+#[derive(Debug)]
+pub(super) struct DeferredBusy;
+impl std::fmt::Display for DeferredBusy {
+    fn fmt(&self, f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        f.write_str("当前仍有串流连接，请断开后再切换服务配置。")
+    }
+}
+impl std::error::Error for DeferredBusy {}
+async fn require_idle() -> Result<()> {
+    match request_owner(uu_core::service_admin::Request::Status).await? {
+        uu_core::service_admin::Response::Status { snapshot, .. } if snapshot.connections.is_empty() => Ok(()),
+        uu_core::service_admin::Response::Status { .. } => Err(DeferredBusy.into()),
+        _ => anyhow::bail!("服务尚未确认空闲，已保留原服务。"),
+    }
+}
+fn needs_idle(previous:Option<&str>, selected:Option<&str>, defer_if_busy:bool)->bool {
+    defer_if_busy || previous != selected
+}
 struct IdleReservation { profile: Option<String>, token: String, armed:bool }
 impl IdleReservation {
     fn acquire(profile: Option<&uu_core::service_profile::Binding>) -> Result<Self> {
@@ -281,13 +302,13 @@ impl IdleReservation {
         let token = uuid::Uuid::new_v4().to_string();
         let request = Request::ConfigurationSwitch { token:token.clone(), release:false };
         runtime.block_on(async {
-            ensure!(matches!(request_owner(Request::Status).await?, Response::Status { snapshot, .. } if snapshot.connections.is_empty()), "当前仍有串流连接，请断开后再切换服务配置。");
+            require_idle().await?;
             // Historical hosts predate the reservation protocol. Their public
             // status is checked again immediately before the explicit stop.
             if let Some(id) = &profile {
                 match request_owner(Request::Scoped { profile:id.clone(), request:Box::new(request) }).await? {
                     Response::Applied => {},
-                    Response::Error { message } => anyhow::bail!("{message}"),
+                    Response::Error { message } => { require_idle().await?; anyhow::bail!("{message}"); },
                     _ => anyhow::bail!("服务尚未确认空闲，已保留原服务。"),
                 }
             }
@@ -299,10 +320,10 @@ impl IdleReservation {
         use uu_core::service_admin::{Request,Response};
         let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         runtime.block_on(async {
-            ensure!(matches!(request_owner(Request::Status).await?,Response::Status{snapshot,..} if snapshot.connections.is_empty()),"当前仍有串流连接，请断开后再切换服务配置。");
+            require_idle().await?;
             if let Some(profile)=&self.profile {
                 let response=request_owner(Request::Scoped{profile:profile.clone(),request:Box::new(Request::ConfigurationSwitch{token:self.token.clone(),release:false})}).await?;
-                match response {Response::Applied=>{},Response::Error{message}=>anyhow::bail!("{message}"),_=>anyhow::bail!("服务尚未确认空闲，已保留原服务。")}
+                match response {Response::Applied=>{},Response::Error{message}=>{require_idle().await?;anyhow::bail!("{message}");},_=>anyhow::bail!("服务尚未确认空闲，已保留原服务。")}
             }
             Ok(())
         })
@@ -319,7 +340,7 @@ impl Drop for IdleReservation {
         }
     }
 }
-fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool, independent: bool) -> Result<()> {
+fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool, independent: bool, defer_if_busy: bool) -> Result<()> {
     let _lock = installation_lock()?;
     let mut session = 0;
     winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) })?;
@@ -416,7 +437,8 @@ fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool
         serde_json::to_vec(&manifest)?,
     )?;
     protect(&destination.join("version.json"))?;
-    let mut idle = if before == Some(SERVICE_RUNNING) { Some(IdleReservation::acquire(previous_profile.as_ref())?) } else { None };
+    let reserve = needs_idle(previous_profile.as_ref().map(|p|p.info.id.as_str()), profile.as_ref().map(|p|p.info.id.as_str()), defer_if_busy);
+    let mut idle = if before == Some(SERVICE_RUNNING) && reserve { Some(IdleReservation::acquire(previous_profile.as_ref())?) } else { None };
     directory(&paths.root.join("data"))?;
     directory(&paths.root.join("state"))?;
     let config = profile.as_ref().map_or_else(|| paths.config(), |p| p.config(&paths.root));
@@ -792,6 +814,16 @@ pub fn import_plugins(source: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_update_can_restart_its_profile_but_background_update_and_switch_wait_for_idle() {
+        assert!(!needs_idle(Some("a"), Some("a"), false));
+        assert!(!needs_idle(None, None, false));
+        assert!(needs_idle(Some("a"), Some("a"), true));
+        assert!(needs_idle(None, None, true));
+        assert!(needs_idle(Some("a"), Some("b"), false));
+        assert!(needs_idle(None, Some("a"), false));
+        assert!(needs_idle(Some("a"), None, false));
+    }
     #[test]
     #[ignore="explicit elevated console-user fixture; no SCM or real configuration changes"]
     fn elevated_profile_import_cannot_read_administrator_only_source_files() {

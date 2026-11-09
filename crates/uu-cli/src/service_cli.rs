@@ -98,6 +98,9 @@ pub enum Command {
         open_manager: bool,
         #[arg(long)]
         independent_profile: bool,
+        /// Leave an active host running and let the caller retry when idle.
+        #[arg(long)]
+        defer_if_busy: bool,
     },
     /// Explicitly synchronize enabled plugin binaries/configuration and restart.
     ImportPlugins {
@@ -136,13 +139,18 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
             source_data,
             open_manager,
             independent_profile,
+            defer_if_busy,
         } => {
             let source = source_data.unwrap_or(config.data_dir.clone());
             // Elevation may start with another environment. Portable profiles
             // always use <profile>/data, unlike the normal Eclipse user root.
             let independent = independent_profile || config.profile_dir().is_some()
                 || source.file_name().is_some_and(|name|name=="data");
-            tokio::task::spawn_blocking(move || install::install_profile(source, independent)).await??;
+            let result = tokio::task::spawn_blocking(move || install::install_with_policy(source, independent, defer_if_busy)).await?;
+            if defer_if_busy && result.as_ref().is_err_and(|error| error.is::<install::DeferredBusy>()) {
+                std::process::exit(10);
+            }
+            result?;
             if open_manager {
                 manage()?;
             }

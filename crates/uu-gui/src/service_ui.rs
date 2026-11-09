@@ -1693,7 +1693,9 @@ pub(super) fn dispatch() -> Option<eframe::Result> {
             command
                 .args(["service", action, "--source-data"])
                 .arg(&args[3]);
+            if defer_if_busy && action == "install" { command.arg("--defer-if-busy"); }
             let output = command.creation_flags(0x08000000).output()?;
+            if defer_if_busy && output.status.code() == Some(10) { std::process::exit(10); }
             anyhow::ensure!(
                 output.status.success(),
                 "{}",
