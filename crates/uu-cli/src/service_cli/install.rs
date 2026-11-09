@@ -149,12 +149,15 @@ fn copy(source: &Path, destination: &Path) -> Result<()> {
     protect(destination)
 }
 pub fn install(source: PathBuf) -> Result<()> {
+    install_profile(source, false)
+}
+pub fn install_profile(source: PathBuf, independent: bool) -> Result<()> {
     administrator_file_owner()?;
     let package = std::env::current_exe()?
         .parent()
         .context("无法确定安装包目录")?
         .to_path_buf();
-    install_from(source.clone(), package, true)?;
+    install_from_profile(source.clone(), package, true, independent)?;
     // The package installer is one product update. Reuse the exact, bounded
     // import transaction for extensions the console owner already enabled.
     // An import failure leaves the updated core running and reports the
@@ -241,6 +244,43 @@ fn console_owner(session: u32) -> Result<String> {
     sid_string(sid.as_mut_ptr().cast())
 }
 fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Result<()> {
+    install_from_profile(source, package, enforce_console, false)
+}
+struct IdleReservation { profile: Option<String>, token: String }
+impl IdleReservation {
+    fn acquire(profile: Option<&uu_core::service_profile::Binding>) -> Result<Self> {
+        use uu_core::service_admin::{Request, Response};
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        let profile = profile.map(|p|p.info.id.clone());
+        let token = uuid::Uuid::new_v4().to_string();
+        let request = Request::ConfigurationSwitch { token:token.clone(), release:false };
+        runtime.block_on(async {
+            ensure!(matches!(request_owner(Request::Status).await?, Response::Status { snapshot, .. } if snapshot.connections.is_empty()), "当前仍有串流连接，请断开后再切换服务配置。");
+            // Historical hosts predate the reservation protocol. Their public
+            // status is checked again immediately before the explicit stop.
+            if let Some(id) = &profile {
+                match request_owner(Request::Scoped { profile:id.clone(), request:Box::new(request) }).await? {
+                    Response::Applied => {},
+                    Response::Error { message } => anyhow::bail!("{message}"),
+                    _ => anyhow::bail!("服务尚未确认空闲，已保留原服务。"),
+                }
+            }
+            Ok::<_,anyhow::Error>(())
+        })?;
+        Ok(Self { profile, token })
+    }
+}
+impl Drop for IdleReservation {
+    fn drop(&mut self) {
+        let Some(profile) = &self.profile else { return; };
+        if let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let _ = runtime.block_on(request_owner(uu_core::service_admin::Request::Scoped {
+                profile:profile.clone(), request:Box::new(uu_core::service_admin::Request::ConfigurationSwitch { token:self.token.clone(), release:true })
+            }));
+        }
+    }
+}
+fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool, independent: bool) -> Result<()> {
     let _lock = installation_lock()?;
     let mut session = 0;
     winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) })?;
@@ -272,6 +312,7 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
     } else {
         None
     };
+    let previous_profile = if existing { paths.active_profile()? } else { None };
     let before = service_state()?;
     ensure!(
         before.is_none() || previous.is_some(),
@@ -290,6 +331,9 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
         build: hex::encode(Sha256::digest(serde_json::to_vec(&manifest["sha256"])?)),
     };
     installed.validate()?;
+    let profile = if manifest["service_profiles"].as_u64() == Some(1) {
+        Some(uu_core::service_profile::Binding::new(source.clone(), installed.revision.clone(), installed.build.clone())?)
+    } else { None };
     let hashes = manifest["sha256"]
         .as_object()
         .context("安装包缺少完整性记录")?;
@@ -333,12 +377,50 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
         serde_json::to_vec(&manifest)?,
     )?;
     protect(&destination.join("version.json"))?;
+    let _idle = if before == Some(SERVICE_RUNNING) { Some(IdleReservation::acquire(previous_profile.as_ref())?) } else { None };
     directory(&paths.root.join("data"))?;
     directory(&paths.root.join("state"))?;
-    let config = paths.config();
-    directory(&config.data_dir)?;
-    directory(&config.state_dir)?;
-    if !existing {
+    let config = profile.as_ref().map_or_else(|| paths.config(), |p| p.config(&paths.root));
+    if let Some(profile) = &profile {
+        let profile_root = paths.root.join("profiles").join(&profile.info.id);
+        for dir in [paths.root.join("profiles"), profile_root.clone(), profile_root.join("data"), profile_root.join("state"), config.state_dir.clone()] { directory(&dir)?; }
+        if !config.data_dir.try_exists()? {
+            let seed = if !independent && existing && previous_profile.is_none() {
+                paths.config().data_dir
+            } else { profile.source() };
+            ensure!(seed.join("device-trust/identity.pk8").is_file() && seed.join("device-trust/connections.json").is_file(),
+                "请先在对应程序目录准备服务配置，再启用此服务");
+            let stage = profile_root.join("data").join(format!(".prepare-{}", uuid::Uuid::new_v4()));
+            directory(&stage)?;
+            let staged = (|| -> Result<()> {
+                uu_core::service_profile::copy_data(&seed, &stage)?;
+                protect_tree(&stage)?;
+                // Rebase owned absolute credentials to the final directory
+                // before publishing the complete profile in one rename.
+                let store = uu_core::device_book::Store::open(stage.join("device-trust"))?;
+                store.edit(|book| {
+                    for service in &mut book.services {
+                        for file in std::iter::once(&mut service.token_file).chain(service.certificate.iter_mut()) {
+                            if let Ok(suffix) = file.strip_prefix(&stage) { *file = config.data_dir.join(suffix); }
+                        }
+                    }
+                    Ok(())
+                })?;
+                protect_tree(&stage)?;
+                fs::rename(&stage, &config.data_dir)?;
+                Ok(())
+            })();
+            if stage.exists() { let _ = fs::remove_dir_all(&stage); }
+            staged?;
+        }
+        ensure!(config.at("device-trust/identity.pk8").is_file() && config.at("device-trust/connections.json").is_file(), "服务配置不完整，原数据已保留");
+        uu_core::device_trust::TrustStore::open(config.at("device-trust"))?;
+        uu_core::device_book::Store::open(config.at("device-trust"))?.read()?;
+    } else {
+        directory(&config.data_dir)?;
+        directory(&config.state_dir)?;
+    }
+    if !existing && profile.is_none() {
         let owner_directory = source.join("device-trust");
         let deadline = Instant::now() + Duration::from_secs(8);
         let _source_owner = loop {
@@ -407,6 +489,8 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
         let old_program=previous.as_ref().map(|old|paths.binary_directory(old).join(old.cli_name()));
         let (report,changes)=uu_core::firewall::migrate(old_program.as_deref(),&destination.join(installed.cli_name()),sharing.service_port,sharing.discovery_port)?;
         eprintln!("{}",report.message());firewall_changes=Some(changes);
+        paths.save_profile(profile.as_ref())?;
+        if profile.is_some() { protect(&paths.root.join("active-profile.json"))?; }
         let (service, new) = registration(&paths, &installed)?;
         created = new;
         switched = true;
@@ -426,6 +510,7 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
             if switched && service_state()?.is_some() {
                 super::stop()?;
             }
+            paths.save_profile(previous_profile.as_ref())?;
             if let Some(previous) = &previous {
                 if fs::read(paths.root.join("service.json")).ok()
                     != Some(serde_json::to_vec(previous)?)
@@ -485,7 +570,8 @@ fn registration(paths: &Paths, installed: &Installed) -> Result<(ServiceHandle, 
     });
     ensure!(!manager.0.is_null(), "无法打开 Windows 服务管理器");
     let executable = paths.binary_directory(installed).join(installed.cli_name());
-    let command = wide(format!("\"{}\" service daemon", executable.display()));
+    let profile_arg = paths.profile_for(installed)?.map(|p| format!(" --profile {}", p.info.id)).unwrap_or_default();
+    let command = wide(format!("\"{}\" service daemon{}", executable.display(), profile_arg));
     let name = wide(SERVICE_NAME);
     let service = unsafe {
         OpenServiceW(
@@ -613,7 +699,7 @@ pub fn import_plugins(source: PathBuf) -> Result<()> {
         found.installed
     }else{Vec::new()};
     let mut writes:Vec<(PathBuf,Vec<u8>)>=Vec::new();
-    let mut directories=vec![target_program.join("plugins"),paths.config().at("plugins")];
+    let mut directories=vec![target_program.join("plugins"),paths.runtime_config()?.at("plugins")];
     let mut total=0usize;
     for plugin in selected.into_iter().filter(|p|preferences.get(&p.manifest.id).enabled) {
         ensure!(plugin.compatible(),"插件 {} 与当前程序 SDK 不匹配",plugin.manifest.id);
@@ -624,7 +710,7 @@ pub fn import_plugins(source: PathBuf) -> Result<()> {
         let library=regular(&plugin.directory.join(&plugin.manifest.library),256*1024*1024)?;
         ensure!(hex::encode(Sha256::digest(&library))==plugin.manifest.library_sha256.to_ascii_lowercase(),"插件 {} 完整性校验失败",plugin.manifest.id);
         let program=target_program.join("plugins").join(&plugin.manifest.id);
-        let data=paths.config().at("plugins").join(&plugin.manifest.id);
+        let data=paths.runtime_config()?.at("plugins").join(&plugin.manifest.id);
         directories.extend([program.clone(),data.clone()]);
         total=total.checked_add(library.len()).context("plugin import size overflow")?;
         ensure!(total<=512*1024*1024,"插件同步超过 512 MiB");
@@ -635,7 +721,7 @@ pub fn import_plugins(source: PathBuf) -> Result<()> {
             if from.try_exists()? {let bytes=regular(&from,1024*1024)?;total+=bytes.len();ensure!(total<=512*1024*1024,"插件同步超过 512 MiB");writes.push((data.join(relative),bytes));}
         }
     }
-    writes.push((paths.config().at(uu_core::plugins::Preferences::FILE),serde_json::to_vec_pretty(&preferences)?));
+    writes.push((paths.runtime_config()?.at(uu_core::plugins::Preferences::FILE),serde_json::to_vec_pretty(&preferences)?));
     // Validate every source before stopping a running host. Preserve old files
     // so a failed synchronization can restore its exact previous contents.
     let before=writes.iter().map(|(path,_)|Ok((path.clone(),if path.try_exists()? {Some(regular(path,256*1024*1024)?)}else{None}))).collect::<Result<Vec<_>>>()?;

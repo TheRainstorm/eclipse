@@ -185,7 +185,7 @@ def build_package(output, vpl_archive=None, rebuild=False):
         for binary in staging.iterdir():
             if binary.suffix.lower() in ('.exe', '.dll'): plugin_sdk.strip_windows_binary(binary)
         verify_imports(staging)
-        manifest = {'format_version': 5, 'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
+        manifest = {'format_version': 5, 'service_profiles': 1, 'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
                     'target': TARGET,
                     'plugin_sdk_id': sdk_metadata['sdk_id'], 'plugin_runtime': [sdk.name, standard.name],
                     'runtime_sources': {'intel_vpl': vpl_runtime.COMMIT,'pyrowave':pyrowave_runtime.LOCK},

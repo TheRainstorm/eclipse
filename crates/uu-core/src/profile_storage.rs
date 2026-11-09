@@ -6,7 +6,15 @@ use sha2::{Digest, Sha256};
 const MAX_FILES: usize = 8192;
 const MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
-fn snapshot(root: &Path) -> io::Result<BTreeMap<PathBuf, [u8; 32]>> {
+pub(crate) fn snapshot(root: &Path) -> io::Result<BTreeMap<PathBuf, [u8; 32]>> {
+    for ancestor in root.ancestors() {
+        let metadata = fs::symlink_metadata(ancestor)?;
+        if metadata.file_type().is_symlink() { return Err(io::Error::other("configuration path contains a symbolic link")); }
+        #[cfg(windows)] {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 { return Err(io::Error::other("configuration path contains a reparse point")); }
+        }
+    }
     fn walk(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, [u8; 32]>, total: &mut u64) -> io::Result<()> {
         for entry in fs::read_dir(directory)? {
             let entry = entry?;
@@ -15,7 +23,7 @@ fn snapshot(root: &Path) -> io::Result<BTreeMap<PathBuf, [u8; 32]>> {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             // Cache and IPC/lock state have process ownership, not profile ownership.
-            if relative == Path::new("cache") || name.ends_with(".lock")
+            if relative == Path::new("cache") || relative == Path::new(".eclipse-snapshot.json") || name.ends_with(".lock")
                 || (relative.components().count() == 1 && name.starts_with("native-stream-workspace-"))
                 || (relative.parent() == Some(Path::new("device-trust")) && name.starts_with("launch-") && name.ends_with(".json")) { continue; }
             let metadata = fs::symlink_metadata(&path)?;

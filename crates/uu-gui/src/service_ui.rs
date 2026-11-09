@@ -117,6 +117,7 @@ impl Entry {
                     // still in use even when its stream count reaches zero.
                     if automatic && !automatic_restart_ready()? {return Ok(DeploymentOutcome::Deferred);}
                     let config = uu_core::Config::from_env()?;
+                    if matches!(deployment, Deployment::Install) { uu_core::service_profile::prepare_source(&config)?; }
                     match elevated_exit_code(
                         &exe,
                         &format!(
@@ -149,11 +150,12 @@ impl Entry {
         installed
     }
     pub fn keep_displays(&self) -> Option<bool> {
-        self.manager.as_ref().and_then(|m| m.keep_displays)
+        self.manager.as_ref().filter(|m| m.owns_profile()).and_then(|m| m.keep_displays)
     }
     fn schedule_automatic_sync(&mut self) {
         if !self.automatic_sync_enabled {return;}
         let Some(manager)=&self.manager else{return;};
+        if !manager.owns_profile() { return; }
         if manager.busy || manager.confirm.is_some() || manager.dirty || manager.state==0 {return;}
         let idle=manager.state==SERVICE_STOPPED || manager.snapshot.as_ref().is_some_and(|s|s.connections.is_empty());
         if !idle {return;}
@@ -184,7 +186,7 @@ impl Entry {
     pub fn password_configured(&self) -> Option<bool> {
         self.manager
             .as_ref()
-            .filter(|m| m.snapshot.is_some())
+            .filter(|m| m.snapshot.is_some() && m.owns_profile())
             .and_then(|m| m.trust.as_ref())
             .map(|t| t.password_permissions.is_some())
     }
@@ -202,11 +204,15 @@ impl Entry {
         self.select_section(6);
     }
     pub fn online(&self) -> bool {
-        self.manager.as_ref().is_some_and(|m| m.ready)
+        self.manager.as_ref().is_some_and(|m| m.ready && m.owns_profile())
     }
     pub fn toggle(&mut self) {
         if let Some(manager) = &mut self.manager {
             if !manager.checked {
+                return;
+            }
+            if !manager.owns_profile() {
+                if manager.switch_ready() { manager.request_action(Confirmation::Update); }
                 return;
             }
             if manager.state == 0 {
@@ -235,6 +241,10 @@ impl Entry {
             return installed;
         }
         if let Some(manager) = &mut self.manager {
+            if !manager.owns_profile() {
+                self.show_status_card(ui, available);
+                return installed;
+            }
             if self.job.is_some() {ui.horizontal(|ui|{ui.spinner();ui.label(uu_i18n::text("正在完成更新…"));});}
             manager.show_tabs(ui);
         }
@@ -283,6 +293,11 @@ impl Entry {
             ));
             if let Some(manager) = &mut self.manager {
                 let outdated = manager.update_needed();
+                let own_profile = manager.owns_profile();
+                if !own_profile {
+                    ui.colored_label(crate::theme::palette(ui.visuals()).warning, uu_i18n::text("本机服务正在使用其它配置；切换后才会使用本目录的服务端设置和配对。"));
+                    if !manager.switch_ready() { ui.weak(uu_i18n::text("请先结束当前服务的串流，再切换配置。")); }
+                }
                 if let Some(build) = &manager.build {
                     ui.small(crate::build_info::label())
                         .on_hover_ui(|ui| version_labels(ui, build));
@@ -301,8 +316,10 @@ impl Entry {
                     } else {
                         if ui
                             .add_enabled(
-                                !busy,
-                                crate::theme::secondary_button(if outdated {
+                                !busy && (own_profile || manager.switch_ready()),
+                                crate::theme::secondary_button(if !own_profile {
+                                    uu_i18n::text("切换到此配置")
+                                } else if outdated {
                                     uu_i18n::text("完成更新")
                                 } else {
                                     uu_i18n::text("重新部署服务")
@@ -315,6 +332,7 @@ impl Entry {
                         if ui
                             .add_enabled(
                                 !busy
+                                    && own_profile
                                     && !manager.busy
                                     && matches!(manager.state, SERVICE_RUNNING | SERVICE_STOPPED),
                                 crate::theme::secondary_button(
@@ -335,7 +353,7 @@ impl Entry {
                         }
                     }
                 });
-                if outdated {
+                if outdated && own_profile {
                     ui.colored_label(
                         crate::theme::palette(ui.visuals()).warning,
                         uu_i18n::text(if self.automatic_sync_enabled {
@@ -466,6 +484,8 @@ enum Event {
     },
 }
 struct Manager {
+    expected_profile: Option<String>,
+    allow_legacy_profile: bool,
     virtual_display: super::virtual_display_ui::State,
     sender: mpsc::SyncSender<Job>,
     events: mpsc::Receiver<Event>,
@@ -503,6 +523,9 @@ impl Drop for Manager {
 }
 impl Manager {
     fn new() -> anyhow::Result<Self> {
+        let config = uu_core::Config::from_env()?;
+        let expected_profile = uu_core::service_profile::directory_key(&config.data_dir)?;
+        let allow_legacy_profile = false;
         let (sender, jobs) = mpsc::sync_channel(8);
         let (send, events) = mpsc::sync_channel(16);
         let stop = Arc::new(AtomicBool::new(false));
@@ -634,7 +657,10 @@ impl Manager {
                 }
             }
         });
-        Ok(Self::empty(sender, events, stop))
+        let mut manager = Self::empty(sender, events, stop);
+        manager.expected_profile = Some(expected_profile);
+        manager.allow_legacy_profile = allow_legacy_profile;
+        Ok(manager)
     }
     fn empty(
         sender: mpsc::SyncSender<Job>,
@@ -642,6 +668,8 @@ impl Manager {
         stop: Arc<AtomicBool>,
     ) -> Self {
         Self {
+            expected_profile: None,
+            allow_legacy_profile: true,
             virtual_display: Default::default(),
             sender,
             events,
@@ -729,6 +757,13 @@ impl Manager {
                     self.state = state;
                     self.build = build;
                     self.checked = true;
+                    let response = response.map(|response| match response {
+                        Response::ProfileStatus { profile, response } => {
+                            if let Some(build) = &mut self.build { build.profile=Some(profile.id); }
+                            *response
+                        },
+                        response => response,
+                    });
                     match response {
                         Ok(Response::Status {
                             ready,
@@ -858,10 +893,20 @@ impl Manager {
         }
     }
     fn update_needed(&self)->bool {
-        self.build.as_ref().is_some_and(|build| {
+        !self.owns_profile() || self.build.as_ref().is_some_and(|build| {
             build.installed.as_ref().is_some_and(|version|version.revision!=env!("UU_BUILD_COMMIT"))
                 || build.running.as_ref().is_some_and(|version|version.revision!=env!("UU_BUILD_COMMIT"))
         })
+    }
+    fn owns_profile(&self) -> bool {
+        let Some(expected) = &self.expected_profile else { return true; };
+        match self.build.as_ref().and_then(|build|build.profile.as_ref()) {
+            Some(active) => active == expected,
+            None => self.allow_legacy_profile,
+        }
+    }
+    fn switch_ready(&self) -> bool {
+        self.state == SERVICE_STOPPED || self.snapshot.as_ref().is_some_and(|s|s.connections.is_empty())
     }
     fn apply_action(&mut self, action:Confirmation) {
         match action {
@@ -2228,7 +2273,7 @@ mod tests {
     #[test]
     fn automatic_update_waits_for_idle_and_never_repeats_an_authorization_attempt() {
         let (mut manager,send,_jobs,_stop)=fixture();send.send(state(true,Sharing::default())).unwrap();manager.poll();
-        manager.build=Some(BuildStatus{state:SERVICE_RUNNING,process_id:42,installed:Some(BuildVersion{revision:"a".repeat(40)}),running:None,running_error:None});
+        manager.build=Some(BuildStatus{state:SERVICE_RUNNING,process_id:42,installed:Some(BuildVersion{revision:"a".repeat(40)}),running:None,running_error:None,profile:None});
         active_stream(&mut manager);
         let mut entry=Entry{manager:Some(manager),automatic_sync_enabled:true,..Default::default()};
         entry.schedule_automatic_sync();assert!(entry.deployment.is_none());
@@ -2271,7 +2316,7 @@ mod tests {
         send.send(state(true, Sharing::default())).unwrap();
         manager.poll();
         manager.build = Some(BuildStatus { state:SERVICE_RUNNING, process_id:42,
-            installed:Some(BuildVersion { revision:"a".repeat(40) }), running:None, running_error:None });
+            installed:Some(BuildVersion { revision:"a".repeat(40) }), running:None, running_error:None, profile:None });
         let mut entry = Entry { manager:Some(manager), ..Default::default() };
         entry.set_loaded_plugins(vec![generated_plugin()], Some(Default::default()), false);
         entry.schedule_automatic_sync();

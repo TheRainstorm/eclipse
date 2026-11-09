@@ -20,7 +20,12 @@ pub struct SubmittedUnknown(pub String);
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
+    Scoped {
+        profile: String,
+        request: Box<Request>,
+    },
     Status,
+    ConfigurationSwitch { token: String, release: bool },
     Approve {
         id: String,
         code: String,
@@ -53,6 +58,7 @@ impl Request {
     /// Queries may time out safely. An accepted mutation must settle or report
     /// an unknown result; disconnecting its frontend never cancels the work.
     pub fn is_mutation(&self) -> bool {
+        if let Self::Scoped { request, .. } = self { return request.is_mutation(); }
         !matches!(
             self,
             Self::Status
@@ -70,6 +76,20 @@ impl Request {
                     }
                 }
         )
+    }
+    pub fn for_profile(self, profile: Option<&str>) -> Result<Self> {
+        match self {
+            Self::Status => Ok(Self::Status),
+            Self::Scoped { profile: expected, request } => {
+                ensure!(profile == Some(expected.as_str()) && !matches!(*request, Self::Scoped { .. }),
+                    "This host belongs to another Eclipse configuration. Activate this configuration before managing it.");
+                Ok(*request)
+            },
+            request => {
+                ensure!(profile.is_none(), "This host uses an independent Eclipse configuration. Open its matching version to manage it.");
+                Ok(request)
+            },
+        }
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -135,6 +155,10 @@ pub struct Pairing {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Response {
+    ProfileStatus {
+        profile: crate::service_profile::Info,
+        response: Box<Response>,
+    },
     Status {
         #[serde(default)]
         ready: bool,
@@ -200,6 +224,19 @@ pub mod windows;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn independent_profiles_reject_cross_profile_and_nested_management() {
+        let scoped = |id:&str, request| Request::Scoped { profile:id.into(), request:Box::new(request) };
+        assert!(matches!(Request::Status.for_profile(Some("active")).unwrap(), Request::Status));
+        assert!(Request::Restart.for_profile(Some("active")).is_err());
+        assert!(scoped("other", Request::Restart).for_profile(Some("active")).is_err());
+        assert!(scoped("active", scoped("active", Request::Restart)).for_profile(Some("active")).is_err());
+        assert!(matches!(scoped("active", Request::Restart).for_profile(Some("active")).unwrap(), Request::Restart));
+        assert!(scoped("active", Request::Restart).for_profile(None).is_err());
+        assert!(Request::Restart.for_profile(None).is_ok());
+        assert!(!scoped("active", Request::Status).is_mutation());
+        assert!(scoped("active", Request::Restart).is_mutation());
+    }
     #[tokio::test]
     async fn framed_administration_rejects_large_truncated_and_unknown_messages() {
         for bytes in [vec![0, 4, 0, 1], vec![0, 0, 0, 3, b'{'], vec![0, 0, 0, 0]] {

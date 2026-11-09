@@ -44,10 +44,32 @@ struct Active { peer: String, stop: watch::Sender<bool>, status: crate::native::
 #[derive(Default)]
 pub struct SessionGate {
     active: Mutex<HashMap<String, Active>>,
+    configuration_switch: Mutex<Option<(String, std::time::Instant)>>,
     pub input: Arc<crate::input_ownership::Authority>,
     pub administration: Mutex<Option<Arc<crate::host_admin::Service>>>,
 }
 impl SessionGate {
+    /// Reserve an idle host while its verified replacement is activated. Both
+    /// admission and this reservation hold `active`, so a new stream cannot
+    /// slip between the idle check and stopping the service.
+    pub fn reserve_configuration_switch(&self, token: &str, release: bool) -> Result<()> {
+        ensure!(uuid::Uuid::parse_str(token).is_ok(), "无效的服务切换凭据");
+        let active = self.active.lock().unwrap();
+        let mut reservation = self.configuration_switch.lock().unwrap();
+        if reservation.as_ref().is_some_and(|(_, until)| *until <= std::time::Instant::now()) { *reservation = None; }
+        if release {
+            if reservation.as_ref().is_some_and(|(owner, _)| owner == token) { *reservation = None; }
+            return Ok(());
+        }
+        ensure!(active.is_empty(), "当前仍有串流连接，请断开后再切换服务配置。");
+        ensure!(!crate::virtual_display::Manager::shared().preparation_in_flight(), "虚拟显示器操作尚未完成，请稍后再切换服务配置。");
+        ensure!(reservation.as_ref().is_none_or(|(owner, _)| owner == token), "另一个窗口正在切换服务配置，请稍后重试。");
+        *reservation = Some((token.into(), std::time::Instant::now() + std::time::Duration::from_secs(120)));
+        Ok(())
+    }
+    pub fn configuration_switching(&self) -> bool {
+        self.configuration_switch.lock().unwrap().as_ref().is_some_and(|(_, until)| *until > std::time::Instant::now())
+    }
     pub(crate) fn preparation_activity(&self, initial:Option<&str>)->u32 {
         self.active.lock().map(|sessions|sessions.iter().filter(|(id,active)| {
             !(Some(id.as_str())==initial && !*active.stop.borrow() && matches!(active.status,crate::native::HostStatus::Starting|crate::native::HostStatus::Preparing))
@@ -57,6 +79,7 @@ impl SessionGate {
     /// encoder and transport admission failures remain local to each session.
     pub fn claim(self: &Arc<Self>, peer: &str) -> Result<SessionLease> {
         let mut active = self.active.lock().unwrap();
+        ensure!(!self.configuration_switching(), "服务正在切换配置，请稍后重新连接。");
         // This check shares the activity mutex with the preparation checkpoint:
         // either the new session is observed, or admission waits for the host's
         // accepted machine-wide setup transaction. Existing streams continue.
@@ -244,6 +267,26 @@ mod tests {
         assert_eq!(gate.preparation_activity(Some(initial.id())),0);
         initial.cancel();assert_eq!(gate.preparation_activity(Some(initial.id())),1);
         drop(initial);assert_eq!(gate.preparation_activity(None),0);
+    }
+    #[test]
+    fn configuration_switch_reserves_only_idle_hosts_and_releases_exact_reservation() {
+        let gate = Arc::new(SessionGate::default());
+        let first = uuid::Uuid::new_v4().to_string();
+        let other = uuid::Uuid::new_v4().to_string();
+        let stream = gate.claim("peer").unwrap();
+        assert!(gate.reserve_configuration_switch(&first, false).is_err());
+        assert!(!*stream.stopped().borrow());
+        drop(stream);
+        gate.reserve_configuration_switch(&first, false).unwrap();
+        assert!(gate.claim("new peer").is_err());
+        assert!(gate.reserve_configuration_switch(&other, false).is_err());
+        gate.reserve_configuration_switch(&other, true).unwrap();
+        assert!(gate.configuration_switching());
+        gate.reserve_configuration_switch(&first, true).unwrap();
+        assert!(gate.claim("new peer").is_ok());
+        gate.reserve_configuration_switch(&first, false).unwrap();
+        gate.configuration_switch.lock().unwrap().as_mut().unwrap().1 = std::time::Instant::now();
+        assert!(gate.claim("after interrupted updater expires").is_ok());
     }
 
 }

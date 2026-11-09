@@ -244,7 +244,7 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     #[cfg(windows)]
-    let background=matches!(&cli.command,Command::Service{command:service_cli::Command::Daemon|service_cli::Command::SessionHost{..}});
+    let background=matches!(&cli.command,Command::Service{command:service_cli::Command::Daemon{..}|service_cli::Command::SessionHost{..}});
     #[cfg(not(windows))]
     let background=false;
     #[cfg(windows)]
@@ -262,7 +262,7 @@ async fn main() -> Result<()> {
 
     uu_core::install_crypto_provider();
     #[cfg(windows)]
-    let config = if background {uu_core::service_admin::windows::Paths::discover()?.config()}else{Config::from_env()?};
+    let config = if background {uu_core::service_admin::windows::Paths::discover()?.runtime_config()?}else{Config::from_env()?};
     #[cfg(not(windows))]
     let config = Config::from_env()?;
     config.ensure_dirs().await?;

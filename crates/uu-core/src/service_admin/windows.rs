@@ -126,6 +126,32 @@ impl Paths {
             signaling_host: String::new(),
         }
     }
+    /// Legacy storage is retained for releases without profile support.
+    pub fn runtime_config(&self) -> Result<crate::Config> {
+        Ok(match self.active_profile()? { Some(profile) => profile.config(&self.root), None => self.config() })
+    }
+    pub fn profile_for(&self, installed: &Installed) -> Result<Option<crate::service_profile::Binding>> {
+        let path = self.root.join("active-profile.json");
+        if !path.try_exists()? { return Ok(None); }
+        let bytes = crate::device_trust::read_private(&path)?;
+        ensure!(bytes.len() <= 64 * 1024, "Host profile binding is too large");
+        let profile: crate::service_profile::Binding = serde_json::from_slice(&bytes)?;
+        profile.validate()?;
+        // An old package still uses legacy storage. Its installation record
+        // cannot accidentally select a newer profile left by another build.
+        Ok(profile.matches_build(&installed.revision, &installed.build).then_some(profile))
+    }
+    pub fn active_profile(&self) -> Result<Option<crate::service_profile::Binding>> {
+        self.profile_for(&self.manifest()?)
+    }
+    pub fn save_profile(&self, profile: Option<&crate::service_profile::Binding>) -> Result<()> {
+        let path = self.root.join("active-profile.json");
+        if let Some(profile) = profile {
+            profile.validate()?;
+            crate::private_file::write_atomic(&path, &serde_json::to_vec(profile)?)?;
+        } else if path.try_exists()? { std::fs::remove_file(path)?; }
+        Ok(())
+    }
     pub fn manifest(&self) -> Result<Installed> {
         let bytes = std::fs::read(self.root.join("service.json"))?;
         ensure!(bytes.len() < 16 * 1024, "{}", uu_i18n::format!("服务安装记录过大"));
@@ -321,6 +347,11 @@ fn verify_owner_server(handle: HANDLE) -> Result<()> {
 /// SCM binds the pipe peer to the actual service process before sending secrets.
 pub async fn request_owner(request: Request) -> Result<Response> {
     use windows_sys::Win32::Storage::FileSystem::*;
+    let request = if matches!(request, Request::Status | Request::Scoped { .. }) { request } else {
+        let config = crate::Config::from_env()?;
+        let profile = crate::service_profile::directory_key(&config.data_dir)?;
+        Request::Scoped { profile, request: Box::new(request) }
+    };
     let mut stream = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let handle = unsafe { CreateFileW(wide(OWNER_PIPE_NAME).as_ptr(), OWNER_PIPE_CLIENT_ACCESS, 0,
@@ -353,6 +384,7 @@ pub async fn request_owner(request: Request) -> Result<Response> {
         };
         match response {
             Response::SubmittedUnknown{message}=>Err(super::SubmittedUnknown(message).into()),
+            Response::ProfileStatus { response, .. } => Ok(*response),
             response=>Ok(response),
         }
     }.await;
@@ -454,6 +486,7 @@ pub fn status() -> Result<u32> {
 /// The installer grants only start/stop/query rights to the configured owner.
 /// Starting here does not read host data; the System service prepares itself.
 pub fn control_owner(start: bool) -> Result<()> {
+    require_selected_profile()?;
     let service = open_service(SERVICE_QUERY_STATUS | if start { SERVICE_START } else { SERVICE_STOP })?;
     let target=if start {SERVICE_RUNNING}else{SERVICE_STOPPED};
     if status()?==target {return Ok(());}
@@ -467,6 +500,17 @@ pub fn control_owner(start: bool) -> Result<()> {
         ensure!(std::time::Instant::now()<deadline,"后台服务仍在切换状态，请刷新确认");
         std::thread::sleep(Duration::from_millis(100));
     }
+    Ok(())
+}
+pub fn require_selected_profile() -> Result<()> {
+    let config = crate::Config::from_env()?;
+    require_data_profile(&config.data_dir)
+}
+pub fn require_data_profile(data: &std::path::Path) -> Result<()> {
+    let expected = crate::service_profile::directory_key(data)?;
+    let build = build_status()?;
+    ensure!(build.profile.as_deref() == Some(expected.as_str()),
+        "当前服务属于另一份配置，请先在服务管理中切换到此配置。");
     Ok(())
 }
 /// Read-only display metadata from SCM and the running supervisor image. This
@@ -487,6 +531,7 @@ pub struct BuildStatus {
     pub installed:Option<BuildVersion>,
     pub running:Option<BuildVersion>,
     pub running_error:Option<String>,
+    pub profile:Option<String>,
 }
 fn image_build(paths:&Paths,image:&Path)->Option<BuildVersion> {
     if !matches!(image.file_name()?.to_str()?,"eclipse-cli.exe"|"uu.exe") {return None;}
@@ -524,6 +569,18 @@ pub fn build_status()->Result<BuildStatus> {
     let mut argc=0;
     let argv=unsafe{CommandLineToArgvW(wide(OsString::from_wide(command)).as_ptr(),&mut argc)};
     ensure!(!argv.is_null(),"Invalid service command line");
+    let mut profile=None;
+    for index in 1..argc.saturating_sub(1) {
+        let argument = unsafe { *argv.add(index as usize) };
+        let mut n=0; unsafe { while *argument.add(n)!=0 { n+=1; } }
+        if unsafe { OsString::from_wide(std::slice::from_raw_parts(argument,n)) } == "--profile" {
+            let value=unsafe { *argv.add(index as usize+1) };
+            let mut n=0; unsafe { while *value.add(n)!=0 { n+=1; } }
+            let value=unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(value,n)) };
+            ensure!(crate::service_profile::valid_id(&value), "Invalid registered host profile");
+            profile=Some(value);
+        }
+    }
     let installed=if argc>0 {
         let first=unsafe{*argv};let mut n=0;
         unsafe{while *first.add(n)!=0 {n+=1;}}
@@ -546,7 +603,7 @@ pub fn build_status()->Result<BuildStatus> {
         })();
         match result {Ok(build)=>build,Err(error)=>{running_error=Some(error.to_string());None}}
     }else{None};
-    Ok(BuildStatus{state:state.dwCurrentState,process_id:state.dwProcessId,installed,running,running_error})
+    Ok(BuildStatus{state:state.dwCurrentState,process_id:state.dwProcessId,installed,running,running_error,profile})
 }
 /// Firewall repair must bind the exact protected executable, including build
 /// directory and legacy filename, rather than comparing the revision label.

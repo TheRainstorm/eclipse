@@ -266,7 +266,7 @@ fn environment(paths: &Paths, token: HANDLE) -> Result<Vec<u16>> {
         ("XDG_STATE_HOME", paths.root.join("state")),
         (
             "ECLIPSE_SERVICE_BOOTSTRAP_LOG",
-            paths.config().log_dir().join("bootstrap.log"),
+            paths.runtime_config()?.log_dir().join("bootstrap.log"),
         ),
     ] {
         entries.retain(|(candidate, _)| {
@@ -416,6 +416,7 @@ fn run() -> Result<()> {
                 .canonicalize()?,
         "后台服务必须从受保护的安装位置运行"
     );
+    let _profile_mirror = super::profile_mirror::Mirror::start(&paths, &installed)?;
     if let Err(error) = enable_running_version_query() {
         tracing::error!(%error, "background running-version query access unavailable; sharing continues");
     }

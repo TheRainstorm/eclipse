@@ -66,7 +66,7 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
     // Driver reconfiguration belongs to this protected management host's
     // session gate. Ordinary UAC helpers may only perform a fresh install.
     uu_core::virtual_display::Manager::shared().enable_service_preparation()?;
-    let config = paths.config();
+    let config = paths.runtime_config()?;
     config.ensure_dirs().await?;
     let result=async {loop {
         if unsafe { WaitForSingleObject(stop_event.0, 0) } == WAIT_OBJECT_0 {
@@ -217,6 +217,10 @@ async fn connection(
     let request: Request = tokio::time::timeout(Duration::from_secs(5), service_admin::read(&mut stream)).await??;
     let reply_admin = admin.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<(Response, bool)> {
+        let profile = Paths::discover()?.active_profile()?.map(|p|p.info);
+        let request = request.for_profile(profile.as_ref().map(|p|p.id.as_str()))?;
+        ensure!(!access.sessions.configuration_switching() || !request.is_mutation()
+            || matches!(request, Request::ConfigurationSwitch { .. }), "服务正在切换配置，请稍后重试。");
         let snapshot = || -> Result<host_admin::Snapshot> {
             match admin.execute_local_manager(&access, host_admin::Request::Inspect)? {
                 host_admin::Response::Snapshot { snapshot } => Ok(snapshot),
@@ -224,6 +228,10 @@ async fn connection(
             }
         };
         match request {
+            Request::ConfigurationSwitch { token, release } => {
+                access.sessions.reserve_configuration_switch(&token, release)?;
+                Ok((Response::Applied, false))
+            },
             Request::Status => {
                 let mut pending = pending.lock().unwrap();
                 pending.retain(|r| {
@@ -241,8 +249,7 @@ async fn connection(
                         waiting: matches!(*r.status.borrow(), PairStatus::Waiting),
                     })
                     .collect();
-                Ok((
-                    Response::Status {
+                let response = Response::Status {
                         ready: endpoints.iter().any(|e| matches!(*e.state.borrow(), uu_core::device_internet::EndpointStatus::Ready)),
                         keep_virtual_displays: uu_core::virtual_display::Manager::shared().keep_after_stream().ok(),
                         endpoints: endpoints
@@ -251,9 +258,9 @@ async fn connection(
                             .collect(),
                         pending,
                         snapshot: snapshot()?,
-                    },
-                    false,
-                ))
+                    };
+                let response = if let Some(profile) = profile { Response::ProfileStatus { profile, response:Box::new(response) } } else { response };
+                Ok((response, false))
             }
             Request::Approve {
                 id,
@@ -320,19 +327,19 @@ async fn connection(
                 let paths = Paths::discover()?;
                 let installed = paths.manifest()?;
                 let executable = firewall_program(&paths, &installed)?;
-                let sharing = uu_core::device_book::Store::open(paths.config().at("device-trust"))?.read()?.sharing;
+                        let sharing = uu_core::device_book::Store::open(paths.runtime_config()?.at("device-trust"))?.read()?.sharing;
                 let report = if repair { uu_core::firewall::ensure(&executable, sharing.service_port, sharing.discovery_port)? }
                     else { uu_core::firewall::inspect(&executable, sharing.service_port, sharing.discovery_port)? };
                 Ok((Response::Firewall { message: report.message() }, false))
             },
             Request::Connections { request } => {
-                let directory = Paths::discover()?.config().at("device-trust");
+                let directory = Paths::discover()?.runtime_config()?.at("device-trust");
                 let snapshot = service_admin::connections::execute(&directory, &active_services, request)?;
                 Ok((Response::Connections { snapshot }, false))
             },
             Request::Plugins{request}=>{
                 use service_admin::PluginRequest;
-                let config=Paths::discover()?.config();
+                let config=Paths::discover()?.runtime_config()?;
                 let runtime=uu_plugin_sdk::runtime::shared(&config);
                 let restart=matches!(&request,PluginRequest::Save{..});
                 match request {
@@ -346,6 +353,7 @@ async fn connection(
                 Ok((Response::Plugins{snapshot:plugin_snapshot(&config)?},restart))
             },
             Request::Restart => Ok((Response::Applied, true)),
+            Request::Scoped { .. } => unreachable!("nested profile requests are rejected before dispatch"),
         }
     })
     .await?;

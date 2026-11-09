@@ -4,6 +4,7 @@ mod private_file;
 mod listen_socket;
 pub mod config;
 mod profile_storage;
+pub mod service_profile;
 pub mod time;
 pub mod video_options;
 pub mod controller;

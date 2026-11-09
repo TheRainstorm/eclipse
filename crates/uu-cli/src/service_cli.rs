@@ -3,6 +3,7 @@
 mod host;
 mod install;
 mod supervisor;
+mod profile_mirror;
 use anyhow::{Context, Result};
 use std::{
     path::PathBuf,
@@ -31,7 +32,12 @@ pub fn record_bootstrap_error(error: &anyhow::Error) {
     let Some(path) = std::env::var_os("ECLIPSE_SERVICE_BOOTSTRAP_LOG").map(PathBuf::from) else {
         return;
     };
-    if !path.is_absolute() || path != expected {
+    let profiles = root.join("EclipseRemoteHost/profiles");
+    let scoped = path.strip_prefix(&profiles).ok().and_then(|p| {
+        let id=p.components().next()?.as_os_str().to_str()?;
+        (uu_core::service_profile::valid_id(id) && p == std::path::Path::new(id).join("state/eclipse/log/bootstrap.log")).then_some(())
+    }).is_some();
+    if !path.is_absolute() || (path != expected && !scoped) {
         return;
     }
     let truncate = std::fs::metadata(&path).is_ok_and(|m| m.len() > 1024 * 1024);
@@ -62,7 +68,7 @@ pub fn init_background_logging() -> Result<()> {
                 .canonicalize().context("解析受保护后台安装位置失败")?,
         "后台进程必须从安装位置启动"
     );
-    let directory = paths.config().log_dir();
+    let directory = paths.runtime_config()?.log_dir();
     std::fs::create_dir_all(&directory).context("创建后台日志目录失败")?;
     let path = directory.join("service.log");
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 4 * 1024 * 1024) {
@@ -90,6 +96,8 @@ pub enum Command {
         source_data: Option<PathBuf>,
         #[arg(long)]
         open_manager: bool,
+        #[arg(long)]
+        independent_profile: bool,
     },
     /// Explicitly synchronize enabled plugin binaries/configuration and restart.
     ImportPlugins {
@@ -110,7 +118,10 @@ pub enum Command {
     /// Open the local administrator GUI for the installed host.
     Manage,
     #[command(hide = true)]
-    Daemon,
+    Daemon {
+        #[arg(long)]
+        profile: Option<String>,
+    },
     #[command(hide = true)]
     SessionHost {
         #[arg(long)]
@@ -124,26 +135,33 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
         Command::Install {
             source_data,
             open_manager,
+            independent_profile,
         } => {
-            install::install(source_data.unwrap_or(config.data_dir))?;
+            let source = source_data.unwrap_or(config.data_dir.clone());
+            let independent = independent_profile || config.profile_dir().is_some();
+            tokio::task::spawn_blocking(move || install::install_profile(source, independent)).await??;
             if open_manager {
                 manage()?;
             }
             Ok(())
         }
         Command::Firewall {repair} => {
+            if repair { require_selected_profile()?; }
             let paths=Paths::discover()?; let installed=paths.manifest()?;
-            let sharing=uu_core::device_book::Store::open(paths.config().at("device-trust"))?.read()?.sharing;
+            let sharing=uu_core::device_book::Store::open(paths.runtime_config()?.at("device-trust"))?.read()?.sharing;
             let exe=firewall_program(&paths,&installed)?;
             let report=if repair {uu_core::firewall::ensure(&exe,sharing.service_port,sharing.discovery_port)?} else {uu_core::firewall::inspect(&exe,sharing.service_port,sharing.discovery_port)?};
             println!("{}",serde_json::to_string_pretty(&report)?);Ok(())
         }
-        Command::Start => start(),
+        Command::Start => { require_selected_profile()?; start() },
         Command::ImportPlugins { source_data } => {
-            install::import_plugins(source_data.unwrap_or(config.data_dir))
+            let source = source_data.unwrap_or(config.data_dir);
+            require_data_profile(&source)?;
+            tokio::task::spawn_blocking(move || install::import_plugins(source)).await?
         }
-        Command::Stop => stop(),
+        Command::Stop => { require_selected_profile()?; stop() },
         Command::Restart => {
+            require_selected_profile()?;
             stop()?;
             start()
         }
@@ -167,12 +185,17 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
         }
         Command::Remove => {
             require_administrator()?;
+            require_selected_profile()?;
             stop()?;
             let service = open_service(windows_sys::Win32::Storage::FileSystem::DELETE)?;
             winok(unsafe { DeleteService(service.0) })
         }
         Command::Manage => manage(),
-        Command::Daemon => supervisor::dispatch(),
+        Command::Daemon { profile } => {
+            let actual = Paths::discover()?.active_profile()?.map(|p|p.info.id);
+            anyhow::ensure!(profile == actual, "Registered host profile does not match protected installation metadata");
+            supervisor::dispatch()
+        },
         Command::SessionHost {
             session,
             stop_event,
@@ -188,7 +211,7 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
 pub fn start() -> Result<()> {
     require_administrator()?;
     let paths=Paths::discover()?; let installed=paths.manifest()?;
-    let sharing=uu_core::device_book::Store::open(paths.config().at("device-trust"))?.read()?.sharing;
+    let sharing=uu_core::device_book::Store::open(paths.runtime_config()?.at("device-trust"))?.read()?.sharing;
     let report=uu_core::firewall::ensure(&firewall_program(&paths,&installed)?,sharing.service_port,sharing.discovery_port)?;
     eprintln!("{}",report.message());
     start_registered()
@@ -236,8 +259,10 @@ fn manage() -> Result<()> {
     require_administrator()?;
     let paths = Paths::discover()?;
     let installed = paths.manifest()?;
-    std::process::Command::new(paths.binary_directory(&installed).join(installed.gui_name()))
-        .arg("--manage-background-service")
+    let config = Config::from_env()?;
+    let mut command = std::process::Command::new(paths.binary_directory(&installed).join(installed.gui_name()));
+    if let Some(profile) = config.profile_dir() { command.env("ECLIPSE_PROFILE_DIR", profile); }
+    command.arg("--manage-background-service")
         .spawn()
         .context("无法打开后台服务管理窗口")?;
     Ok(())

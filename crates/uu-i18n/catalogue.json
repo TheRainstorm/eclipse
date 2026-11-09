@@ -1,4 +1,8 @@
 {
+  "无法清理旧版自启动（{removed}）": "Could not remove the old startup entry ({removed})",
+  "本机服务正在使用其它配置；切换后才会使用本目录的服务端设置和配对。": "The host is using another configuration. Switch to use this folder’s server settings and pairings.",
+  "请先结束当前服务的串流，再切换配置。": "End the current host streams before switching configurations.",
+  "切换到此配置": "Switch to this configuration",
   "Windows 主机服务由整台电脑共用，服务配置和配对仍保存在 ProgramData；切换便携配置不会重置它们。便携模式仅在手动操作时更新服务程序和插件。": "The Windows host service is shared by this computer. Its settings and pairings remain in ProgramData and are not reset by switching portable profiles. Portable mode updates the service and its plugins only when you request it.",
   "体验首次使用：退出该目录的程序，在程序旁新建空的 eclipse-data 文件夹，然后重新打开。各程序目录的配置独立，原用户配置会保留。": "To try first use, exit this copy of Eclipse, create an empty eclipse-data folder beside the executable, and reopen it. Each application folder has independent settings; your original user profile is preserved.",
   "当前用户配置": "Current user profile",
