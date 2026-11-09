@@ -52,14 +52,27 @@ impl Config {
                 Some(p)
             })
             .ok_or_else(|| CoreError::Config("HOME/USERPROFILE is unset".into()))?;
-        let data_dir = std::env::var_os("XDG_DATA_HOME")
+        let data_home = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".local/share"))
-            .join("uu-remote");
-        let state_dir = std::env::var_os("XDG_STATE_HOME")
+            .unwrap_or_else(|| home.join(".local/share"));
+        let state_home = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".local/state"))
-            .join("uu-remote");
+            .unwrap_or_else(|| home.join(".local/state"));
+        #[cfg(windows)]
+        let default_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData/Local")).join("Eclipse");
+        #[cfg(not(windows))]
+        let default_data = data_home.join("eclipse");
+        #[cfg(windows)]
+        let data_dir = if std::env::var_os("XDG_DATA_HOME").is_some() { data_home.join("eclipse") } else { default_data.clone() };
+        #[cfg(not(windows))]
+        let data_dir = default_data;
+        #[cfg(windows)]
+        let state_dir = if std::env::var_os("XDG_STATE_HOME").is_some() { state_home.join("eclipse") } else { default_data.join("state") };
+        #[cfg(not(windows))]
+        let state_dir = state_home.join("eclipse");
+        crate::profile_storage::migrate(&data_home.join("uu-remote"), &data_dir)?;
+        crate::profile_storage::migrate(&state_home.join("uu-remote"), &state_dir)?;
         Ok(Self {
             data_dir,
             state_dir,

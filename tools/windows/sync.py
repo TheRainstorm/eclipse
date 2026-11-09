@@ -75,7 +75,7 @@ def sync_package(args):
     if not re.match(r'^[A-Za-z]:[\\/]', args.install_dir) or any(c in args.install_dir for c in '\r\n\x00'):
         raise ValueError('--install-dir 必须是 Windows 盘符绝对路径')
     target = f'{args.user}@{args.host}'
-    upload_name = f'uu-remote-upload-{uuid.uuid4().hex}.zip'
+    upload_name = f'eclipse-upload-{uuid.uuid4().hex}.zip'
     options = ['-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3']
     if args.identity:
         options += ['-i', str(args.identity.expanduser().resolve())]
@@ -95,7 +95,7 @@ def sync_package(args):
             raise RuntimeError(f'缺少 {tool}，请安装 openssh-client')
     subprocess.run(scp, check=True)
     subprocess.run(ssh, check=True)
-    print('同步完成。请关闭旧版窗口，再从桌面 uu-client 重新打开。')
+    print('同步完成。请关闭旧版窗口，再从桌面 Eclipse 重新打开。')
 
 
 def main():

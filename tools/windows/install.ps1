@@ -199,8 +199,7 @@ if (!$SkipServiceUpdate -and $independentProfile) {
     $serviceUpdate = 'manual-update-for-profile'
 }
 elseif (!$SkipServiceUpdate -and (Test-Path -LiteralPath (Join-Path $env:ProgramData 'EclipseRemoteHost\service.json') -PathType Leaf)) {
-    $dataHome = if ([string]::IsNullOrWhiteSpace($env:XDG_DATA_HOME)) { Join-Path $env:USERPROFILE '.local\share' } else { $env:XDG_DATA_HOME }
-    $sourceData = Join-Path $dataHome 'uu-remote'
+    $sourceData = if ([string]::IsNullOrWhiteSpace($env:XDG_DATA_HOME)) { Join-Path $env:LOCALAPPDATA 'Eclipse' } else { Join-Path $env:XDG_DATA_HOME 'eclipse' }
     try {
         $arguments = '--background-service-action install --source-data "' + $sourceData.Replace('"','""') + '" --defer-if-busy'
         $update = Start-Process -FilePath (Join-Path $InstallDir $guiName) -ArgumentList $arguments -Verb RunAs -Wait -PassThru

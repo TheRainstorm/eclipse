@@ -304,7 +304,7 @@ async fn main() -> Result<()> {
 }
 
 fn probe(config: &Config, h264: Option<&std::path::Path>, frame: Option<&std::path::Path>) -> Result<()> {
-    println!("uu {} — environment report\n", env!("CARGO_PKG_VERSION"));
+    println!("Eclipse {} — environment report\n", env!("CARGO_PKG_VERSION"));
     println!("platform          {} / {}", std::env::consts::OS, std::env::consts::ARCH);
     println!("data dir          {}", config.data_dir.display());
     println!("state dir         {}", config.state_dir.display());

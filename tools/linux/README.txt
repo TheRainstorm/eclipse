@@ -18,7 +18,8 @@ CLI：~/.local/bin/eclipse-cli（保留 uu-rust 别名）
 原生手柄和陀螺仪使用 SDL 读取，主机通过虚拟 DS4 注入；Linux 主机需可访问 /dev/uhid，应用不会自动改设备权限或安装驱动。
 
 运行需要 libva、libgbm、libpulse、libpipewire-0.3、libxkbcommon、libxkbcommon-x11、ALSA（桌面推荐 PipeWire ALSA 插件）、OpenGL/EGL。
-登录/设置：$XDG_DATA_HOME/uu-remote 或 ~/.local/share/uu-remote。
+登录/设置：$XDG_DATA_HOME/eclipse 或 ~/.local/share/eclipse。
+首次使用新目录时复制旧 uu-remote 配置并保留原目录，已有 Eclipse 配置不会被覆盖。
 便携模式：将完整包解压到可写的独立目录，在实际 eclipse 程序旁创建空的 eclipse-data
 文件夹后直接运行。设置与插件数据在 eclipse-data/data，日志在 eclipse-data/state。
 空目录可体验首次使用，原用户配置保留；不同版本各用一份目录。退出全部窗口和托盘

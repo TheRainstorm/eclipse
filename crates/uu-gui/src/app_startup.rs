@@ -6,7 +6,7 @@ pub fn apply(enabled:bool)->Result<()> {
     use windows_sys::Win32::{Foundation::{ERROR_FILE_NOT_FOUND,ERROR_SUCCESS},System::Registry::*};
     let wide=|text:&std::ffi::OsStr| text.encode_wide().chain(Some(0)).collect::<Vec<_>>();
     let path=wide(std::ffi::OsStr::new("Software\\Microsoft\\Windows\\CurrentVersion\\Run"));
-    let name=wide(std::ffi::OsStr::new("uu-client"));
+    let name=wide(std::ffi::OsStr::new("Eclipse"));
     let mut key=ptr::null_mut();
     let status=unsafe {RegCreateKeyExW(HKEY_CURRENT_USER,path.as_ptr(),0,ptr::null(),0,KEY_SET_VALUE,ptr::null(),&mut key,ptr::null_mut())};
     anyhow::ensure!(status==ERROR_SUCCESS,"{}", uu_i18n::format!("无法打开当前用户的启动设置（{status}）"));
@@ -18,6 +18,9 @@ pub fn apply(enabled:bool)->Result<()> {
         unsafe {RegSetValueExW(key.0,name.as_ptr(),0,REG_SZ,value.as_ptr().cast(),(value.len()*2) as u32)}
     }else{unsafe {RegDeleteValueW(key.0,name.as_ptr())}};
     anyhow::ensure!(status==ERROR_SUCCESS || (!enabled && status==ERROR_FILE_NOT_FOUND),"{}", uu_i18n::format!("无法保存软件自启动（{status}）"));
+    let legacy=wide(std::ffi::OsStr::new("uu-client"));
+    let removed=unsafe {RegDeleteValueW(key.0,legacy.as_ptr())};
+    anyhow::ensure!(removed==ERROR_SUCCESS || removed==ERROR_FILE_NOT_FOUND,"{}", uu_i18n::format!("无法清理旧版自启动（{removed}）"));
     Ok(())
 }
 #[cfg(target_os="linux")]
@@ -25,9 +28,10 @@ pub fn apply(enabled:bool)->Result<()> {
     let directory=std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
         .or_else(||std::env::var_os("HOME").map(|h|std::path::PathBuf::from(h).join(".config")))
         .context(uu_i18n::text("无法确定当前用户的设置目录"))?.join("autostart");
-    let path=directory.join("uu-client.desktop");
+    let path=directory.join("eclipse.desktop");
+    let legacy=directory.join("uu-client.desktop");
     if !enabled {
-        match std::fs::remove_file(path) {Ok(())=>{},Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},Err(e)=>return Err(e.into())}
+        for file in [path,legacy] {match std::fs::remove_file(file) {Ok(())=>{},Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},Err(e)=>return Err(e.into())}}
         return Ok(());
     }
     let exe=std::env::current_exe().context(uu_i18n::text("无法确定软件位置"))?;
@@ -38,7 +42,8 @@ pub fn apply(enabled:bool)->Result<()> {
     let exe=exe.replace('\\',"\\\\").replace('"',"\\\"").replace('`',"\\`").replace('$',"\\$").replace('%',"%%");
     let command=format!("\"/usr/bin/env\" \"{exe}\"").replace('\\',"\\\\");
     let content=format!("[Desktop Entry]\nType=Application\nName=Eclipse\nExec={command}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n");
-    super::settings::save_bytes(&path,content.as_bytes())
+    super::settings::save_bytes(&path,content.as_bytes())?;
+    match std::fs::remove_file(legacy) {Ok(())=>Ok(()),Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(()),Err(e)=>Err(e.into())}
 }
 #[cfg(not(any(windows,target_os="linux")))]
 pub fn apply(_enabled:bool)->Result<()> {anyhow::bail!("{}", uu_i18n::format!("此平台尚不支持软件自启动"))}

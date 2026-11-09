@@ -189,7 +189,7 @@ mod windows {
             }
         }
         // A store owns its launcher, independent of executable revision/path.
-        let (guard, existed) = mutex(&format!(r"Local\uu-client.launcher.v2.{key}"))?;
+        let (guard, existed) = mutex(&format!(r"Local\Eclipse.Launcher.v3.{key}"))?;
         if !existed {
             return Ok(Some(guard));
         }

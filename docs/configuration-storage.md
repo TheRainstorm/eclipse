@@ -4,12 +4,14 @@ Eclipse 默认继续使用原来的用户目录，不会因为升级而覆盖已
 
 | 内容 | Windows 默认位置 | Linux 默认位置 |
 | --- | --- | --- |
-| 客户端设置、设备、配对身份、插件数据 | `%USERPROFILE%\.local\share\uu-remote` | `~/.local/share/uu-remote` |
-| 日志与运行状态 | `%USERPROFILE%\.local\state\uu-remote` | `~/.local/state/uu-remote` |
+| 客户端设置、设备、配对身份、插件数据 | `%LOCALAPPDATA%\Eclipse` | `~/.local/share/eclipse` |
+| 日志与运行状态 | `%LOCALAPPDATA%\Eclipse\state` | `~/.local/state/eclipse` |
 | 已安装的 Windows 主机服务配置 | `%ProgramData%\EclipseRemoteHost\data\uu-remote` | 不适用 |
 | Windows 服务日志与状态 | `%ProgramData%\EclipseRemoteHost\state\uu-remote` | 不适用 |
 
-设置在 `gui-settings.json`；设备、画质配置和原生配对资料在 `device-trust/`；插件的配置与账号数据也位于用户数据目录。若启动环境设置了 `XDG_DATA_HOME` 或 `XDG_STATE_HOME`，用户目录分别改用该变量下的 `uu-remote` 子目录。服务路径由 Windows Known Folder API 获取，不跟随这些用户环境变量。
+设置在 `gui-settings.json`；设备、画质配置和原生配对资料在 `device-trust/`；插件的配置与账号数据也位于用户数据目录。若启动环境设置了 `XDG_DATA_HOME` 或 `XDG_STATE_HOME`，用户目录分别改用该变量下的 `eclipse` 子目录。服务路径由 Windows Known Folder API 获取，不跟随这些用户环境变量。
+
+首次使用新目录时，会将旧 `uu-remote` 用户目录中的持久配置复制到 Eclipse 目录，保留设备身份与配对，原目录保留给旧版本。已经存在的 Eclipse 配置不会被旧目录覆盖。缓存、进程锁和串流启动快照不迁移；发现链接、超过迁移上限或复制期间数据改变时，保留原数据并报告错误，不生成另一套默认身份。便携空目录不会触发这项导入。
 
 ## 独立体验首次使用
 

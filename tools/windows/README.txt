@@ -16,8 +16,9 @@ Eclipse — Windows / Linux 远程串流客户端（Windows x64 包）
 
 配置与便携模式
 
-用户设置、设备与插件数据默认在 %USERPROFILE%\.local\share\uu-remote，
-日志在 %USERPROFILE%\.local\state\uu-remote；应用设置 → 常规可查看实际目录。
+用户设置、设备与插件数据默认在 %LOCALAPPDATA%\Eclipse，
+日志在 %LOCALAPPDATA%\Eclipse\state；应用设置 → 常规可查看实际目录。
+首次使用新目录时复制旧 uu-remote 配置并保留原目录，已有 Eclipse 配置不会被覆盖。
 要体验首次使用或分别保存不同版本的配置，将完整包解压到可写的独立目录，
 在 eclipse.exe 旁新建空的 eclipse-data 文件夹，再双击启动，无需删除原配置。
 便携设置保存在 eclipse-data\data，日志与状态在 eclipse-data\state。
