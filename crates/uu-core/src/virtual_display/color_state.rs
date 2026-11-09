@@ -100,6 +100,16 @@ impl State {
             i64::from(self.bits),
         ]
     }
+
+    /// Clone/extend transitions can change advertised HDR/WCG support without
+    /// changing another display's color intent or actual appearance. Durable
+    /// recovery keeps the original strict signature for journal compatibility.
+    pub fn mode_signature(self) -> [i64; 5] {
+        let mut signature=self.signature();
+        let capabilities=match self.api {Api::Hdr=>1|16|64,Api::Legacy=>1};
+        signature[1]=i64::from(self.raw & !capabilities);
+        signature
+    }
 }
 
 #[cfg(test)]
@@ -165,6 +175,21 @@ mod tests {
             assert_eq!(sdr.hdr_active, changed.hdr_active);
             assert_ne!(sdr.signature(), changed.signature());
         }
+    }
+
+    #[test]
+    fn clone_support_changes_preserve_color_intent_but_never_hide_hdr_or_wcg_changes() {
+        let cloned=State::modern(0,0,0,8).unwrap();
+        let extended=State::modern(1|16|64,0,0,8).unwrap();
+        assert_ne!(cloned.signature(),extended.signature(),"durable recovery remains strict");
+        assert_eq!(cloned.mode_signature(),extended.mode_signature());
+        for changed in [
+            State::modern(1|16|32|64,0,0,8).unwrap(),
+            State::modern(1|2|16|64|128,1,0,8).unwrap(),
+            State::modern(1|2|16|64,2,0,8).unwrap(),
+            State::modern(1|16|64,0,1,8).unwrap(),
+            State::modern(1|16|64,0,0,10).unwrap(),
+        ] {assert_ne!(extended.mode_signature(),changed.mode_signature());}
     }
 
     #[test]

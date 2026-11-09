@@ -386,7 +386,7 @@ fn modes(topology: &Topology) -> Result<Fingerprints> {
         let (key, _) = target_key(path)?;
         let source = topology
             .modes
-            .get(unsafe { path.sourceInfo.Anonymous.modeInfoIdx } as usize)
+            .get(source_mode_index(path) as usize)
             .filter(|m| m.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE)
             .ok_or_else(|| fail("cannot preserve a saved source mode"))?;
         if adapter(source.adapterId) != adapter(path.sourceInfo.adapterId)
@@ -397,7 +397,7 @@ fn modes(topology: &Topology) -> Result<Fingerprints> {
         let source = unsafe { source.Anonymous.sourceMode };
         let target = topology
             .modes
-            .get(unsafe { path.targetInfo.Anonymous.modeInfoIdx } as usize)
+            .get(target_mode_index(path) as usize)
             .filter(|m| m.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_TARGET)
             .ok_or_else(|| fail("cannot preserve a saved target signal"))?;
         if adapter(target.adapterId) != adapter(path.targetInfo.adapterId)
@@ -446,28 +446,40 @@ pub(in crate::virtual_display) fn database() -> Result<Fingerprints> {
 /// output; never replay a historical topology. Driver preparation never calls
 /// this path and therefore publishes or persists no monitor/layout.
 pub(in crate::virtual_display) fn persist_owned_live(owned:&BTreeSet<TargetKey>) -> Result<()> {
-    let baseline=active_signature()?;
+    persist_live(owned,None)
+}
+pub(in crate::virtual_display) fn persist_detached_live(owned:&BTreeSet<TargetKey>,retiring:&TargetKey) -> Result<()> {
+    persist_live(owned,Some(retiring))
+}
+fn persist_live(owned:&BTreeSet<TargetKey>,retiring:Option<&TargetKey>) -> Result<()> {
+    let baseline=mode_fingerprints(&query(QDC_ONLY_ACTIVE_PATHS)?,None)?;
     if !baseline.keys().any(|key|owned.contains(key)) {return Err(fail("no owned active display to persist"));}
     let saved=database()?;
     let proposal=query(QDC_ONLY_ACTIVE_PATHS)?;
     let expected=modes(&proposal)?;
-    let code=unsafe{SetDisplayConfig(proposal.paths.len() as u32,proposal.paths.as_ptr(),proposal.modes.len() as u32,proposal.modes.as_ptr(),SDC_USE_SUPPLIED_DISPLAY_CONFIG|SDC_VALIDATE)};
+    let code=unsafe{SetDisplayConfig(proposal.paths.len() as u32,proposal.paths.as_ptr(),proposal.modes.len() as u32,proposal.modes.as_ptr(),SDC_USE_SUPPLIED_DISPLAY_CONFIG|SDC_VIRTUAL_MODE_AWARE|SDC_VALIDATE)};
     if code!=0 {return Err(error("validate owned display persistence",code as u32));}
-    if active_signature()?!=baseline || database()?!=saved {return Err(fail("display configuration changed before owned persistence; no saved policy was submitted"));}
+    if mode_fingerprints(&query(QDC_ONLY_ACTIVE_PATHS)?,None)?!=baseline || database()?!=saved {return Err(fail("display configuration changed before owned persistence; no saved policy was submitted"));}
     let fresh=query(QDC_ONLY_ACTIVE_PATHS)?;
     if modes(&fresh)?!=expected {return Err(fail("display modes changed before owned persistence"));}
-    let code=unsafe{SetDisplayConfig(fresh.paths.len() as u32,fresh.paths.as_ptr(),fresh.modes.len() as u32,fresh.modes.as_ptr(),SDC_USE_SUPPLIED_DISPLAY_CONFIG|SDC_APPLY|SDC_SAVE_TO_DATABASE)};
+    let code=unsafe{SetDisplayConfig(fresh.paths.len() as u32,fresh.paths.as_ptr(),fresh.modes.len() as u32,fresh.modes.as_ptr(),SDC_USE_SUPPLIED_DISPLAY_CONFIG|SDC_VIRTUAL_MODE_AWARE|SDC_APPLY|SDC_SAVE_TO_DATABASE)};
     if code!=0 {return Err(error("save owned display persistence",code as u32));}
-    if active_signature()?!=baseline {return Err(fail("active displays changed while saving the current monitor combination; no historical layout was replayed"));}
-    let after=database()?;
-    // Saved IDD paths may be routed through the physical GPU with different
-    // adapter/source/target identifiers. They are not a live PnP inventory.
-    // Require the connected monitor identities; actual modes/ownership are
-    // verified against the unchanged active readback and the exact devnodes.
-    let expected_monitors:BTreeSet<_>=expected.keys().map(|key|key.monitor_path.as_str()).collect();
-    let saved_monitors:BTreeSet<_>=after.keys().map(|key|key.monitor_path.as_str()).collect();
-    if saved_monitors!=expected_monitors {
-        return Err(fail("Windows did not record the current connected monitor combination"));
+    if mode_fingerprints(&query(QDC_ONLY_ACTIVE_PATHS)?,None)?!=baseline {return Err(fail("active displays changed while saving the current monitor combination; no historical layout was replayed"));}
+    // A connected but explicitly disabled target may remain in the saved
+    // connected-device combination until its exact devnode is uninstalled.
+    let expected_monitors:BTreeSet<_>=expected.keys().map(|key|key.monitor_path.clone()).collect();
+    let mut permitted=expected_monitors.clone();
+    if let Some(retiring)=retiring {permitted.insert(retiring.monitor_path.clone());}
+    let deadline=std::time::Instant::now()+Duration::from_secs(2);
+    loop {
+        if mode_fingerprints(&query(QDC_ONLY_ACTIVE_PATHS)?,None)?!=baseline {return Err(fail("active display modes changed during persistence readback"));}
+        let after=database()?;
+        let saved_monitors:BTreeSet<_>=after.keys().map(|key|key.monitor_path.clone()).collect();
+        if expected_monitors.is_subset(&saved_monitors) && saved_monitors.is_subset(&permitted) {break;}
+        if std::time::Instant::now()>=deadline {
+            return Err(fail(format!("Windows did not record the current connected monitor combination: expected={expected_monitors:?}, saved={saved_monitors:?}, retiring={retiring:?}")));
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
     Ok(())
 }
@@ -584,7 +596,7 @@ fn save_pool(pending: &mut Pending, instance: &str, checkpoint: Checkpoint<'_>) 
             current.paths.as_ptr(),
             current.modes.len() as u32,
             current.modes.as_ptr(),
-            SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VALIDATE,
+            SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VIRTUAL_MODE_AWARE | SDC_VALIDATE,
         )
     };
     if validate != 0 {
@@ -611,7 +623,7 @@ fn save_pool(pending: &mut Pending, instance: &str, checkpoint: Checkpoint<'_>) 
             fresh.paths.as_ptr(),
             fresh.modes.len() as u32,
             fresh.modes.as_ptr(),
-            SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_APPLY | SDC_SAVE_TO_DATABASE,
+            SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VIRTUAL_MODE_AWARE | SDC_APPLY | SDC_SAVE_TO_DATABASE,
         )
     };
     if code != 0 {

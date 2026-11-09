@@ -18,7 +18,7 @@ use windows_sys::{
             HANDLE, INVALID_HANDLE_VALUE, LUID, POINTL, WAIT_ABANDONED, WAIT_OBJECT_0,
             WAIT_TIMEOUT,
         },
-        Graphics::Gdi::{DISPLAYCONFIG_PATH_ACTIVE, DISPLAYCONFIG_PATH_MODE_IDX_INVALID},
+        Graphics::Gdi::{DISPLAYCONFIG_PATH_ACTIVE, DISPLAYCONFIG_PATH_MODE_IDX_INVALID, DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE},
         Security::{
             Authorization::{
                 ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -233,7 +233,7 @@ impl Backend for Windows {
         spec: Spec,
     ) -> std::result::Result<Target, ActivationFailure> {
         let key = key.clone();
-        worker(move || configure_owned_mode(&key, spec)).unwrap_or_else(|error| {
+        worker(move || configure_owned_mode(&key, spec, true)).unwrap_or_else(|error| {
             Err(ActivationFailure {
                 message: error.to_string(),
                 activated: false,
@@ -246,7 +246,7 @@ impl Backend for Windows {
     }
     fn reconfigure(&self,key:&TargetKey,spec:Spec)->std::result::Result<Target,ActivationFailure> {
         let key=key.clone();
-        worker(move||configure_owned_mode(&key,spec)).unwrap_or_else(|error|Err(ActivationFailure{message:error.to_string(),activated:false}))
+        worker(move||configure_owned_mode(&key,spec,false)).unwrap_or_else(|error|Err(ActivationFailure{message:error.to_string(),activated:false}))
     }
     fn prepare(&self, key: &TargetKey) -> Result<()> {
         let key = key.clone();
@@ -429,8 +429,9 @@ struct Topology {
 fn query(flags: u32) -> Result<Topology> {
     for _ in 0..4 {
         let (mut paths_count, mut modes_count) = (0, 0);
+        let query_flags = flags | QDC_VIRTUAL_MODE_AWARE;
         let code =
-            unsafe { GetDisplayConfigBufferSizes(flags, &mut paths_count, &mut modes_count) };
+            unsafe { GetDisplayConfigBufferSizes(query_flags, &mut paths_count, &mut modes_count) };
         if code != 0 {
             return Err(error("GetDisplayConfigBufferSizes", code));
         }
@@ -449,7 +450,7 @@ fn query(flags: u32) -> Result<Topology> {
         };
         let code = unsafe {
             QueryDisplayConfig(
-                flags,
+                query_flags,
                 &mut paths_count,
                 paths.as_mut_ptr(),
                 &mut modes_count,
@@ -470,6 +471,25 @@ fn query(flags: u32) -> Result<Topology> {
     Err(Error::Platform(
         "display topology changed repeatedly while enumerating".into(),
     ))
+}
+
+// Windows virtual clones keep one real source per adapter. Legacy CCD queries
+// can expose synthetic routes instead, hiding the exact new IDD target.
+fn source_mode_index(path: &DISPLAYCONFIG_PATH_INFO) -> u32 {
+    let packed = unsafe { path.sourceInfo.Anonymous.modeInfoIdx };
+    if path.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE != 0 { packed >> 16 } else { packed }
+}
+fn target_mode_index(path: &DISPLAYCONFIG_PATH_INFO) -> u32 {
+    let packed = unsafe { path.targetInfo.Anonymous.modeInfoIdx };
+    if path.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE != 0 { packed >> 16 } else { packed }
+}
+fn set_source_mode_index(path: &mut DISPLAYCONFIG_PATH_INFO, index: usize) -> Result<()> {
+    let index = u32::try_from(index).map_err(|_| Error::Platform("too many display modes".into()))?;
+    path.sourceInfo.Anonymous.modeInfoIdx = if path.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE != 0 {
+        if index >= 0xffff {return Err(Error::Platform("too many virtual display modes".into()));}
+        (index << 16) | 0xffff // no clone group; this path has its own source mode
+    } else { index };
+    Ok(())
 }
 
 fn target_key(path: &DISPLAYCONFIG_PATH_INFO) -> Result<(TargetKey, String)> {
@@ -560,7 +580,7 @@ fn actual(
     if path.flags & DISPLAYCONFIG_PATH_ACTIVE == 0 {
         return Ok(None);
     }
-    let index = unsafe { path.sourceInfo.Anonymous.modeInfoIdx };
+    let index = source_mode_index(path);
     let mode = modes
         .get(index as usize)
         .filter(|mode| mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE)
@@ -692,13 +712,19 @@ pub(super) fn targets_for_instance(instance: &str) -> Result<Vec<Target>> {
         .collect())
 }
 fn fingerprints(topology: &Topology, exclude: Option<&TargetKey>) -> Result<Fingerprints> {
+    fingerprints_with_color(topology, exclude, false)
+}
+fn mode_fingerprints(topology: &Topology, exclude: Option<&TargetKey>) -> Result<Fingerprints> {
+    fingerprints_with_color(topology, exclude, true)
+}
+fn fingerprints_with_color(topology: &Topology, exclude: Option<&TargetKey>, mode_change:bool) -> Result<Fingerprints> {
     let mut result = BTreeMap::new();
     for path in &topology.paths {
         let (key, _) = target_key(path)?;
         if exclude == Some(&key) {
             continue;
         }
-        let index = unsafe { path.sourceInfo.Anonymous.modeInfoIdx };
+        let index = source_mode_index(path);
         let mode = topology
             .modes
             .get(index as usize)
@@ -721,7 +747,7 @@ fn fingerprints(topology: &Topology, exclude: Option<&TargetKey>) -> Result<Fing
         ];
         // WCG changes must remain visible to the original-output guard even
         // though actual.hdr now correctly classifies WCG as SDR.
-        fingerprint.extend(color.signature());
+        fingerprint.extend(if mode_change {color.mode_signature()} else {color.signature()});
         result.insert(key, fingerprint);
     }
     Ok(result)
@@ -739,7 +765,7 @@ fn apply(topology: &Topology, apply_submitted: &mut bool) -> Result<()> {
                 topology.paths.as_ptr(),
                 topology.modes.len() as u32,
                 topology.modes.as_ptr(),
-                SDC_USE_SUPPLIED_DISPLAY_CONFIG | flag,
+                SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VIRTUAL_MODE_AWARE | flag,
             )
         };
         if code != 0 {
@@ -749,103 +775,85 @@ fn apply(topology: &Topology, apply_submitted: &mut bool) -> Result<()> {
     })
 }
 
-fn configure_owned_mode(key:&TargetKey,spec:Spec)->std::result::Result<Target,ActivationFailure> {
+/// Supply an independent source for an explicitly owned target. Existing
+/// outputs retain their paths/modes, including the source of a cloned sibling.
+fn plan_owned_mode(mut active: Topology, all: &Topology, selected: Option<usize>, key: &TargetKey, spec: Spec, extend_right: bool) -> Result<Topology> {
+    let identity = |path:&DISPLAYCONFIG_PATH_INFO| (adapter(path.sourceInfo.adapterId),path.sourceInfo.id);
+    let used:BTreeSet<_> = active.paths.iter().enumerate().filter(|(i,_)|Some(*i)!=selected).map(|(_,path)|identity(path)).collect();
+    let current = selected.map(|i|active.paths[i]);
+    let cloned = current.is_some_and(|path| {
+        if used.contains(&identity(&path)) {return true;}
+        let Some(mode)=active.modes.get(source_mode_index(&path) as usize) else{return false;};
+        let position=unsafe{mode.Anonymous.sourceMode.position};
+        active.paths.iter().enumerate().filter(|(i,_)|Some(*i)!=selected).any(|(_,p)| {
+            active.modes.get(source_mode_index(p) as usize).is_some_and(|m| {
+                let other=unsafe{m.Anonymous.sourceMode.position};other.x==position.x&&other.y==position.y
+            })
+        })
+    });
+    let mut path = if let Some(path)=current.filter(|p|!used.contains(&identity(p))) {path} else {
+        all.paths.iter().find(|p|p.targetInfo.targetAvailable!=0 && !used.contains(&identity(p)) && target_key(p).is_ok_and(|(candidate,_)|&candidate==key)).copied().ok_or(Error::NoAvailableSlot)?
+    };
+    let mut right=0i64;
+    for (_,other) in active.paths.iter().enumerate().filter(|(i,_)|Some(*i)!=selected) {
+        let mode=active.modes.get(source_mode_index(other) as usize).ok_or(Error::UnknownSlot)?;
+        if mode.infoType!=DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE {return Err(Error::UnknownSlot);}
+        let source=unsafe{mode.Anonymous.sourceMode};
+        right=right.max(i64::from(source.position.x)+i64::from(source.width));
+    }
+    let position = if !extend_right && !cloned {
+        current.and_then(|p|active.modes.get(source_mode_index(&p) as usize)).map(|m|unsafe{m.Anonymous.sourceMode.position})
+    }else{None}.unwrap_or(POINTL{x:i32::try_from(right).map_err(|_|Error::Platform("desktop coordinate overflow".into()))?,y:0});
+    let mut source:DISPLAYCONFIG_MODE_INFO=unsafe{zeroed()};
+    source.infoType=DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;source.adapterId=path.sourceInfo.adapterId;source.id=path.sourceInfo.id;
+    source.Anonymous.sourceMode=DISPLAYCONFIG_SOURCE_MODE{width:spec.width,height:spec.height,pixelFormat:DISPLAYCONFIG_PIXELFORMAT_32BPP,position};
+    // Reuse this source's entry when it is not shared. CCD requires one entry
+    // per source identity even when an old mode becomes unused by this path.
+    let index=active.modes.iter().position(|m|m.infoType==DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE && adapter(m.adapterId)==identity(&path).0 && m.id==path.sourceInfo.id);
+    let index=match index {Some(i)=>{active.modes[i]=source;i},None=>{let i=active.modes.len();active.modes.push(source);i}};
+    set_source_mode_index(&mut path,index)?;
+    path.targetInfo.Anonymous.modeInfoIdx=DISPLAYCONFIG_PATH_MODE_IDX_INVALID; // recalculate target and desktop-image modes
+    path.targetInfo.refreshRate=DISPLAYCONFIG_RATIONAL{Numerator:spec.refresh_millihz,Denominator:1000};
+    path.targetInfo.scanLineOrdering=DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+    path.flags |= DISPLAYCONFIG_PATH_ACTIVE;
+    if let Some(i)=selected {active.paths[i]=path;} else {active.paths.push(path);}
+    Ok(active)
+}
+
+fn configure_owned_mode(key:&TargetKey,spec:Spec,creation:bool)->std::result::Result<Target,ActivationFailure> {
     // A new PnP monitor may become active between enumeration and this call
     // when Windows applies its saved connected-display configuration. The
     // exact owned claim permits both states; observe it afresh under the lock.
     let observed=(||->Result<_>{let owned=demand::owned_keys(key)?;let active=scene()?.active.paths.iter().any(|p|target_key(p).is_ok_and(|(candidate,_)|&candidate==key));Ok((owned,active))})();
     let (owned,active)=observed.map_err(|error|ActivationFailure{message:error.to_string(),activated:true})?;
-    let target=configure_mode(key,spec,active)?;
+    let target=configure_mode(key,spec,active,creation)?;
     let result=provision::capacity::persist_owned_live(&owned);
     result.map(|()|target).map_err(|error|ActivationFailure{message:error.to_string(),activated:true})
 }
-fn configure_mode(key: &TargetKey, spec: Spec, existing:bool) -> std::result::Result<Target, ActivationFailure> {
+fn configure_mode(key: &TargetKey, spec: Spec, existing:bool, extend_right:bool) -> std::result::Result<Target, ActivationFailure> {
     let mut apply_submitted = false;
     let result = (|| -> Result<Target> {
-        let mut before = scene()?;
+        let before = scene()?;
         let targets = inventory(&before)?;
         if !targets
             .targets
             .iter()
-            .any(|target| &target.key == key && if existing {target.active}else{target.available && !target.active})
+            .any(|target| &target.key == key && (extend_right || if existing {target.active}else{target.available && !target.active}))
         {
             return Err(Error::NoAvailableSlot);
         }
-        let preserved = fingerprints(&before.active, if existing {Some(key)}else{None})?;
-        if existing {
-            let index=super::config_apply::exact_index(before.active.paths.iter().map(|path|target_key(path).map(|(key,_)|key)),key)?.ok_or(Error::UnknownSlot)?;
-            let path=before.active.paths[index];
-            // A cloned source cannot be edited without changing another output.
-            if before.active.paths.iter().enumerate().any(|(other,p)|other!=index && p.sourceInfo.id==path.sourceInfo.id && adapter(p.sourceInfo.adapterId)==adapter(path.sourceInfo.adapterId)) {
-                return Err(Error::Platform("detach the cloned virtual output before changing its mode".into()));
-            }
-            let source_index=unsafe{path.sourceInfo.Anonymous.modeInfoIdx} as usize;
-            let mode=before.active.modes.get_mut(source_index).ok_or(Error::UnknownSlot)?;
-            if mode.infoType!=DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE || mode.id!=path.sourceInfo.id || adapter(mode.adapterId)!=adapter(path.sourceInfo.adapterId) {return Err(Error::UnknownSlot);}
-            let mut source=unsafe{mode.Anonymous.sourceMode};
-            source.width=spec.width;source.height=spec.height;
-            mode.Anonymous.sourceMode=source;
-            let path=&mut before.active.paths[index];
-            path.targetInfo.Anonymous.modeInfoIdx=DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
-            path.targetInfo.refreshRate=DISPLAYCONFIG_RATIONAL{Numerator:spec.refresh_millihz,Denominator:1000};
-            path.targetInfo.scanLineOrdering=DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
-        }else{
-        let used: BTreeSet<_> = before
-            .active
-            .paths
-            .iter()
-            .map(|path| (adapter(path.sourceInfo.adapterId), path.sourceInfo.id))
-            .collect();
-        let mut path = before
-            .all
-            .paths
-            .iter()
-            .find(|path| {
-                path.targetInfo.targetAvailable != 0
-                    && !used.contains(&(adapter(path.sourceInfo.adapterId), path.sourceInfo.id))
-                    && target_key(path).is_ok_and(|(candidate, _)| &candidate == key)
-            })
-            .copied()
-            .ok_or(Error::NoAvailableSlot)?;
-        let mut right = 0i64;
-        for mode in &before.active.modes {
-            if mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE {
-                let source = unsafe { mode.Anonymous.sourceMode };
-                right = right.max(i64::from(source.position.x) + i64::from(source.width));
-            }
-        }
-        let x = i32::try_from(right)
-            .map_err(|_| Error::Platform("desktop coordinate overflow".into()))?;
-        let mut source: DISPLAYCONFIG_MODE_INFO = unsafe { zeroed() };
-        source.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
-        source.adapterId = path.sourceInfo.adapterId;
-        source.id = path.sourceInfo.id;
-        source.Anonymous.sourceMode = DISPLAYCONFIG_SOURCE_MODE {
-            width: spec.width,
-            height: spec.height,
-            pixelFormat: DISPLAYCONFIG_PIXELFORMAT_32BPP,
-            position: POINTL { x, y: 0 },
-        };
-        path.sourceInfo.Anonymous.modeInfoIdx = before.active.modes.len() as u32;
-        path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
-        path.targetInfo.refreshRate = DISPLAYCONFIG_RATIONAL {
-            Numerator: spec.refresh_millihz,
-            Denominator: 1000,
-        };
-        path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
-        path.flags = DISPLAYCONFIG_PATH_ACTIVE;
-        before.active.modes.push(source);
-        before.active.paths.push(path);
-        }
+        let preserved = mode_fingerprints(&before.active, if existing {Some(key)}else{None})?;
+        let selected = before.active.paths.iter().position(|path| target_key(path).is_ok_and(|(candidate,_)| &candidate == key));
+        let proposal = plan_owned_mode(before.active, &before.all, selected, key, spec, extend_right)?;
         // Do not use SDC_ALLOW_CHANGES: it could silently change another screen
         // to make an unsupported mode work. Unsupported requests fail instead.
-        apply(&before.active, &mut apply_submitted)?;
+        apply(&proposal, &mut apply_submitted)?;
         for _ in 0..20 {
             let after = scene()?;
-            if fingerprints(&after.active, Some(key))? != preserved {
-                return Err(Error::Platform(
-                    "another display changed during activation; refusing to claim success".into(),
-                ));
+            let observed = mode_fingerprints(&after.active, Some(key))?;
+            if observed != preserved {
+                let changes=preserved.keys().filter(|key|observed.get(*key)!=preserved.get(*key)).map(|key|format!("{}: {}",key.monitor_path,fingerprint_change(&preserved,&observed,key))).collect::<Vec<_>>().join("; ");
+                return Err(Error::Platform(format!("another display changed during activation; refusing to claim success: {changes}")));
             }
             if let Some(path) = after
                 .active
@@ -857,7 +865,7 @@ fn configure_mode(key: &TargetKey, spec: Spec, existing:bool) -> std::result::Re
                 // HDR is a separate Windows operation. Verify the other paths
                 // again afterwards rather than reusing the pre-HDR snapshot.
                 let committed = query(QDC_ONLY_ACTIVE_PATHS)?;
-                if fingerprints(&committed, Some(key))? != preserved {
+                if mode_fingerprints(&committed, Some(key))? != preserved {
                     return Err(Error::Platform(
                         "another display changed during HDR configuration".into(),
                     ));
@@ -910,11 +918,11 @@ fn configure_mode(key: &TargetKey, spec: Spec, existing:bool) -> std::result::Re
     })
 }
 
-pub(super) fn deactivate(key: &TargetKey) -> Result<()> {
-    deactivate_checked(key, false)
+pub(super) fn deactivate(key: &TargetKey, movable: &BTreeSet<TargetKey>) -> Result<()> {
+    deactivate_keys(&BTreeSet::from([key.clone()]), false, true, movable)
 }
 fn deactivate_checked(key: &TargetKey, require_other_active: bool) -> Result<()> {
-    deactivate_keys(&BTreeSet::from([key.clone()]), require_other_active)
+    deactivate_keys(&BTreeSet::from([key.clone()]), require_other_active, false, &BTreeSet::new())
 }
 
 /// Pool setup owns every target in this batch, including its inactive siblings.
@@ -926,10 +934,10 @@ pub(super) fn deactivate_claimed(
 ) -> Result<()> {
     let keys:BTreeSet<_>=targets.iter().map(|target|target.key.clone()).collect();
     if keys.iter().any(|key|!claims.contains_key(key)) {return Err(Error::Claimed);}
-    deactivate_keys(&keys, true)
+    deactivate_keys(&keys, true, false, &BTreeSet::new())
 }
 
-fn deactivate_keys(keys: &BTreeSet<TargetKey>, require_other_active: bool) -> Result<()> {
+fn deactivate_keys(keys: &BTreeSet<TargetKey>, require_other_active: bool, mode_change:bool, movable:&BTreeSet<TargetKey>) -> Result<()> {
     let mut before = scene()?;
     // A numeric ID can be recycled after a driver restart. Never fall back from
     // the full monitor path to a number, a name, or a different driver instance.
@@ -947,7 +955,8 @@ fn deactivate_keys(keys: &BTreeSet<TargetKey>, require_other_active: bool) -> Re
     if require_other_active && retained.is_empty() {
         return Err(Error::LastActiveOutput);
     }
-    let preserved = super::capacity_policy::foreign(&fingerprints(&before.active, None)?, keys);
+    let fingerprint:fn(&Topology,Option<&TargetKey>)->Result<Fingerprints>=if mode_change {mode_fingerprints} else {fingerprints};
+    let preserved = super::capacity_policy::foreign(&fingerprint(&before.active, None)?, keys);
     before.active.paths = retained.iter().map(|index|before.active.paths[*index]).collect();
     let mut apply_submitted = false;
     apply(&before.active, &mut apply_submitted)?;
@@ -958,7 +967,15 @@ fn deactivate_keys(keys: &BTreeSet<TargetKey>, require_other_active: bool) -> Re
         if super::config_apply::retained_indices(after.paths.iter().map(|path| target_key(path).map(|(candidate,_)|candidate)), keys)?.len() != after.paths.len() {
             return Err(Error::Platform("virtual target remained active after removal".into()));
         }
-        let observed=fingerprints(&after, None)?;
+        let mut observed=fingerprint(&after, None)?;
+        // Windows may close the gap between our surviving siblings. Their
+        // modes, color intent and full identities still have to be unchanged;
+        // unrelated outputs never receive this positional allowance.
+        for key in movable {
+            if let (Some(expected),Some(actual))=(preserved.get(key),observed.get_mut(key)) {
+                actual[3]=expected[3];actual[4]=expected[4];
+            }
+        }
         if observed != preserved {
             let changes=preserved.keys().filter(|key|observed.get(*key)!=preserved.get(*key))
                 .map(|key|format!("{}: {}",key.monitor_path,fingerprint_change(&preserved,&observed,key))).collect::<Vec<_>>().join("; ");
@@ -975,6 +992,44 @@ fn deactivate_keys(keys: &BTreeSet<TargetKey>, require_other_active: bool) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn virtual_modes_use_packed_indices_and_clear_only_the_owned_clone_group() {
+        let mut path:DISPLAYCONFIG_PATH_INFO=unsafe{zeroed()};
+        path.flags=DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE;
+        path.sourceInfo.Anonymous.modeInfoIdx=(7<<16)|3;
+        path.targetInfo.Anonymous.modeInfoIdx=(11<<16)|5;
+        assert_eq!(source_mode_index(&path),7);assert_eq!(target_mode_index(&path),11);
+        set_source_mode_index(&mut path,9).unwrap();
+        assert_eq!(source_mode_index(&path),9);
+        assert_eq!(unsafe{path.sourceInfo.Anonymous.modeInfoIdx}&0xffff,0xffff);
+        assert_eq!(target_mode_index(&path),11);
+        path.flags=0;set_source_mode_index(&mut path,13).unwrap();
+        assert_eq!(source_mode_index(&path),13);
+    }
+    #[test]
+    fn auto_enabled_virtual_clone_moves_right_but_editing_an_extended_display_preserves_its_position() {
+        let mut paths=Vec::new();let mut modes=Vec::new();
+        for (id,width,x,y) in [(1,3072,0,0),(2,1920,0,0)] {
+            let mut path:DISPLAYCONFIG_PATH_INFO=unsafe{zeroed()};
+            path.flags=DISPLAYCONFIG_PATH_ACTIVE|DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE;
+            path.sourceInfo.adapterId=LUID{LowPart:id,HighPart:0};path.sourceInfo.id=0;
+            set_source_mode_index(&mut path,modes.len()).unwrap();
+            let mut mode:DISPLAYCONFIG_MODE_INFO=unsafe{zeroed()};mode.infoType=DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
+            mode.adapterId=path.sourceInfo.adapterId;mode.id=0;
+            mode.Anonymous.sourceMode=DISPLAYCONFIG_SOURCE_MODE{width,height:1080,pixelFormat:DISPLAYCONFIG_PIXELFORMAT_32BPP,position:POINTL{x,y}};
+            paths.push(path);modes.push(mode);
+        }
+        let empty=Topology{paths:Vec::new(),modes:Vec::new()};
+        let key=TargetKey{adapter:(2,0),target:256,monitor_path:"generated-owned-target".into()};
+        let spec=Spec{width:1920,height:1080,refresh_millihz:60000,hdr:false};
+        let planned=plan_owned_mode(Topology{paths,modes},&empty,Some(1),&key,spec,true).unwrap();
+        let physical=unsafe{planned.modes[0].Anonymous.sourceMode};let added=unsafe{planned.modes[1].Anonymous.sourceMode};
+        assert_eq!((physical.width,physical.position.x,physical.position.y),(3072,0,0));
+        assert_eq!((added.position.x,added.position.y),(3072,0));assert_eq!(planned.modes.len(),2);
+        let edited=plan_owned_mode(planned,&empty,Some(1),&key,Spec{width:1280,..spec},false).unwrap();
+        let source=unsafe{edited.modes[1].Anonymous.sourceMode};
+        assert_eq!((source.width,source.position.x,source.position.y),(1280,3072,0));
+    }
     #[test]
     fn a_pool_batch_requires_every_exact_claim_before_querying_or_mutating_the_desktop() {
         struct TestClaim;

@@ -914,7 +914,7 @@ impl Manager {
             cleanup_pending: false,
             last_error: None,
         };
-        let activation=if self.backend.on_demand()&&target.active {self.backend.reconfigure(&target.key,spec)}else if saved.is_some()&&target.active {Ok(target.clone())}else{self.backend.activate(&target.key,spec)};
+        let activation=if self.backend.on_demand()&&saved.is_some()&&target.active {self.backend.reconfigure(&target.key,spec)}else if self.backend.on_demand() {self.backend.activate(&target.key,spec)}else if saved.is_some()&&target.active {Ok(target.clone())}else{self.backend.activate(&target.key,spec)};
         match activation {
             Ok(observed) => {
                 display.active = observed.active;

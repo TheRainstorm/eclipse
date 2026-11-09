@@ -274,21 +274,25 @@ pub(super) fn create(
                 save(&state)
             })?;
         let deadline = Instant::now() + Duration::from_secs(10);
+        let mut last_observation = String::new();
         let target = loop {
             let targets = targets_for_instance(&instance);
+            if let Err(error) = &targets {last_observation=error.to_string();}
             if let Ok(mut targets) = targets {
+                last_observation=format!("{} matching targets",targets.len());
                 if targets.len() > 1 {
                     return Err(fail("isolated driver published more than one monitor"));
                 }
                 if let Some(target) = targets.pop() {
-                    if target.active || target.available {
-                        break target;
-                    }
+                    // This newly registered device already has an exact
+                    // connected monitor identity. A free legacy source slot
+                    // is a topology decision, not a driver-readiness test.
+                    break target;
                 }
             }
             if Instant::now() >= deadline {
                 return Err(fail(format!(
-                    "新虚拟显示器未在十秒内就绪，正在清理本次设备。{}",
+                    "新虚拟显示器未在十秒内就绪，正在清理本次设备。{}; enumeration: {last_observation}",
                     driver::demand_problem(&instance)
                 )));
             }
@@ -332,7 +336,29 @@ pub(super) fn remove(key: &TargetKey) -> Result<()> {
         .find(|r| r.target.as_ref() == Some(key))
         .cloned()
         .ok_or(Error::UnknownSlot)?;
+    let survivors:Vec<_>=inventory(Some(&record.scope))?.targets.into_iter().filter(|t|t.key!=*key&&t.active).filter_map(|t|t.actual.map(|spec|(t.key,spec))).collect();
+    if let Some(instance)=&record.instance {
+        if driver::verify_demand_device(instance,&record.token.to_string(),record.ready)? {
+            // Retire the path while Windows still knows its current topology.
+            // Uninstalling a live IDD directly can replay a cached clone mode
+            // for a surviving sibling even after a successful extension.
+            let owned:BTreeSet<_>=state.records.iter().filter(|r|r.ready&&r.scope==record.scope&&r.token!=record.token).filter_map(|r|r.target.clone()).collect();
+            deactivate(key,&owned)?;
+            let live=mode_fingerprints(&query(QDC_ONLY_ACTIVE_PATHS)?,None)?;
+            if owned.iter().any(|key|live.contains_key(key)) {
+                capacity::persist_detached_live(&owned,key)?;
+            }
+        }
+    }
     recover_record(&record)?;
+    // Windows can select an older mode for the new connected combination.
+    // Restore only this scope's surviving, exactly owned display specifications
+    // from immediately before this removal; never replay a global layout.
+    for (key,spec) in survivors {
+        let target=inventory(Some(&record.scope))?.targets.into_iter().find(|t|t.key==key).ok_or(Error::UnknownSlot)?;
+        let unchanged=target.active && target.actual.is_some_and(|s|s.width==spec.width&&s.height==spec.height&&s.refresh_millihz.abs_diff(spec.refresh_millihz)<=1&&s.hdr==spec.hdr);
+        if !unchanged {configure_owned_mode(&key,spec,true).map_err(|e|fail(format!("remaining owned monitor mode recovery is pending: {}",e.message)))?;}
+    }
     state.records.retain(|r| r.token != record.token);
     save(&state)?;
     if state.records.is_empty() && driver::demand_instances()?.is_empty() {
@@ -389,24 +415,57 @@ mod live_tests {
         let package = read_pinned_package(Path::new(&package)).unwrap();
         worker(move|| {
             crate::service_admin::windows::require_administrator().unwrap();
-            assert!(driver::demand_instances().unwrap().is_empty(),"fixture requires no existing Mtt adapters");
-            let initial=load().unwrap();assert!(initial.records.is_empty(),"fixture must not adopt existing leases");
+            let original_instances=driver::demand_instances().unwrap();
+            let initial=load().unwrap();
+            let original_records=serde_json::to_value(&initial.records).unwrap();
             let initial_file=std::fs::read(path().unwrap()).ok();
             let previous_configuration=driver::current_configuration().unwrap();
             let original=active_signature().unwrap();assert!(!original.is_empty());
             let scope=hex::encode(Sha256::digest(Uuid::new_v4().as_bytes()));
             let result=(|| -> Result<()> {
+                let timer=Instant::now();
                 prepare(&package)?;
-                if !driver::demand_instances()?.is_empty() {return Err(fail("preparation published an unexpected device"));}
+                eprintln!("prepared {:?}",timer.elapsed());
+                if driver::demand_instances()?!=original_instances {return Err(fail("preparation published an unexpected device"));}
                 let (first,first_claim)=create(&scope,LeaseId(Uuid::new_v4()),&BTreeSet::new())?;
                 let spec=Spec{width:1920,height:1080,refresh_millihz:60000,hdr:false};
-                configure_owned_mode(&first.key,spec).map_err(|e|fail(e.message))?;
-                if driver::demand_instances()?.len()!=1 {return Err(fail("first create did not publish exactly one adapter"));}
+                eprintln!("first allocated {:?}",timer.elapsed());
+                configure_owned_mode(&first.key,spec,true).map_err(|e|fail(e.message))?;
+                eprintln!("first configured {:?}",timer.elapsed());
+                if driver::demand_instances()?.len()!=original_instances.len()+1 {return Err(fail("first create did not publish exactly one adapter"));}
                 let (second,second_claim)=create(&scope,LeaseId(Uuid::new_v4()),&BTreeSet::new())?;
-                configure_owned_mode(&second.key,spec).map_err(|e|fail(e.message))?;
+                eprintln!("second allocated {:?}",timer.elapsed());
+                configure_owned_mode(&second.key,spec,true).map_err(|e|fail(e.message))?;
+                eprintln!("second configured {:?}",timer.elapsed());
                 if !inventory(Some(&scope))?.targets.iter().any(|t|t.key==first.key&&t.active) {return Err(fail("creating the second device deactivated the first"));}
-                if driver::demand_instances()?.len()!=2 {return Err(fail("second create did not publish exactly two adapters"));}
+                if driver::demand_instances()?.len()!=original_instances.len()+2 {return Err(fail("second create did not publish exactly two adapters"));}
+                // Reproduce a Windows virtual clone using only our two test
+                // outputs. User displays retain their full current modes.
+                let mut topology=query(QDC_ONLY_ACTIVE_PATHS)?;
+                let first_path=*topology.paths.iter().find(|p|target_key(p).is_ok_and(|(k,_)|k==first.key)).ok_or(Error::UnknownSlot)?;
+                let second_index=topology.paths.iter().position(|p|target_key(p).is_ok_and(|(k,_)|k==second.key)).ok_or(Error::UnknownSlot)?;
+                let second_path=topology.paths[second_index];
+                if first_path.flags&DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE==0 || second_path.flags&DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE==0 {return Err(fail("fixture requires Windows virtual-clone support"));}
+                let first_source=unsafe{topology.modes[source_mode_index(&first_path) as usize].Anonymous.sourceMode};
+                let mut second_source=unsafe{topology.modes[source_mode_index(&second_path) as usize].Anonymous.sourceMode};
+                if second_source.position.x!=first_source.position.x+spec.width as i32 || second_source.position.y!=0 {return Err(fail("a new display did not extend to the desktop right edge"));}
+                second_source.position=first_source.position;
+                topology.modes[source_mode_index(&second_path) as usize].Anonymous.sourceMode=second_source;
+                topology.paths[second_index].targetInfo.Anonymous.modeInfoIdx=DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+                let mut submitted=false;apply(&topology,&mut submitted)?;
+                let cloned=query(QDC_ONLY_ACTIVE_PATHS)?;
+                let clone=cloned.paths.iter().find(|p|target_key(p).is_ok_and(|(k,_)|k==second.key)).ok_or(Error::UnknownSlot)?;
+                let clone_source=unsafe{cloned.modes[source_mode_index(clone) as usize].Anonymous.sourceMode};
+                if clone_source.position.x!=first_source.position.x || clone_source.position.y!=first_source.position.y {return Err(fail("fixture did not enter the reported clone state"));}
+                configure_owned_mode(&second.key,spec,true).map_err(|e|fail(e.message))?;
+                eprintln!("clone extended {:?}",timer.elapsed());
+                let extended=query(QDC_ONLY_ACTIVE_PATHS)?;
+                let path=extended.paths.iter().find(|p|target_key(p).is_ok_and(|(k,_)|k==second.key)).ok_or(Error::UnknownSlot)?;
+                let source=unsafe{extended.modes[source_mode_index(path) as usize].Anonymous.sourceMode};
+                if source.position.x!=first_source.position.x+spec.width as i32 || source.position.y!=0 {return Err(fail("virtual clone was not split and saved at the right edge"));}
+                eprintln!("removing first {:?}",timer.elapsed());
                 remove(&first.key)?;drop(first_claim);
+                eprintln!("first removed {:?}",timer.elapsed());
                 let settled=Instant::now()+Duration::from_secs(5);
                 loop {
                     let remaining=inventory(Some(&scope))?;
@@ -416,7 +475,8 @@ mod live_tests {
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 remove(&second.key)?;drop(second_claim);
-                if !driver::demand_instances()?.is_empty() {return Err(fail("deleted devices left disconnected adapter nodes"));}
+                eprintln!("second removed {:?}",timer.elapsed());
+                if driver::demand_instances()?!=original_instances {return Err(fail("deleted devices left disconnected adapter nodes"));}
                 let deadline=Instant::now()+Duration::from_secs(10);
                 loop {
                     if active_signature()?==original {break;}
@@ -446,6 +506,7 @@ mod live_tests {
                 }
             }
             assert!(cleanup.is_ok(),"fixture cleanup pending: {cleanup:?}");
+            assert_eq!(serde_json::to_value(&load().unwrap().records).unwrap(),original_records,"fixture changed an existing display owner");
             assert!(result.is_ok(),"signed driver lifecycle failed: {result:?}");
         }).unwrap();
     }
