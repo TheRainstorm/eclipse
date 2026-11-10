@@ -1463,3 +1463,61 @@ fn legacy_saved_displays_migrate_as_enabled_persistent_definitions_without_renam
     let restored=next.list().unwrap().remove(0);assert_eq!(restored.id,LeaseId(id));assert!(!restored.enabled&&!restored.active);
     assert_eq!(restored.name,"Saved workspace");std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn inspection_observes_ownership_and_external_claims_once_without_recovery() {
+    let (manager, backend) = fixture();
+    let display = manager.create(Owner::Manual, Spec::default()).unwrap();
+    let actual = Spec { width: 1280, height: 720, ..Spec::default() };
+    {
+        let mut targets = backend.targets.lock().unwrap();
+        let owned = targets.iter_mut().find(|target| target.source == display.source).unwrap();
+        owned.active = false;
+        owned.actual = Some(actual);
+        owned.source = "changed-source".into();
+        backend.claims.lock().unwrap().insert(targets[2].key.clone());
+    }
+    let queries = backend.inventory_calls.load(Ordering::SeqCst);
+    let recoveries = backend.recover_calls.load(Ordering::SeqCst);
+    backend.fail_recover.store(true, Ordering::SeqCst);
+    let inspection = manager.inspect().unwrap();
+    assert_eq!(backend.inventory_calls.load(Ordering::SeqCst), queries + 1);
+    assert_eq!(backend.recover_calls.load(Ordering::SeqCst), recoveries);
+    assert_eq!(backend.provision_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(inspection.status.leased, 1);
+    assert_eq!(inspection.status.available_slots, 0);
+    let observed = inspection.displays.iter().find(|item| item.id == display.id).unwrap();
+    assert!(!observed.active);
+    assert_eq!(observed.actual, Some(actual));
+    assert_eq!(observed.source, "changed-source");
+    let slot = inspection.slots.iter().find(|slot| slot.source == observed.source).unwrap();
+    assert!(!slot.active);
+    assert!(slot.leased, "external deactivation must retain our claim");
+    assert!(inspection.slots.iter().find(|slot| slot.source.ends_with("DISPLAY3")).unwrap().leased);
+}
+
+#[test]
+fn inspection_keeps_disabled_definitions_and_counts_pending_enabled_records() {
+    let (manager, backend) = fixture();
+    let path = saved_policy(&manager);
+    let disabled = manager.add_display().unwrap();
+    let pending = policy::SavedDisplay {
+        id: Uuid::new_v4(), spec: Spec::default(),
+        target: backend.targets.lock().unwrap()[2].key.clone(),
+        name: "Pending".into(), enabled: true, persistent: true,
+        restore_layout: true, position: None,
+    };
+    manager.saved_file().unwrap().save(pending.clone()).unwrap();
+    let queries = backend.inventory_calls.load(Ordering::SeqCst);
+    let inspection = manager.inspect().unwrap();
+    assert_eq!(backend.inventory_calls.load(Ordering::SeqCst), queries + 1);
+    assert_eq!(inspection.status.leased, 0);
+    assert_eq!(inspection.status.allocated, 1);
+    assert_eq!(inspection.displays.iter().map(|display| display.id).collect::<Vec<_>>(), [disabled.id, LeaseId(pending.id)]);
+    assert!(!inspection.displays[0].enabled);
+    assert!(inspection.displays[1].enabled);
+    assert!(!inspection.displays[1].active);
+    assert!(inspection.displays[1].last_error.is_some());
+    assert!(manager.entries.lock().unwrap().is_empty(), "inspection must not restore saved devices");
+    std::fs::remove_dir_all(path).unwrap();
+}

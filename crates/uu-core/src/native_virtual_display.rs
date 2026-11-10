@@ -82,6 +82,20 @@ pub enum Response {
         message: String,
     },
 }
+// Keep the wire envelope and existing local/remote visibility policy here;
+// the manager owns collecting a consistent domain observation.
+#[derive(Clone, Copy)]
+enum SlotVisibility { All, Active, Hidden }
+fn snapshot(manager: &Manager, visibility: SlotVisibility) -> Result<Response> {
+    let crate::virtual_display::Inspection { status, displays, mut slots } = manager.inspect()?;
+    match visibility {
+        SlotVisibility::All => {},
+        SlotVisibility::Active => slots.retain(|slot| slot.active),
+        SlotVisibility::Hidden => slots.clear(),
+    }
+    Ok(Response::Snapshot { status, displays, slots })
+}
+
 pub fn error_message(error: &anyhow::Error) -> String {
     use crate::virtual_display::Error;
     match error.downcast_ref::<Error>() {
@@ -160,29 +174,25 @@ pub fn execute_local_owner(request: LocalRequest) -> Result<Response> {
         LocalRequest::ResetDisplays=>{manager.reset_displays()?;Request::Inspect},
     };
     Ok(match request {
-        Request::Inspect => Response::Snapshot {
-            status: manager.status()?,
-            displays: manager.list()?,
-            slots: manager.slots()?,
-        },
+        Request::Inspect => snapshot(&manager, SlotVisibility::All)?,
         Request::Add=>Response::Created{display:manager.add_display()?},
-        Request::SetEnabled{id,enabled}=>{manager.set_enabled(id,enabled)?;Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}},
-        Request::SetRestoreLayout{id,restore}=>{manager.set_restore_layout(id,restore)?;Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}},
+        Request::SetEnabled{id,enabled}=>{manager.set_enabled(id,enabled)?;snapshot(&manager, SlotVisibility::All)?},
+        Request::SetRestoreLayout{id,restore}=>{manager.set_restore_layout(id,restore)?;snapshot(&manager, SlotVisibility::All)?},
         Request::Create { spec } => Response::Created {
             display: manager.create(Owner::Manual, spec)?,
         },
         Request::CreatePersistent { spec }=>Response::Created{display:manager.create_manual(spec,true)?},
         Request::SetLimit{limit}=>{
             manager.set_limit_persisted(limit)?;
-            Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}
+            snapshot(&manager, SlotVisibility::All)?
         },
         Request::SetPersistent{id,persistent}=>{
             manager.set_persistent(id,persistent)?;
-            Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}
+            snapshot(&manager, SlotVisibility::All)?
         },
         Request::Configure{id,name,spec}=>{
             manager.configure_display(id,name,spec)?;
-            Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}
+            snapshot(&manager, SlotVisibility::All)?
         },
         Request::Remove { id } => {
             manager.remove(id)?;
@@ -417,19 +427,11 @@ impl Host {
     ) -> Result<Response> {
         self.authorize()?;
         let response = match request {
-            Request::Inspect => Response::Snapshot {
-                status: self.manager.status()?,
-                displays: self
-                    .manager
-                    .list()?
-                    .into_iter()
-                    .collect(),
-                slots: self.manager.slots()?.into_iter().filter(|s|s.active).collect(),
-            },
+            Request::Inspect => snapshot(&self.manager, SlotVisibility::Active)?,
             Request::Add=>Response::Created{display:self.manager.add_display()?},
             Request::SetRestoreLayout{id,restore}=>{
                 self.manager.set_restore_layout(id,restore)?;
-                Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:Vec::new()}
+                snapshot(&self.manager, SlotVisibility::Hidden)?
             },
             Request::SetEnabled{id,enabled}=>{
                 let owned=self.manager.list()?.into_iter().find(|d|d.id==id).context("unknown display definition")?;
@@ -437,11 +439,11 @@ impl Host {
                 ensure!(enabled||!displays.references_source(&owned.source),"{}",uu_i18n::text("请先切换到另一显示器，再禁用当前虚拟屏"));
                 self.manager.set_enabled(id,enabled)?;
                 displays.refresh()?;
-                Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:Vec::new()}
+                snapshot(&self.manager, SlotVisibility::Hidden)?
             },
             Request::SetLimit{limit}=>{
                 self.manager.set_limit_persisted(limit)?;
-                Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:self.manager.slots()?.into_iter().filter(|s|s.active).collect()}
+                snapshot(&self.manager, SlotVisibility::Active)?
             }
             Request::Create { spec } | Request::CreatePersistent { spec } => {
                 let persistent=matches!(request,Request::CreatePersistent{..});
@@ -462,14 +464,14 @@ impl Host {
                 let owned=self.manager.list()?.into_iter().any(|d|d.id==id&&(d.owner==Owner::Session(self.owner)||d.owner==Owner::Manual));
                 ensure!(owned,"{}",uu_i18n::text("此虚拟屏属于其它连接或由源机手动创建"));
                 self.manager.set_persistent(id,persistent)?;
-                Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:self.manager.slots()?.into_iter().filter(|s|s.active).collect()}
+                snapshot(&self.manager, SlotVisibility::Active)?
             },
             Request::Configure{id,name,spec}=>{
                 let owned=self.manager.list()?.into_iter().any(|d|d.id==id&&(d.owner==Owner::Session(self.owner)||d.owner==Owner::Manual));
                 ensure!(owned,"{}",uu_i18n::text("此虚拟屏属于其它连接或由源机手动创建"));
                 self.manager.configure_display(id,name,spec)?;
                 displays.refresh()?;
-                Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:self.manager.slots()?.into_iter().filter(|s|s.active).collect()}
+                snapshot(&self.manager, SlotVisibility::Active)?
             },
             Request::Remove { id } => {
                 let owned = self.manager.list()?.into_iter().find(|display| {

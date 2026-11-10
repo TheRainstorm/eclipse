@@ -191,7 +191,7 @@ impl Manager {
         file.map(|file|file.read().map(|policy|policy.displays)).unwrap_or_else(||Ok(Vec::new()))
     }
     pub(super) fn allocated_count(&self,entries:&BTreeMap<LeaseId,Entry>)->Result<usize> {
-        Ok(entries.len()+self.saved_records()?.iter().filter(|saved|saved.enabled&&!entries.contains_key(&LeaseId(saved.id))).count())
+        Ok(Self::allocated_count_from_records(entries, &self.saved_records()?))
     }
     pub fn configure_saved_displays(&self, directory: impl AsRef<Path>) -> Result<()> {
         let entries = self.lock()?;

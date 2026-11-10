@@ -1,10 +1,10 @@
 //! Ownership of virtual targets activated by this host process.
 //!
 //! These operations block and belong on a worker, not the GUI/event-loop thread.
-//! Activation requires an unclaimed, connected but inactive target. A backend
-//! may provision capacity in its own exact-resource transaction before a fresh
-//! inventory; an existing active output is never adopted. Target claims remain
-//! live across temporary external deactivation and failed cleanup.
+//! Saved definitions are separate from devices: enabling an on-demand display
+//! creates its device, disabling removes it while retaining the definition.
+//! Legacy backends lease unclaimed inactive targets. Existing active outputs are
+//! never adopted. Claims survive external deactivation and failed cleanup.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -34,6 +34,8 @@ mod install_windows;
 mod ownership_windows;
 pub mod preparation;
 mod policy;
+mod inspection;
+pub use inspection::Inspection;
 #[cfg(any(windows,test))]
 mod placement;
 #[cfg(any(windows,test))]
@@ -666,107 +668,6 @@ impl Manager {
             }
         }
         self.backend.provision()
-    }
-
-    pub fn status(&self) -> Result<Status> {
-        let entries = self.lock()?;
-        let inventory = self.backend.inventory()?;
-        let mut available_slots = 0;
-        for target in &inventory.targets {
-            if target.available
-                && !target.active
-                && !entries.values().any(|entry| entry.target == target.key)
-                && !self.backend.is_claimed(&target.key)?
-            {
-                available_slots += 1;
-            }
-        }
-        let explanation = if self.backend.on_demand() {
-            uu_i18n::text("加号只添加配置；启用时连接到 Windows，禁用时移除设备并保留配置。临时屏在最后一个串流断开后自动禁用，最多保存 16 条配置。")
-        } else if !inventory.supported {
-            "Virtual displays are only supported on Windows."
-        } else if !inventory.driver_present {
-            "Creating a virtual display can prepare the pinned signed driver through an authorized management service. A foreground application without that service requires local administrator approval."
-        } else if inventory.targets.is_empty() {
-            "The driver has no unused connected target. Preparation reserves an inactive pool while the host is idle; existing streams and displays are preserved."
-        } else if available_slots == 0 {
-            "No unused virtual display slot is available. Additional capacity can be prepared when the host is idle. Active streams are never interrupted to reload a driver, and the initial reservation is not a session limit."
-        } else {
-            "Unused virtual display slots are available. Removing a lease disconnects only that target from the Windows desktop."
-        };
-        Ok(Status {
-            supported: inventory.supported,
-            driver_present: inventory.driver_present,
-            available_slots,
-            leased: entries.len(),
-            allocated:self.allocated_count(&entries)?,
-            keep_after_stream:self.keep_after_stream()?,
-            limit:self.limit.load(Ordering::Acquire),
-            supports_lifetimes:true,
-            supports_configuration:true,
-            supports_catalog:true,
-            on_demand:self.backend.on_demand(),
-            explanation: explanation.into(),
-            install_url: INSTALL_URL.into(),
-            preparation: if self.backend.preparation_observation()?.is_some() {
-                Some(
-                    self.preparation
-                        .inspect(&CapacityProvider {
-                            manager: self,
-                            leases: entries.len() as u32,
-                            initial: None,
-                            package: None,
-                        })
-                        .map_err(|failure| Error::Platform(failure.message))?,
-                )
-            } else {
-                None
-            },
-        })
-    }
-
-    pub fn list(&self) -> Result<Vec<Display>> {
-        let mut entries = self.lock()?;
-        let inventory = self.backend.inventory()?;
-        for entry in entries.values_mut() {
-            let target = inventory
-                .targets
-                .iter()
-                .find(|target| target.key == entry.target);
-            entry.display.active = target.is_some_and(|target| target.active);
-            entry.display.actual = target.and_then(|target| target.actual);
-            if let Some(target) = target {
-                entry.display.source.clone_from(&target.source);
-            }
-        }
-        let records=self.saved_records()?;
-        let mut result=Vec::new();
-        for saved in &records {
-            result.push(entries.get(&LeaseId(saved.id)).map(|e|e.display.clone()).unwrap_or_else(||saved.disconnected()));
-        }
-        result.extend(entries.values().filter(|e|!records.iter().any(|r|r.id==e.display.id.0)).map(|e|e.display.clone()));
-        Ok(result)
-    }
-
-    pub fn slots(&self) -> Result<Vec<Slot>> {
-        let entries = self.lock()?;
-        self.backend
-            .inventory()?
-            .targets
-            .into_iter()
-            .map(|target| {
-                let leased = entries.values().any(|entry| entry.target == target.key)
-                    || self.backend.is_claimed(&target.key)?;
-                Ok(Slot {
-                    id: target.key.slot_id(),
-                    name: target.name,
-                    source: target.source,
-                    active: target.active,
-                    leased,
-                    actual: target.actual,
-                })
-            })
-            .collect()
     }
 
     /// Explicit host-local preparation: the user selects this exact existing
