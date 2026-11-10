@@ -21,7 +21,7 @@ use webrtc::{
     },
     ice::{
         network_type::NetworkType,
-        udp_mux::{UDPMux, UDPMuxDefault, UDPMuxParams},
+        udp_mux::{UDPMux, UDPMuxDefault},
         udp_network::UDPNetwork,
     },
     ice_transport::ice_candidate_type::RTCIceCandidateType,
@@ -236,6 +236,8 @@ pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
 }
 
 pub(crate) struct NativePeer {
+    pub diagnostics: Arc<crate::native_diagnostics::Diagnostics>,
+    _diagnostic_monitor: crate::native_diagnostics::Monitor,
     pub tasks: Arc<crate::native_tasks::Tasks>,
     socket_trace:Option<Arc<crate::socket_trace::Observation>>,
     trace_receivers:Option<Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>>,
@@ -309,13 +311,14 @@ impl NativePeer {
             Some((gather_ip, Arc::new(Net::Ifs(vec![interface]))))
         } else { None };
         let gather_ip = enumeration.as_ref().map_or(local_ip, |(ip, _)| *ip);
+        let diagnostics=crate::native_diagnostics::Diagnostics::new(stats.as_ref(),sender);
         eprintln!("{}",serde_json::json!({"event":"native_dedicated_io_policy","requested":dedicated,"actual":dedicated,"sender":sender}));
         #[cfg(windows)]
         crate::native_qos::event(serde_json::json!({"action":"policy","requested":crate::native_qos::requested(sender),"sender":sender}));
         #[cfg(all(test,target_os="linux"))]
         let mut original_socket = None;
         let (mux,io,qos_socket,mux_worker)=if dedicated {
-            let (mux,io)=crate::native_io::Owner::start(local_ip,observation.clone()).await?;
+            let (mux,io)=crate::native_io::Owner::start_diagnosed(local_ip,observation.clone(),diagnostics.clone()).await?;
             (mux,Some(io),None::<Arc<UdpSocket>>,None)
         } else {
         let socket = crate::stream_ports::udp(local_ip)?;
@@ -326,23 +329,14 @@ impl NativePeer {
         #[cfg(windows)]
         let (params,qos_socket)=if crate::native_qos::requested(sender) {
             let socket=Arc::new(socket);
-            let params=match &observation {
-                Some(trace)=>UDPMuxParams::new(crate::socket_trace::Observed{socket:crate::native_qos::SharedSocket(socket.clone()),trace:trace.clone()}),
-                None=>UDPMuxParams::new(crate::native_qos::SharedSocket(socket.clone())),
-            };
+            let params=crate::native_diagnostics::udp_params(crate::native_qos::SharedSocket(socket.clone()),observation.clone(),diagnostics.clone());
             (params,Some(socket))
         } else {
-            let params=match &observation {
-                Some(trace)=>UDPMuxParams::new(crate::socket_trace::Observed{socket,trace:trace.clone()}),
-                None=>UDPMuxParams::new(socket),
-            };
+            let params=crate::native_diagnostics::udp_params(socket,observation.clone(),diagnostics.clone());
             (params,None)
         };
         #[cfg(not(windows))]
-        let params=match &observation {
-            Some(trace)=>UDPMuxParams::new(crate::socket_trace::Observed{socket,trace:trace.clone()}),
-            None=>UDPMuxParams::new(socket),
-        };
+        let params=crate::native_diagnostics::udp_params(socket,observation.clone(),diagnostics.clone());
         #[cfg(not(windows))]
         let qos_socket=None::<Arc<UdpSocket>>;
         { let (mux, worker) = UDPMuxDefault::new_with_worker(params); (mux,None,qos_socket,Some(worker)) }
@@ -359,7 +353,7 @@ impl NativePeer {
         settings.set_ip_filter(Box::new(move |ip| ip == gather_ip));
         settings.set_nat_1to1_ips(vec![advertised_ip.to_string()], RTCIceCandidateType::Host);
         settings.set_udp_network(UDPNetwork::Muxed(mux.clone()));
-        let mut peer=match Self::build_with_io(settings,mux,io,RTCConfiguration::default(),stats,sender).await {
+        let mut peer=match Self::build_with_io(settings,mux,io,RTCConfiguration::default(),stats,sender,diagnostics).await {
             Ok(peer) => peer,
             Err(error) => { retire_mux_worker(mux_worker).await; return Err(error); }
         };
@@ -376,8 +370,8 @@ impl NativePeer {
         Ok(peer)
     }
 
-    async fn build_with_io(settings:SettingEngine,mux:Arc<UDPMuxDefault>,io:Option<crate::native_io::Owner>,configuration:RTCConfiguration,stats:Option<Arc<MediaStats>>,sender:bool)->Result<Self> {
-        match Self::build(settings,Some(mux.clone()),configuration,stats,sender).await {
+    async fn build_with_io(settings:SettingEngine,mux:Arc<UDPMuxDefault>,io:Option<crate::native_io::Owner>,configuration:RTCConfiguration,stats:Option<Arc<MediaStats>>,sender:bool,diagnostics:Arc<crate::native_diagnostics::Diagnostics>)->Result<Self> {
+        match Self::build(settings,Some(mux.clone()),configuration,stats,sender,diagnostics).await {
             Ok(mut peer)=>{peer.io=io;Ok(peer)},
             Err(e)=>{let _=mux.close().await;if let Some(io)=io {io.stop().await.context("failed PC build I/O cleanup")?;}Err(e)}
         }
@@ -392,13 +386,14 @@ impl NativePeer {
         settings.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
         settings.set_network_types(vec![NetworkType::Udp4, NetworkType::Udp6]);
         settings.set_udp_network(UDPNetwork::Ephemeral(webrtc::ice::udp_network::EphemeralUDP::new(crate::stream_ports::FIRST, crate::stream_ports::LAST)?));
-        let mut peer=Self::build(settings, None, ice.configuration(), stats, sender).await?;
+        let diagnostics=crate::native_diagnostics::Diagnostics::new(stats.as_ref(),sender);
+        let mut peer=Self::build(settings, None, ice.configuration(), stats, sender,diagnostics).await?;
         peer.development_relay=ice.development_relay();
         Ok(peer)
     }
 
     async fn build(settings: SettingEngine, mux: Option<Arc<UDPMuxDefault>>, configuration: RTCConfiguration,
-        stats: Option<Arc<MediaStats>>, sender: bool) -> Result<Self> {
+        stats: Option<Arc<MediaStats>>, sender: bool,diagnostics:Arc<crate::native_diagnostics::Diagnostics>) -> Result<Self> {
         let mut media = MediaEngine::default();
         let codecs=match &stats {Some(stats) if !sender=>receive_codecs(stats).await,_=>vec![VideoCodec::H264,VideoCodec::Hevc,VideoCodec::Av1,VideoCodec::Pyrowave]};
         for codec in codecs {
@@ -465,11 +460,20 @@ impl NativePeer {
             }
         };
         let (tx, states) = watch::channel(RTCPeerConnectionState::New);
+        let peer_log=diagnostics.clone();
         pc.on_peer_connection_state_change(Box::new(move |state| {
+            peer_log.record(serde_json::json!({"event":"native_peer_state","state":state.to_string()}));
             let _ = tx.send(state);
             Box::pin(async {})
         }));
+        let ice_log=diagnostics.clone();
+        pc.on_ice_connection_state_change(Box::new(move |state| {
+            ice_log.record(serde_json::json!({"event":"native_ice_state","state":state.to_string()}));
+            Box::pin(async {})
+        }));
         Ok(Self {
+            _diagnostic_monitor:diagnostics.monitor(&pc),
+            diagnostics,
             tasks: Arc::default(),
             io:None,
             socket_trace:None,
@@ -640,10 +644,12 @@ impl NativePeer {
             .await
             .context("native local SDP unavailable")?;
         self.fec.description(&mut description);
+        if offer {self.diagnostics.offer(&description);}
         Ok(description)
     }
     pub async fn remote(&self, description: RTCSessionDescription, peer_ip: IpAddr) -> Result<()> {
         validate_candidates(&description.sdp, peer_ip)?;
+        if description.sdp_type==webrtc::peer_connection::sdp::sdp_type::RTCSdpType::Offer {self.diagnostics.offer(&description);}
         self.repairs.configure(&description.sdp);
         self.fec.remote(&self.pc, &description).await?;
         self.pc.set_remote_description(description).await?;
@@ -653,6 +659,7 @@ impl NativePeer {
     }
     pub async fn remote_direct(&self, description: RTCSessionDescription) -> Result<()> {
         crate::direct_ice::validate_sdp(&description.sdp,self.development_relay)?;
+        if description.sdp_type==webrtc::peer_connection::sdp::sdp_type::RTCSdpType::Offer {self.diagnostics.offer(&description);}
         self.repairs.configure(&description.sdp);
         self.fec.remote(&self.pc, &description).await?;
         self.pc.set_remote_description(description).await?;
@@ -722,6 +729,8 @@ impl NativePeer {
             "development_relay":self.development_relay,"local_type":local_type,"remote_type":remote_type,"transport":"udp"}))
     }
     pub async fn close(&self) {
+        self.diagnostics.final_sample(&self.pc);
+        self.diagnostics.closing();
         self.tasks.begin_close();
         #[cfg(windows)]
         {
@@ -743,6 +752,7 @@ impl NativePeer {
             self.tasks.finish().await;
             finish_trace(self.trace_receivers.clone(),self.socket_trace.clone()).await;
             self.closed.store(true, Ordering::Release);
+            self.diagnostics.record(serde_json::json!({"event":"native_transport_closed"}));
         }
         let wlan=self.wlan.lock().unwrap().take();
         if let Some(wlan)=wlan {let _=tokio::task::spawn_blocking(move||drop(wlan)).await;}
@@ -780,6 +790,11 @@ async fn finish_trace(receivers:Option<Arc<Mutex<Vec<tokio::task::JoinHandle<()>
 }
 impl Drop for NativePeer {
     fn drop(&mut self) {
+        if !self.closed.load(Ordering::Relaxed) {
+            self.diagnostics.exit("owner_dropped");
+            self.diagnostics.final_sample(&self.pc);
+            self.diagnostics.closing();
+        }
         self.tasks.begin_close();
         #[cfg(windows)]
         if let Some(qos)=self.qos.get_mut().unwrap().take(){
@@ -824,6 +839,7 @@ impl Drop for NativePeer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use webrtc::ice::udp_mux::UDPMuxParams;
     #[tokio::test(flavor="multi_thread",worker_threads=4)]
     async fn mux_concurrent_close_and_creation_retire_connections_and_release_the_socket() {
         use webrtc::ice::udp_mux::UDPMuxConn;
@@ -906,7 +922,7 @@ mod tests {
         let done=io.join_observer();
         let mut settings=SettingEngine::default();settings.set_udp_network(UDPNetwork::Muxed(mux.clone()));
         let config=RTCConfiguration{ice_servers:vec![webrtc::ice_transport::ice_server::RTCIceServer{urls:vec!["invalid://server".into()],..Default::default()}],..Default::default()};
-        assert!(NativePeer::build_with_io(settings,mux,Some(io),config,None,false).await.is_err());
+        assert!(NativePeer::build_with_io(settings,mux,Some(io),config,None,false,crate::native_diagnostics::Diagnostics::new(None,false)).await.is_err());
         assert!(done.borrow().as_ref().is_some_and(|v|v.error.is_none()));
     }
 

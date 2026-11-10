@@ -276,8 +276,9 @@ pub async fn view_direct(signaling: &mut dyn SessionSignaling, ice: &crate::dire
         let mut peer = NativePeer::new_direct(ice, Some(stats.clone()), false).await?;
         let result = tokio::select! {
             result=receive_session(&mut peer,signaling,frames,stats.clone(),input)=>result,
-            _=cancelled(&mut stop)=>Ok(ViewOutcome::Ended),
+            _=cancelled(&mut stop)=>{peer.diagnostics.exit("stop_requested");Ok(ViewOutcome::Ended)},
         };
+        peer.diagnostics.exit(match &result {Ok(ViewOutcome::Switch(_))=>"display_switch",Ok(_)=>"session_ended",Err(_)=>"session_error"});
         peer.close().await;
         match result {Ok(ViewOutcome::Switch(receiver))=>input=receiver,other=>break other.map(|_|())}
     };
@@ -417,6 +418,7 @@ fn elapsed_us(started: Instant) -> u64 {
 }
 
 struct CaptureWorker {
+    progress:Arc<crate::native_diagnostics::ProducerProgress>,
     trace: Arc<crate::frame_trace::HostTrace>,
     video_e2e: Arc<crate::video_e2e::Host>,
     quality:crate::native_quality::Runtime,
@@ -467,13 +469,16 @@ impl CaptureWorker {
         let (quality,changes)=crate::native_quality::Runtime::channel();
         let (quality_status,quality_state)=watch::channel(settings);
         let capture_control=quality.clone();
+        let progress=Arc::new(crate::native_diagnostics::ProducerProgress::default());
+        let worker_progress=progress.clone();
         let task = tokio::task::spawn_blocking(move || {
-            let result = encode_source(capture, settings, encoder, refresh, worker_stop, counter, worker_timings, live_timing,encoder_status,changes,quality_status, &tx,mode,capture_control);
+            let result = encode_source(capture, settings, encoder, refresh, worker_stop, counter, worker_timings, live_timing,encoder_status,changes,quality_status, &tx,mode,capture_control,worker_progress);
             if let Err(error) = result {
                 let _ = tx.blocking_send(Err(error));
             }
         });
         Self {
+            progress,
             trace,
             video_e2e,
             quality,quality_state,
@@ -523,7 +528,9 @@ fn encode_source(
     output: &mpsc::Sender<Result<TracedEncoded>>,
     mode:Option<bool>,
     capture_control:crate::native_quality::Runtime,
+    progress:Arc<crate::native_diagnostics::ProducerProgress>,
 ) -> Result<()> {
+    use crate::native_diagnostics::ProducerPhase;
     let overlap=match mode{Some(enabled)=>enabled,None=>crate::capture_overlap::requested_from_env()?};
     let mut capture=crate::capture_overlap::Input::new(capture,overlap,settings.fps,encoder.gpu_input(),encoder.gpu_vendor())?;
     capture_control.set_wake(capture.interrupt_handle());
@@ -533,6 +540,7 @@ fn encode_source(
     let mut next = Instant::now();
     encoder.request_keyframe();
     while !stopped.load(Ordering::Acquire) {
+        progress.set(ProducerPhase::Pacing);
         if !capture.owner_pacing() {
             std::thread::sleep(next.saturating_duration_since(Instant::now()));
         }
@@ -540,6 +548,7 @@ fn encode_source(
             break;
         }
         if let Ok(change)=changes.try_recv() {
+            progress.set(ProducerPhase::Reconfiguring);
             let result=(||->Result<u32> {
                 ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"{}", uu_i18n::format!("画质请求已取消"));
                 change.settings.validate()?;
@@ -576,6 +585,7 @@ fn encode_source(
             })().map_err(|error|error.to_string());
             let _=change.reply.send(result);
         }
+        progress.set(ProducerPhase::Capturing);
         capture.prefer_gpu(encoder.gpu_input(),encoder.gpu_vendor())?;
         let observed = match capture.next(live_timing.trace.enabled() || live_timing.video_e2e.enabled()) {
             Ok(frame) => frame,
@@ -603,6 +613,7 @@ fn encode_source(
         let started = Instant::now();
         let frame_token=live_timing.trace.captured(frame.pts.0,source_info,frame.gpu,capture_started,capture_ready,started);
         live_timing.video_e2e.captured(frame.pts.0,source_info);
+        progress.set(ProducerPhase::Encoding);
         let encoded_frames = encoder.encode(frame)?;
         if !observed.current(){capture.retired_output();refresh.store(true,Ordering::Release);continue;}
         let output_ready=Instant::now();
@@ -617,6 +628,7 @@ fn encode_source(
         let encode_us=output_ready.duration_since(started).as_micros().min(u128::from(u64::MAX)) as u64;
         timings.encode_us.fetch_add(encode_us, Ordering::Relaxed);
         let started = Instant::now();
+        progress.set(ProducerPhase::Enqueueing);
         for encoded in encoded_frames {
             let token=live_timing.trace.output(encoded.pts.0,encoded.is_keyframe,output_ready);
             let source_e2e=live_timing.video_e2e.output(encoded.pts.0);
@@ -632,8 +644,10 @@ fn encode_source(
     }
     Ok(())
     })();
+    progress.set(ProducerPhase::Stopping);
     let joined=capture.finish();
     capture_control.set_wake(None);
+    progress.set(ProducerPhase::Stopped);
     result.and(joined)
 }
 
@@ -680,6 +694,7 @@ async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling,
             let _=timeout(Duration::from_secs(1),signaling.send(serde_json::json!({"version":1,"preparation_error":reason}))).await;
         }
     }
+    peer.diagnostics.exit(if result.is_err() {"media_error"} else {"session_ended"});
     result
 }
 
@@ -919,6 +934,8 @@ async fn send_video(
         if let Err(error)=peer.direct_path().await {controls.stop().await;return Err(error);}
     }
     let mut producer = CaptureWorker::start(capture, encoder_settings, refresh, encoder,controls.timing());
+    peer.diagnostics.capture_counter(&producer.captured,&producer.progress);
+    peer.diagnostics.record(serde_json::json!({"event":"native_media_started","width":width,"height":height,"fps":config.fps,"codec":codec}));
     if dynamic {controls.set_quality(producer.quality.clone());}
     let mut encoder_label=producer.encoder.borrow().clone();
     let mut encoder_state=Some(producer.encoder.clone());
@@ -949,13 +966,13 @@ async fn send_video(
                         progress(&status,HostStatus::Streaming{width,height,fps:config.fps,audio:audio_label.clone(),encoder:encoder_label.clone()});
                     }
                 },
-                _ = cancelled(&mut stop) => break,
-                _ = &mut deadline => break,
+                _ = cancelled(&mut stop) => {peer.diagnostics.exit("stop_requested");break;},
+                _ = &mut deadline => {peer.diagnostics.exit("session_limit");break;},
                 // A source renewal sends its next Offer on this same signaling
                 // stream. Never race a disconnect read against that Offer.
-                _ = stream.disconnected(), if displays.is_none() => break,
-                _ = controls.closed.notified(), if displays.is_some() => break,
-                _ = async {match &displays {Some(d)=>d.changed.notified().await,None=>std::future::pending().await}} => break,
+                _ = stream.disconnected(), if displays.is_none() => {peer.diagnostics.exit("signaling_closed");break;},
+                _ = controls.closed.notified(), if displays.is_some() => {peer.diagnostics.exit("control_closed");break;},
+                _ = async {match &displays {Some(d)=>d.changed.notified().await,None=>std::future::pending().await}} => {peer.diagnostics.exit("display_switch");break;},
                 changed=async {match &mut encoder_state {Some(state)=>state.changed().await,None=>std::future::pending().await}}=>{
                     if changed.is_ok() {
                         encoder_label=encoder_state.as_mut().unwrap().borrow_and_update().clone();
@@ -972,7 +989,7 @@ async fn send_video(
                 frame=async {match &mut audio_frames {Some(frames)=>frames.recv().await,None=>std::future::pending().await}}=>{
                     if let Some(frame)=frame {
                         if frame.created.elapsed()>Duration::from_millis(100){report.audio_queue_drops+=1;continue;}
-                        if let Some(sender)=&mut audio_sender {match sender.send(frame).await {
+                        if let Some(sender)=&mut audio_sender {let _sending=peer.diagnostics.audio_send();match sender.send(frame).await {
                             Ok(bytes)=>{report.audio_packets+=1;report.audio_bytes+=bytes as u64;},
                             Err(error)=>{
                                 report.audio_errors+=1;audio_frames=None;audio_state=None;
@@ -985,21 +1002,25 @@ async fn send_video(
                 },
                 state = peer.states.changed() => {
                     if state.is_err() || matches!(*peer.states.borrow(), RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed) {
+                        peer.diagnostics.exit("peer_failed_or_closed");
                         bail!("native controller disconnected");
                     }
                 },
                 encoded = producer.frames.recv() => {
-                    let encoded = encoded.context("native capture stopped unexpectedly")??;
+                    let encoded = encoded.context("native capture stopped unexpectedly").and_then(|frame|frame)
+                        .inspect_err(|_|peer.diagnostics.exit("capture_or_encoder_failed"))?;
                     // A retired desktop/reference generation cannot leave the
                     // encoded queue, even if it paused while encoding was blocked.
                     if encoded.capture_lease.as_ref().is_some_and(|lease|!lease.valid()){producer.retired_outputs.fetch_add(1,Ordering::Relaxed);continue;}
                     producer.trace.mark(encoded.trace,crate::frame_trace::Event::Dequeue,Instant::now());
                     let bytes = encoded.data.len() as u64;
+                    let sending=peer.diagnostics.video_send();
                     if producer.trace.enabled() {
-                        let sent=track.frame_timed(&encoded).await?;
+                        let sent=track.frame_timed(&encoded).await.inspect_err(|_|peer.diagnostics.exit("video_send_failed"))?;
                         producer.trace.sent(encoded.trace,sent.timestamp,sent.first,sent.last,sent.last_qpc);
-                    }else{track.frame(&encoded).await?;}
+                    }else{track.frame(&encoded).await.inspect_err(|_|peer.diagnostics.exit("video_send_failed"))?;}
                     if let Some(timestamp)=track.last_timestamp(){producer.video_e2e.sent(encoded.source_e2e,track.ssrc(),timestamp);}
+                    sending.complete();
                     report.sent += 1; report.bytes += bytes;
                 }
             }
@@ -1062,8 +1083,9 @@ async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaS
         let mut peer=NativePeer::new_with_advertised(local_ip,advertised_ip,Some(stats.clone()),false).await?;
         let result=tokio::select! {
             result=receive_session(&mut peer,&mut signaling,frames,stats.clone(),input)=>result,
-            _=cancelled(&mut stop)=>Ok(ViewOutcome::Ended),
+            _=cancelled(&mut stop)=>{peer.diagnostics.exit("stop_requested");Ok(ViewOutcome::Ended)},
         };
+        peer.diagnostics.exit(match &result {Ok(ViewOutcome::Switch(_))=>"display_switch",Ok(_)=>"session_ended",Err(_)=>"session_error"});
         peer.close().await;
         match result {Ok(ViewOutcome::Switch(receiver))=>input=receiver,other=>break other.map(|_|())}
     };
@@ -1243,17 +1265,20 @@ async fn receive_session(
             _=stats.native_displays.changed.notified()=>{if let Some(request)=stats.native_displays.take_switch(){break Some(request);}},
             result=&mut control,if control_active=>{
                 control_active=false;
+                peer.diagnostics.record(serde_json::json!({"event":"native_control_task_ended","error":result.is_err()}));
                 if let Err(error)=result {tracing::warn!(%error,"native control unavailable; video continues");}
                 stats.capabilities.enable(crate::capabilities::Capability::Input,false);
                 stats.native_input_available.store(false,Ordering::Release);
                 let _=timeout(Duration::from_secs(1),channel.close()).await;
             },
             _=stream.disconnected()=>{
+                peer.diagnostics.exit("signaling_closed");
                 ensure!(stats.decoded_total.load(Ordering::Relaxed)>0,"native host ended before delivering video");
                 break None;
             },
             state=peer.states.changed()=>{
                 if state.is_err()||matches!(*peer.states.borrow(),RTCPeerConnectionState::Failed|RTCPeerConnectionState::Closed){
+                    peer.diagnostics.exit("peer_failed_or_closed");
                     bail!("native host disconnected");
                 }
             },

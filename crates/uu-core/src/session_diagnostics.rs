@@ -20,11 +20,17 @@ impl SessionDiagnostics {
         Some(rx)
     }
     pub fn start(&self, directories: impl IntoIterator<Item = PathBuf>) {
+        self.start_named(directories, "uu-session");
+    }
+    pub(crate) fn start_transport(&self, directories: impl IntoIterator<Item = PathBuf>) {
+        self.start_named(directories, "eclipse-transport");
+    }
+    fn start_named(&self, directories: impl IntoIterator<Item = PathBuf>, prefix: &str) {
         if self.0.get().is_some() {
             return;
         }
         let name = format!(
-            "uu-session-{}-{}-{}.jsonl",
+            "{prefix}-{}-{}-{}.jsonl",
             std::process::id(),
             crate::time::now_ms(),
             uuid::Uuid::new_v4()
@@ -88,6 +94,20 @@ mod tests {
         assert_eq!(events[0]["number"],0);
         assert_eq!(events[63]["number"],63);
         assert!(events.iter().all(|event|event["at_ms"].is_number()));
+    }
+    #[test]
+    fn transport_log_keeps_terminal_record_after_its_owner_exits() {
+        let root=std::env::temp_dir().join(format!("eclipse-transport-owned-{}",uuid::Uuid::new_v4()));
+        let log=SessionDiagnostics::default();log.start_transport([root.clone()]);
+        log.record(serde_json::json!({"event":"native_session_exit","cause":"generated_failure"}));drop(log);
+        let file=std::fs::read_dir(&root).unwrap().next().unwrap().unwrap().path();
+        assert!(file.file_name().unwrap().to_string_lossy().starts_with("eclipse-transport-"));
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(2);
+        loop {
+            if std::fs::read_to_string(&file).unwrap().contains("generated_failure") {break;}
+            assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn diagnostics_are_private_and_ignore_non_object_events_without_panicking() {

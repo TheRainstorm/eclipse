@@ -13,7 +13,7 @@ use tokio::{
     sync::{oneshot, watch},
 };
 use webrtc::{
-    ice::udp_mux::{UDPMux, UDPMuxDefault, UDPMuxParams},
+    ice::udp_mux::{UDPMux, UDPMuxDefault},
     util::Conn,
 };
 
@@ -58,11 +58,15 @@ pub(crate) struct Owner {
     done: watch::Receiver<Option<Exit>>,
 }
 impl Owner {
+    #[cfg(test)]
     pub async fn start(
         ip: IpAddr,
         observation: Option<Arc<crate::socket_trace::Observation>>,
     ) -> Result<(Arc<UDPMuxDefault>, Self)> {
-        let (owner, ready) = Self::begin(ip, observation, || {})?;
+        Self::start_diagnosed(ip,observation,crate::native_diagnostics::Diagnostics::new(None,false)).await
+    }
+    pub async fn start_diagnosed(ip:IpAddr,observation:Option<Arc<crate::socket_trace::Observation>>,diagnostics:Arc<crate::native_diagnostics::Diagnostics>) -> Result<(Arc<UDPMuxDefault>,Self)> {
+        let (owner, ready) = Self::begin(ip, observation, Some(diagnostics), || {})?;
         let mux = tokio::time::timeout(Duration::from_secs(3), ready)
             .await
             .context("dedicated IO startup timeout")?
@@ -73,6 +77,7 @@ impl Owner {
     fn begin(
         ip: IpAddr,
         observation: Option<Arc<crate::socket_trace::Observation>>,
+        diagnostics:Option<Arc<crate::native_diagnostics::Diagnostics>>,
         before_ready: impl FnOnce() + Send + 'static,
     ) -> Result<(
         Self,
@@ -94,10 +99,8 @@ impl Owner {
                         super::native_media::configure_udp_probing(&socket)?;
                         let local=socket.local_addr()?;
                         let socket=FirstRead{socket,instance:id.clone(),first:AtomicBool::new(true)};
-                        let params=match observation {
-                            Some(trace)=>UDPMuxParams::new(crate::socket_trace::Observed{socket,trace}),
-                            None=>UDPMuxParams::new(socket),
-                        };
+                        let diagnostics=diagnostics.unwrap_or_else(||crate::native_diagnostics::Diagnostics::new(None,false));
+                        let params=crate::native_diagnostics::udp_params(socket,observation,diagnostics);
                         let (mux,worker)=UDPMuxDefault::new_with_worker(params);
                         Ok::<_,anyhow::Error>((mux,worker,local))
                     }.await;
@@ -303,7 +306,7 @@ mod tests {
         for cancel in [false, true] {
             let (gate_tx, gate_rx) = std::sync::mpsc::channel();
             let (entered_tx, entered_rx) = oneshot::channel();
-            let (owner, ready) = Owner::begin("127.0.0.1".parse().unwrap(), None, move || {
+            let (owner, ready) = Owner::begin("127.0.0.1".parse().unwrap(), None, None, move || {
                 let _ = entered_tx.send(());
                 gate_rx.recv_timeout(Duration::from_secs(2)).unwrap();
             })
@@ -328,7 +331,7 @@ mod tests {
     }
     #[tokio::test]
     async fn startup_bind_failure_is_joined_as_failure() {
-        let (owner, ready) = Owner::begin("192.0.2.1".parse().unwrap(), None, || {}).unwrap();
+        let (owner, ready) = Owner::begin("192.0.2.1".parse().unwrap(), None, None, || {}).unwrap();
         assert!(ready.await.unwrap().is_err());
         assert!(owner.stop().await.is_err());
         assert!(owner.done.borrow().is_some());
