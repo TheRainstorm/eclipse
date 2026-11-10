@@ -1,5 +1,5 @@
 //! Management read model. A snapshot holds the manager's ownership lock and
-//! queries the backend once; reading never prepares or recovers a device.
+//! reads backend inventory once; reading never prepares or recovers a device.
 use super::*;
 use policy::SavedDisplay;
 

@@ -122,7 +122,7 @@ python3 tools/windows/package.py
 # Linux 构建环境中：python3 tools/linux/package.py
 ```
 
-[Windows 构建](docs/windows-build.md) · [Linux 构建](docs/linux-client.md) · [插件架构](docs/plugins.md) · [协议与传输](docs/protocol-compatibility-and-transport.md) · [源码参考索引](docs/reference-index.md)
+[架构与资源所有权](docs/architecture.md) · [Windows 构建](docs/windows-build.md) · [Linux 构建](docs/linux-client.md) · [插件架构](docs/plugins.md) · [协议与传输](docs/protocol-compatibility-and-transport.md) · [源码参考索引](docs/reference-index.md)
 
 感谢 [Moonlight](https://github.com/moonlight-stream/moonlight-qt)、[Sunshine](https://github.com/LizardByte/Sunshine)、[Foundation Sunshine](https://github.com/AlkaidLab/foundation-sunshine)、[uu-remote-linux](https://github.com/VallierDev/uu-remote-linux)，以及 Rust WebRTC、egui、OpenH264、Opus 等项目。参考机制与引用代码分别遵守来源许可。
 
