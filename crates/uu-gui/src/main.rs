@@ -7,8 +7,11 @@
 
 
 use eframe::egui;
-use uu_core::controller::{ControllerEvent, ControllerHandle};
+use uu_core::controller::ControllerEvent;
+#[cfg(test)]
+use uu_core::controller::ControllerHandle;
 
+mod connection;
 mod input;
 mod displays;
 mod display_layout;
@@ -119,7 +122,7 @@ mod tests {use super::*;
         let (_,frames)=uu_core::display_frames::channel();
         let (raw,_)=tokio::sync::mpsc::unbounded_channel();
         let (close,_)=tokio::sync::mpsc::unbounded_channel();
-        app.controller=Some(ControllerHandle{stopped:Arc::new(false.into()),events,frames,input:raw.clone(),native_input:Some(input),settings:raw,close,stats});
+        app.controller=crate::connection::Controller::new(ControllerHandle{stopped:Arc::new(false.into()),events,frames,input:raw.clone(),native_input:Some(input),settings:raw,close,stats});
         app.stream_target=Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::NativeDevice("generated-keyboard".into()),alias:"Generated".into(),view_only:false});
         app.input_capture.request();
         let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -144,7 +147,7 @@ mod tests {use super::*;
             assert!(runtime.block_on(async {tokio::time::timeout(std::time::Duration::from_millis(10),receiver.next_protocol()).await}).is_err());
         }
         // Avoid any attempt to disconnect a real controller on teardown.
-        app.controller=None;app.stream_target=None;
+        app.controller=Default::default();app.stream_target=None;
     }
     #[test]
     fn light_startup_keeps_touch_targets_and_saved_preference_can_override_it() {
@@ -195,7 +198,7 @@ struct App {
     context: window_context::Context,
     status: String,
     config: Option<uu_core::Config>,
-    controller: Option<ControllerHandle>,
+    controller: connection::Controller,
     textures: std::collections::HashMap<u32, video_texture::VideoTexture>,
     video_gl: Option<std::sync::Arc<eframe::glow::Context>>,
     presentation_vsync: bool,
@@ -259,8 +262,6 @@ struct App {
     tray_background:virtual_display_ui::BackgroundHost,
     tray_displays:tray_displays::State,
     launcher_hidden: bool,
-    disconnecting: bool,
-    output_reconnect_pending: bool,
     exit_requested: bool,
     window_edge_active: bool,
 }
@@ -490,7 +491,7 @@ impl App {
             preview_writer:Default::default(),recorded_connection:false,
             background:background::Background::new(config.as_ref().map(|c|c.at("appearance/wallpaper.jpg"))),
             config,
-            controller: None,
+            controller: Default::default(),
             textures: std::collections::HashMap::new(),
             video_gl: gl,
             presentation_vsync,
@@ -551,8 +552,6 @@ impl App {
             tray_background:Default::default(),
             tray_displays:Default::default(),
             launcher_hidden: false,
-            disconnecting: false,
-            output_reconnect_pending: false,
             exit_requested: false,
             window_edge_active: false,
         };
@@ -578,7 +577,7 @@ impl App {
     fn poll_controller(&mut self, ctx: &egui::Context) {
         #[cfg(windows)]
         for texture in self.textures.values(){texture.poll_decoder_leases(ctx,self.context.viewport());}
-        if self.disconnecting || self.exit_requested {
+        if self.controller.closing() || self.exit_requested {
             // A close request is terminal for this view. Late catalogs, frames
             // and progress must never re-enter display selection while its
             // transport is releasing resources.
@@ -586,7 +585,7 @@ impl App {
             return;
         }
         let native=self.uses_engine_controls();
-        let Some(h) = &mut self.controller else {
+        let Some(h) = self.controller.as_mut() else {
             return;
         };
         let mut apply_settings = false;
@@ -646,7 +645,7 @@ impl App {
             if let Some(texture)=self.textures.get_mut(&idx){texture.set_source_white(source_white);}
             self.unpresented.insert(idx);
         }
-        if let Some(h) = &self.controller {
+        if let Some(h) = self.controller.as_ref() {
             if let Some(applied)=h.stats.native_quality_applied.lock().unwrap().as_ref().filter(|a|a.request==self.settings_seq) {
                 self.settings_feedback=match &applied.error {Some(error)=>uu_i18n::format!("画质修改失败：{error}"),None=>uu_i18n::format!("远端已应用：{} FPS · {:.1} Mbps",applied.settings.fps,applied.bitrate_kbps as f64/1000.)};
             }
@@ -665,8 +664,8 @@ impl App {
         self.retire_stopped_controller(ctx);
     }
     fn retire_stopped_controller(&mut self,ctx:&egui::Context) {
-        if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
-            if let Some(h)=&self.controller {h.stats.audio.stop();h.stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);}
+        if self.controller.stopped() {
+            if let Some(h)=self.controller.as_ref() {h.stats.audio.stop();h.stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);}
             // The native window owns client-command key-ups; a retiring
             // connection must not clear the surviving tab's held commands.
             self.release_all_keys();self.release_pointer_capture(ctx);
@@ -674,8 +673,7 @@ impl App {
             // the stop request. Capturing another GPU frame here serializes
             // every closing display on the UI thread and makes bulk close hang.
             if self.should_capture_preview_on_stop() {self.save_last_remote_frame();}
-            self.controller = None;
-            self.disconnecting = false;
+            let after = self.controller.retire_stopped();
             self.input_capture.release();
             // Only the selected session owns this viewport's presenter.
             // A parked connection may retire while its sibling is drawing.
@@ -688,7 +686,7 @@ impl App {
             self.settings_feedback.clear();
             self.cursor=cursor::Cursor::default();self.remote_cursor_active=false;
             self.displays=if self.exit_requested {displays::Displays::default()} else {self.displays.for_retirement()};
-            if std::mem::take(&mut self.output_reconnect_pending) && !self.exit_requested {
+            if after == Some(connection::AfterClose::Reconnect) && !self.exit_requested {
                 self.connect();
             }
         }
@@ -708,7 +706,7 @@ impl App {
             .filter(|id| *id >= 0).map(|id| id as u32).unwrap_or(track + 1)
     }
     fn input_ready(&self) -> bool {
-        self.supports_remote(uu_core::capabilities::Capability::Input) && !self.disconnecting && self.displays.ready() && self.controller.as_ref().is_some_and(|h|
+        self.supports_remote(uu_core::capabilities::Capability::Input) && !self.controller.closing() && self.displays.ready() && self.controller.as_ref().is_some_and(|h|
             h.stats.control_open.load(std::sync::atomic::Ordering::Acquire) != 0)
     }
 
@@ -734,15 +732,15 @@ impl App {
     fn send_capture_settings_through(&mut self,immediate:bool) {
         self.resolve_frame_rate();
         if self.stream_target.is_some() {
-            if self.disconnecting {return;}
+            if self.controller.closing() {return;}
             let request=self.native_quality_request();
             let dynamic=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_response.lock().unwrap().as_ref().is_some_and(|r|r.dynamic));
             let reconnect=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_request.get().is_some_and(|old|if dynamic {old.bounds!=request.bounds||old.codec!=request.codec}else{old!=&request}));
             let reconnect=reconnect || self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_requested.get().is_some_and(|old|*old!=self.preferences.hdr));
             if reconnect {
-                self.output_reconnect_pending=true;self.stop_connection(false);self.status=uu_i18n::text("正在应用原生串流画质…").into();
+                self.stop_connection(false, connection::AfterClose::Reconnect);self.status=uu_i18n::text("正在应用原生串流画质…").into();
             }else if dynamic {
-                if let Some(h)=&self.controller {
+                if let Some(h)=self.controller.as_ref() {
                     let rate=*h.stats.native_rate_response.lock().unwrap();
                     if rate.is_none() && self.preferences.rate_control.is_some() {
                         self.settings_feedback=uu_i18n::text("此主机不支持客户端选择码率模式，请升级主机").into();return;
@@ -809,7 +807,7 @@ impl App {
             },
             shortcuts::Action::Capture=>{
                 self.input_capture.toggle();
-                if let Some(h)=&self.controller { h.stats.diagnostics.record(serde_json::json!({"event":"input_focus","active":self.input_capture.requested()})); }
+                if let Some(h)=self.controller.as_ref() { h.stats.diagnostics.record(serde_json::json!({"event":"input_focus","active":self.input_capture.requested()})); }
             },
         }
         self.update_keyboard_capture(ctx);
@@ -828,7 +826,7 @@ impl App {
         let conditions=self.input_conditions(ctx);
         let remote=self.input_capture.active(conditions);
         if self.uses_engine_controls() {
-            let requested=self.input_capture.wants_control(conditions)&&!self.disconnecting&&self.displays.ready();
+            let requested=self.input_capture.wants_control(conditions)&&!self.controller.closing()&&self.displays.ready();
             if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()) {
                 if sender.requested()!=requested {sender.set_enabled(requested);}
             }
@@ -836,13 +834,13 @@ impl App {
         if self.input_capture.stopped(conditions){self.release_all_keys();}
         // Client commands remain local while viewing, in menus, or after
         // releasing remote input. They do not depend on a host control grant.
-        let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused) && !shortcuts_ui::recording(ctx) && !(self.hud && self.hud_cache.keyboard_owned());
+        let shortcuts=self.stream_target.is_some() && !self.controller.closing() && ctx.input(|i|i.focused) && !shortcuts_ui::recording(ctx) && !(self.hud && self.hud_cache.keyboard_owned());
         self.shortcuts.borrow_mut().configure(&self.preferences.hotkeys,ctx.input(|i|i.modifiers));
         self.shortcuts.borrow_mut().fullscreen=self.fullscreen;
         let window=self.platform.window_keyboard(remote,shortcuts,self.nested_passthrough,self.fullscreen,&self.preferences.hotkeys);
         let active=self.platform.capture_keyboard(self.input_capture.system(conditions,self.fullscreen,self.preferences.capture_keyboard));
         if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {
-            if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
+            if let Some(h)=self.controller.as_ref() {h.stats.diagnostics.record(serde_json::json!({
                 "event":"input_capture", "requested":self.input_capture.requested(),
                 "ready":conditions.ready, "focused":conditions.focused,
                 "view_only":conditions.view_only, "local_ui":conditions.local_ui,
@@ -956,11 +954,11 @@ impl App {
         let ready = self.input_ready()
             || (native && self.supports_remote(uu_core::capabilities::Capability::Clipboard)
                 && self.controller.as_ref().is_some_and(|h| h.stats.decoded_total.load(Acquire) > 0));
-        if let Some(h) = &self.controller {
+        if let Some(h) = self.controller.as_ref() {
             let clipboard = &h.stats.clipboard;
             let enabled = self.preferences.native_clipboard
                 && clipboard.available.load(Acquire);
-            let active = self.active_session && ready && ctx.input(|i| i.focused) && !self.disconnecting;
+            let active = self.active_session && ready && ctx.input(|i| i.focused) && !self.controller.closing();
             // Invalidate incoming data before reactivation, even if a complete
             // focus round trip happened between the transport's polling ticks.
             if native && (clipboard.enabled.load(Acquire) != enabled
@@ -1037,7 +1035,7 @@ impl App {
         if change==input_capture::KeyChange::None{return;}
         let caller=std::panic::Location::caller();
         if change!=input_capture::KeyChange::Repeat && matches!(vk,0x10..=0x12|0x5b|0x5c|0xa0..=0xa5) {
-            if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
+            if let Some(h)=self.controller.as_ref() {h.stats.diagnostics.record(serde_json::json!({
                 "event":"keyboard_transition","vk":vk,"pressed":pressed,"kseq":self.kseq,
                 "keyboard":self.platform.keyboard_diagnostics(),
                 "source":std::path::Path::new(caller.file()).file_name().and_then(|name|name.to_str()),
@@ -1071,7 +1069,7 @@ impl App {
     /// A transport/routing reset releases held input without cancelling the
     /// user's request. Focus, UI ownership and host authorization still gate it.
     fn recover_input(&mut self, reason:&str) {
-        if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
+        if let Some(h)=self.controller.as_ref() {h.stats.diagnostics.record(serde_json::json!({
             "event":"input_reset", "reason":reason, "requested":self.input_capture.requested()
         }));}
         self.release_all_keys();
@@ -1085,7 +1083,7 @@ impl App {
     fn deactivate_session(&mut self) {
         self.pause_video_observation();
         self.active_session=false;
-        if let Some(handle)=&self.controller {handle.frames.set_waker(||{});}
+        if let Some(handle)=self.controller.as_ref() {handle.frames.set_waker(||{});}
         self.release_session_input();
     }
     fn pause_video_observation(&self){
@@ -1100,7 +1098,7 @@ impl App {
         // session switch until its physical key-up reaches the new active tab.
         self.focused=false;
         self.platform.window_keyboard(false,false,false,false,&self.preferences.hotkeys);self.platform.capture_keyboard(false);
-        if let Some(handle)=&self.controller {
+        if let Some(handle)=self.controller.as_ref() {
             if let Some(input)=&handle.native_input{input.set_enabled(false);}
             use std::sync::atomic::Ordering::{AcqRel,Release};
             let clipboard=&handle.stats.clipboard;
@@ -1133,13 +1131,15 @@ impl App {
     fn should_capture_preview_on_stop(&self)->bool {!self.exit_requested}
     fn disconnect_with_preview(&mut self, save_preview: bool) {
         self.connect_deferred = false;
-        self.output_reconnect_pending = false;
         if self.stream_target.is_some() { self.exit_requested = true; }
-        self.stop_connection(save_preview);
+        self.stop_connection(save_preview, connection::AfterClose::Disconnected);
     }
 
-    fn stop_connection(&mut self, save_preview: bool) {
-        if self.disconnecting { return; }
+    fn stop_connection(&mut self, save_preview: bool, after: connection::AfterClose) {
+        if self.controller.closing() {
+            self.controller.request_close(after);
+            return;
+        }
         self.virtual_display.reset_remote();
         if save_preview { self.save_last_remote_frame(); }
         self.release_pointer_capture(&self.context.clone());
@@ -1151,10 +1151,7 @@ impl App {
             self.send_input(message, 15);
         }
         self.input_capture.release();
-        if let Some(h) = &self.controller {
-            let _ = h.close.send(());
-            self.disconnecting = true;
-        }
+        self.controller.request_close(after);
         // Closing views stop presenting immediately, but retain GPU leases
         // until retirement. Dropping each display here serializes driver
         // teardown before the event loop can hide a fully closed window.
@@ -1162,7 +1159,7 @@ impl App {
         self.hud_cache=Default::default();
         self.frame_count.clear();
         self.fps.clear();
-        self.status = if self.disconnecting { uu_i18n::text("正在释放连接…") } else { uu_i18n::text("已断开") }.into();
+        self.status = if self.controller.closing() { uu_i18n::text("正在释放连接…") } else { uu_i18n::text("已断开") }.into();
     }
 
 
@@ -1220,7 +1217,7 @@ impl App {
         if self.audio_save_after.take().is_some(){self.persist_preferences();}
         self.disconnect();
         if wait_for_controller {
-            if let Some(h) = &self.controller {
+            if let Some(h) = self.controller.as_ref() {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
                 while !h.stopped.load(std::sync::atomic::Ordering::Acquire)
                     && std::time::Instant::now() < deadline
@@ -1372,7 +1369,7 @@ impl App {
         if ctx.input(|i|i.events.iter().any(|event|matches!(event,egui::Event::WindowFocused(false)))){self.pause_video_observation();}
         self.poll_controller(ctx);
         self.poll_virtual_displays(ctx);
-        let observed=self.stream_target.is_some()&&!self.stream_settings_open&&self.active_session&&ctx.input(|i|i.focused&&!i.viewport().minimized.unwrap_or(false))&&!self.disconnecting&&!self.displays.waiting_binding();
+        let observed=self.stream_target.is_some()&&!self.stream_settings_open&&self.active_session&&ctx.input(|i|i.focused&&!i.viewport().minimized.unwrap_or(false))&&!self.controller.closing()&&!self.displays.waiting_binding();
         let expected=self.controller.as_ref().map_or(self.target_fps,|h|{
             let fps=h.stats.configured_fps.load(std::sync::atomic::Ordering::Relaxed);
             let fps=if fps>0{fps}else{self.target_fps};
@@ -1385,7 +1382,7 @@ impl App {
             let gpu_video=self.textures.get(&self.selected_track).is_some_and(|t|t.native_gpu_source());
             if self.uses_engine_controls()&&gpu_video&&std::env::var("UU_D3D11_NATIVE_VIDEO").as_deref()!=Ok("0") {
                 if let Some(gl)=self.video_gl.clone(){if !eframe::glow_presentation::native_video_available(ctx,ctx.viewport_id()){if let Err(e)=video_hdr::enable_native(ctx,gl,self.preferences.vsync){
-                    if let Some(controller)=&self.controller {
+                    if let Some(controller)=self.controller.as_ref() {
                         video_texture::record_presenter_failure(ctx,&controller.stats,&e);
                     }
                     eprintln!("native video presentation unavailable: {e}");
@@ -1400,7 +1397,7 @@ impl App {
         let video_px = self.textures.get(&self.selected_track)
             .map(|texture| texture.size_vec2());
         let native_geometry=window::native_geometry(ctx);
-        if let Some(h)=&self.controller {
+        if let Some(h)=self.controller.as_ref() {
             let snapshot=window::Snapshot::new(ctx,native_geometry);
             if self.window_snapshot!=Some(snapshot) {
                 h.stats.diagnostics.record(snapshot.report(ctx));
@@ -1417,7 +1414,7 @@ impl App {
         self.autostart_shared_host(ctx);
         let (events, focused) = ctx.input(|i| (i.events.clone(), i.focused));
         if self.focused != focused {
-            if let Some(h) = &self.controller {
+            if let Some(h) = self.controller.as_ref() {
                 h.stats.diagnostics.record(serde_json::json!({
                     "event":"window_focus", "focused":focused, "fullscreen":self.fullscreen,
                     "keyboard":self.platform.keyboard_diagnostics()
@@ -1452,7 +1449,7 @@ impl App {
         }
         if self.last_diagnostic.elapsed() >= std::time::Duration::from_secs(5) {
             self.last_diagnostic = std::time::Instant::now();
-            if let Some(h) = &self.controller {
+            if let Some(h) = self.controller.as_ref() {
                 use std::sync::atomic::Ordering::Relaxed;
                 let s = &h.stats;
                 let mut report = serde_json::json!({"event":"video_stats",
@@ -1582,7 +1579,7 @@ impl App {
         self.update_clipboard(ctx);
         self.platform.show(ctx);
         for event in self.platform.focus_events() {
-            if let Some(h) = &self.controller { h.stats.diagnostics.record(event); }
+            if let Some(h) = self.controller.as_ref() { h.stats.diagnostics.record(event); }
         }
         let idle_poll_ms = if self.controller.is_some() || self.exit_requested { 100 } else { 750 };
         // Frame and input events wake the UI directly. Extra vblank-paced

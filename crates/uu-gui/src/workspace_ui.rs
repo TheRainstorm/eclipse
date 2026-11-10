@@ -2451,7 +2451,7 @@ impl super::App {
         self.workspace_actions(actions, ctx);
     }
     pub(super) fn device_pairing_ui(&mut self,ctx:&egui::Context) {
-        let Some(controller)=&self.controller else {self.workspace.pairing_visible=false;return;};
+        let Some(controller)=self.controller.as_ref() else {self.workspace.pairing_visible=false;return;};
         let display=&controller.stats.pairing;
         self.workspace.pairing_visible=display.prompt().is_some()||display.code().is_some();
         if self.pairing_ui.show(ctx,display){self.disconnect();}

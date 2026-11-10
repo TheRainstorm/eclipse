@@ -939,7 +939,7 @@ impl super::App {
                                         else if menu_toggle(ui,uu_i18n::text("同步文本剪贴板"),self.preferences.clipboard,"").on_hover_text(uu_i18n::text("兼容连接仅支持最多30KiB文本；双方均需允许。")).clicked(){self.preferences.clipboard=!self.preferences.clipboard;self.persist_preferences();}
                                         if self.uses_engine_controls(){ui.response().on_hover_text(uu_i18n::text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许，不传输文件。"));}
                                         else{ui.response().on_hover_text(uu_i18n::text("兼容连接仅支持最多30KiB的文本同步。"));}
-                                        if let Some(h)=&self.controller {
+                                        if let Some(h)=self.controller.as_ref() {
                                             let notice=h.stats.clipboard.status.lock().unwrap().clone();
                                             if !notice.is_empty(){ui.add(egui::Label::new(notice).wrap());}
                                         }
@@ -1100,7 +1100,7 @@ mod tests {
                 app.preferences.codec=super::super::settings::CodecPreference::Auto;app.preferences.hdr=true;app.target_fps=165;
                 let stats=Arc::new(uu_core::media::MediaStats::default());*stats.codec.lock().unwrap()="video/AV1".into();
                 stats.audio.volume.store(72,Ordering::Relaxed);*stats.audio.status.lock().unwrap()="Opus".into();
-                app.controller=Some(uu_core::controller::ControllerHandle {stopped:Arc::new(AtomicBool::new(true)),events:std::sync::mpsc::channel().1,
+                app.controller=crate::connection::Controller::new(uu_core::controller::ControllerHandle {stopped:Arc::new(AtomicBool::new(true)),events:std::sync::mpsc::channel().1,
                     frames:uu_core::media::frame_channel().1,input:tokio::sync::mpsc::unbounded_channel().0,native_input:None,
                     settings:tokio::sync::mpsc::unbounded_channel().0,close:tokio::sync::mpsc::unbounded_channel().0,stats});
             }

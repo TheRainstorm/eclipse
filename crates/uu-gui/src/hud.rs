@@ -29,7 +29,7 @@ impl Cache {
 }
 impl super::App {
     pub(super) fn sample_hud(&mut self) {
-        let Some(controller)=&self.controller else{return;};
+        let Some(controller)=self.controller.as_ref() else{return;};
         let s=&controller.stats;
         let (w,h)=self.textures.get(&self.selected_track).map(|t|(t.size()[0] as u32,t.size()[1] as u32)).unwrap_or_else(||s.res());
         if self.hud_cache.updated.is_none_or(|t|t.elapsed().as_millis()>=500) {

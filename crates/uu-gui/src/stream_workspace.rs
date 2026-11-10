@@ -208,7 +208,7 @@ struct Session {
 }
 fn active_budget_candidate(session:&Session)->Option<BudgetCandidate> {
     let app=&session.app;
-    if app.exit_requested||app.disconnecting {return None;}
+    if app.exit_requested||app.controller.closing() {return None;}
     let target=app.stream_target.as_ref()?;
     if !target.is_native(){return None;}
     let handle=app.controller.as_ref()?;
@@ -231,7 +231,7 @@ fn active_budget_candidate(session:&Session)->Option<BudgetCandidate> {
 }
 fn deferred_budget_candidate(session:&Session,sources:&[SourceRecord])->Option<BudgetCandidate> {
     let app=&session.app;
-    if app.exit_requested||app.disconnecting||app.controller.is_some()||!app.connect_deferred {return None;}
+    if app.exit_requested||app.controller.closing()||app.controller.is_some()||!app.connect_deferred {return None;}
     let target=app.stream_target.as_ref()?;
     if !target.is_native(){return None;}
     let device=base_key(target);
@@ -442,9 +442,9 @@ impl Window {
         for view in &self.views {
             let identity=base_key(&view.launch.target);
             let session=self.sessions.iter().find(|s|s.id==view.id&&!s.app.exit_requested);
-            let can_create=session.is_some_and(|s|!s.app.disconnecting&&s.app.controller.as_ref().is_some_and(|h|
+            let can_create=session.is_some_and(|s|!s.app.controller.closing()&&s.app.controller.as_ref().is_some_and(|h|
                 h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)&&h.stats.native_displays.initial_supported()));
-            let can_open=session.is_some_and(|s|!s.app.disconnecting&&s.app.controller.as_ref().is_some_and(|h|
+            let can_open=session.is_some_and(|s|!s.app.controller.closing()&&s.app.controller.as_ref().is_some_and(|h|
                 h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)));
             let at=groups.iter().position(|(key,_)|*key==identity).unwrap_or_else(|| {
                 let last_session=recent.get(&identity).map_or(view.id,|v|v.0);
@@ -509,7 +509,7 @@ impl Window {
         for session in &mut self.sessions {
             session.app.active_session = session.id == id;
             if session.app.active_session {
-                if let Some(handle) = &session.app.controller {
+                if let Some(handle) = session.app.controller.as_ref() {
                     let context = session.app.context.clone();
                     handle.frames.set_waker(move || context.request_video_frame());
                 }
@@ -527,7 +527,7 @@ impl Window {
         }
         for (key,group) in groups.iter() {
             let eligible=|s:&&Session|s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==*key)
-                && !s.app.exit_requested && !s.app.disconnecting
+                && !s.app.exit_requested && !s.app.controller.closing()
                 && s.app.controller.as_ref().is_some_and(|h|!h.stopped.load(Acquire)&&h.stats.capabilities.allows(uu_core::capabilities::Capability::Audio));
             // Keep a working audio source when switching video tabs. Only
             // replace it after disconnect, failure or a permission change.
@@ -540,11 +540,11 @@ impl Window {
             // Stop the previous source before enabling its replacement, even
             // when the replacement appears earlier in the tab order.
             for view in self.sessions.iter().filter(|s|Some(s.id)!=group.owner.get()&&s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==*key)) {
-                if let Some(handle)=&view.app.controller {handle.stats.audio.parked.store(true,Release);}
+                if let Some(handle)=view.app.controller.as_ref() {handle.stats.audio.parked.store(true,Release);}
             }
             for view in self.sessions.iter_mut().filter(|s|s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==*key)) {
                 view.app.audio_parked=Some(view.id)!=group.owner.get();
-                if let Some(handle)=&view.app.controller {
+                if let Some(handle)=view.app.controller.as_ref() {
                     handle.stats.audio.parked.store(view.app.audio_parked,Release);
                     handle.stats.audio.muted.store(playback.muted,Relaxed);
                     handle.stats.audio.volume.store(playback.volume,Relaxed);
@@ -557,7 +557,7 @@ impl Window {
         for session in &mut self.sessions {
             session.app.active_session=session.id==self.active&&!session.app.exit_requested;
             if session.app.active_session {
-                if let Some(handle)=&session.app.controller {
+                if let Some(handle)=session.app.controller.as_ref() {
                     let context=session.app.context.clone();
                     handle.frames.set_waker(move||context.request_video_frame());
                 }
@@ -570,7 +570,7 @@ impl Window {
         let index=self.sessions.iter().position(|session|session.id==id).expect("live session");
         let mut session=self.sessions.remove(index);
         session.app.audio_parked=true;
-        if let Some(handle)=&session.app.controller {handle.stats.audio.parked.store(true,std::sync::atomic::Ordering::Release);}
+        if let Some(handle)=session.app.controller.as_ref() {handle.stats.audio.parked.store(true,std::sync::atomic::Ordering::Release);}
         session.app.deactivate_session();
         session.app.context.suspend();
         self.select_remaining();
@@ -655,7 +655,7 @@ impl Window {
                     session.app.platform.window_id(),
                     std::sync::atomic::Ordering::Release,
                 );
-                if let Some(handle) = &session.app.controller {
+                if let Some(handle) = session.app.controller.as_ref() {
                     let context = session.app.context.clone();
                     handle.frames.set_waker(move || context.request_video_frame());
                 }
@@ -962,7 +962,7 @@ impl State {
     }
     fn fork_virtual_display(&mut self,session:u64,spec:Option<uu_core::virtual_display::Spec>,persistent:bool) {
         let Some(index)=self.windows.iter().position(|w|!w.closing&&w.views.iter().any(|v|v.id==session)) else{return;};
-        let Some(source)=self.windows[index].sessions.iter_mut().find(|s|s.id==session&&!s.app.exit_requested&&!s.app.disconnecting) else{return;};
+        let Some(source)=self.windows[index].sessions.iter_mut().find(|s|s.id==session&&!s.app.exit_requested&&!s.app.controller.closing()) else{return;};
         if !source.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)) {
             source.app.displays.notice=uu_i18n::text("远端未提供虚拟显示器管理，请更新后台并授予管理服务权限").into();return;
         }

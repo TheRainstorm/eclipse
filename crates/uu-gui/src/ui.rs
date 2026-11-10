@@ -245,7 +245,7 @@ impl App {
                     } else if let Some(id)=self.displays.selected {
                         if ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(156.0,34.0)),super::theme::secondary_button(uu_i18n::text("重试当前显示器"))).clicked(){self.select_remote_screen(id);}
                     }
-                    if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),super::theme::secondary_button(uu_i18n::text("取消连接"))).clicked(){self.disconnect();}
+                    if !self.controller.closing() && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),super::theme::secondary_button(uu_i18n::text("取消连接"))).clicked(){self.disconnect();}
                 } else {
                     if ui.add_enabled_ui(self.controller.is_none(),|ui|ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),super::theme::primary_button(uu_i18n::text("重新连接")))).inner.clicked(){self.connect();}
                     if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),super::theme::secondary_button(uu_i18n::text("断开此会话"))).clicked(){

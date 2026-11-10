@@ -11,9 +11,9 @@ impl State {
         let mut catalogs=Vec::new();
         let mut virtual_catalogs=Vec::new();
         for window in &mut self.windows {
-            for session in window.sessions.iter_mut().filter(|s|!s.app.exit_requested&&!s.app.disconnecting) {
+            for session in window.sessions.iter_mut().filter(|s|!s.app.exit_requested&&!s.app.controller.closing()) {
                 let Some(view)=window.views.iter_mut().find(|v|v.id==session.id) else{continue;};
-                let Some(handle)=&session.app.controller else{continue;};
+                let Some(handle)=session.app.controller.as_ref() else{continue;};
                 if handle.stats.virtual_displays.available.load(Ordering::Acquire) {
                     let inquiry=self.inquiries.entry(session.id).or_insert((Instant::now(),None));
                     if let Some(id)=inquiry.1 {
@@ -75,7 +75,7 @@ impl State {
         let creating:std::collections::HashSet<_>=self.windows.iter().flat_map(|window| {
             window.views.iter().filter(|view|view.source.is_none()&&view.launch.target.connection.virtual_display().is_some()
                 && (window.pending.iter().any(|launch|launch.target.key()==view.launch.target.key())
-                    ||window.sessions.iter().any(|session|session.id==view.id&&!session.app.exit_requested&&!session.app.disconnecting
+                    ||window.sessions.iter().any(|session|session.id==view.id&&!session.app.exit_requested&&!session.app.controller.closing()
                         &&(session.app.connect_deferred||session.app.controller.as_ref().is_some_and(|handle|!handle.stopped.load(Ordering::Acquire))))))
                 .map(|view|base_key(&view.launch.target))
         }).collect();
@@ -86,7 +86,7 @@ impl State {
         let anchors:Vec<_>=self.windows.iter().flat_map(|window|window.sessions.iter().filter_map(|session|{
             let target=session.app.stream_target.clone()?;
             let handle=session.app.controller.as_ref()?;
-            if session.app.exit_requested||session.app.disconnecting||!target.is_native()||target.connection.is_auxiliary_view()
+            if session.app.exit_requested||session.app.controller.closing()||!target.is_native()||target.connection.is_auxiliary_view()
                 ||!handle.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)
                 ||session.app.remote_screens().screens.is_empty() {return None;}
             Some((window.id,session.id,target))

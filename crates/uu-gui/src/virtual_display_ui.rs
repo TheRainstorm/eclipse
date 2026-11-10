@@ -1689,7 +1689,7 @@ pub(super) fn local_request(request: LocalRequest, owner: LocalOwner) -> anyhow:
 
 impl crate::App {
     pub(super) fn remove_remote_virtual_display(&mut self,id:uu_core::virtual_display::LeaseId) {
-        if let Some(handle)=&self.controller {
+        if let Some(handle)=self.controller.as_ref() {
             self.virtual_display.open=true;
             self.virtual_display.remote(&handle.stats.virtual_displays,Request::Remove{id});
         }
@@ -1697,7 +1697,7 @@ impl crate::App {
     pub(super) fn manage_remote_virtual_displays(&mut self) {
         self.release_all_keys();
         self.stream_menu.open = false;
-        if let Some(handle) = &self.controller {
+        if let Some(handle) = self.controller.as_ref() {
             self.virtual_display
                 .open_remote(&handle.stats.virtual_displays);
         }
@@ -1750,7 +1750,7 @@ impl crate::App {
         }
     }
     pub(super) fn poll_virtual_display_state(&mut self) {
-        if self.disconnecting || self.exit_requested {
+        if self.controller.closing() || self.exit_requested {
             return;
         }
         self.virtual_display.fixed_source =

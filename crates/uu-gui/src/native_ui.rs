@@ -80,7 +80,7 @@ impl App {
         let context=self.context.clone();handle.frames.enable_planar();handle.frames.set_waker(move||context.request_video_frame());
         if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(error.to_string());}
         handle.stats.audio.parked.store(self.audio_parked,std::sync::atomic::Ordering::Release);
-        self.controller=Some(handle);
+        self.controller=crate::connection::Controller::new(handle);
         if self.workspace_tabs.is_some() {self.window_sizing.borrow_mut().begin_view();}
         else {self.window_sizing.borrow_mut().begin_stream();}
         self.input_capture.request();
@@ -109,7 +109,7 @@ impl App {
         if (!self.input_ready()||self.view_only)&&!release{return;}
         let failed=self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|sender|sender.send(command).is_err());
         if failed {
-            if let Some(h)=&self.controller{h.stats.input_send_errors.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
+            if let Some(h)=self.controller.as_ref(){h.stats.input_send_errors.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
             self.recover_input("native_queue_reset");
         }
     }

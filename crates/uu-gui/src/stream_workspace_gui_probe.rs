@@ -185,7 +185,7 @@ mod native {
                 let state = state.as_ref().unwrap();
                 // This is receive-only fixture policy, never a workspace action.
                 for s in state.windows.iter().flat_map(|w| &w.sessions) {
-                    if let Some(handle) = &s.app.controller {
+                    if let Some(handle) = s.app.controller.as_ref() {
                         handle
                             .stats
                             .audio

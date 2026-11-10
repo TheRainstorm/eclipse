@@ -144,7 +144,7 @@ fn catalog_state(screens:Vec<uu_core::screen_control::RemoteScreen>,current:i32)
     let frames=uu_core::media::frame_channel().1;
     let (raw,_)=tokio::sync::mpsc::unbounded_channel();
     let (close,_)=tokio::sync::mpsc::unbounded_channel();
-    app.controller=Some(uu_core::controller::ControllerHandle{stopped:Arc::new(false.into()),events,frames,input:raw.clone(),native_input:Some(input),settings:raw,close,stats:stats.clone()});
+    app.controller=crate::connection::Controller::new(uu_core::controller::ControllerHandle{stopped:Arc::new(false.into()),events,frames,input:raw.clone(),native_input:Some(input),settings:raw,close,stats:stats.clone()});
     app.displays.selected=Some(current);
     let launch=Launch::new(target,None).unwrap();
     let mut state=owned_state();
@@ -274,7 +274,7 @@ fn failed_virtual_tab_disconnect_button_preserves_the_other_stream_and_window() 
     assert_eq!(state.windows[0].views.iter().map(|view|view.id).collect::<Vec<_>>(),[live]);
     assert!(!state.windows[0].closing);
     let live_session=state.windows[0].sessions.iter().find(|session|session.id==live).unwrap();
-    assert!(!live_session.app.exit_requested && !live_session.app.disconnecting);
+    assert!(!live_session.app.exit_requested && !live_session.app.controller.closing());
     assert!(Arc::ptr_eq(&stats,&live_session.app.controller.as_ref().unwrap().stats));
 }
 #[test]
@@ -295,7 +295,7 @@ fn group_shortcut_menu_and_window_close_hide_before_cleanup_and_reject_late_fram
             let stopped=Arc::new(std::sync::atomic::AtomicBool::new(false));
             let (close,receive)=tokio::sync::mpsc::unbounded_channel();
             let (raw,_)=tokio::sync::mpsc::unbounded_channel();
-            session.app.controller=Some(uu_core::controller::ControllerHandle {
+            session.app.controller=crate::connection::Controller::new(uu_core::controller::ControllerHandle {
                 stopped:stopped.clone(),events:std::sync::mpsc::channel().1,frames:rx,
                 input:raw.clone(),native_input:None,settings:raw,close,stats:Arc::new(Default::default()),
             });
@@ -449,7 +449,7 @@ fn initial_quality_and_runtime_monitor_changes_keep_the_requested_rate_when_capp
     assert_eq!(app.native_quality_request().bounds,Some([2560,1440]));
     app.preferences.limit_fps_to_local=false;app.resolve_frame_rate();assert_eq!(app.target_fps,165);
     app.preferences.follow_local_fps=true;app.resolve_frame_rate();assert_eq!(app.target_fps,144);
-    app.controller=None;
+    app.controller=Default::default();
 }
 #[test]
 fn owned_views_merge_into_oldest_other_live_window_and_never_restore_retired_homes() {
@@ -726,7 +726,7 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
     closing.window_sizing=window.sizing.clone();
     let stopped=Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (close,mut close_requests)=tokio::sync::mpsc::unbounded_channel();
-    closing.controller=Some(uu_core::controller::ControllerHandle {
+    closing.controller=crate::connection::Controller::new(uu_core::controller::ControllerHandle {
         stopped:stopped.clone(),events:std::sync::mpsc::channel().1,
         frames:uu_core::media::frame_channel().1,input:tokio::sync::mpsc::unbounded_channel().0,native_input:None,
         settings:tokio::sync::mpsc::unbounded_channel().0,close,stats:Arc::new(Default::default()),
@@ -739,7 +739,7 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
     state.apply(Action::Close(id),ctx);
     let window=state.windows.iter_mut().find(|window|window.sessions.iter().any(|source|source.id==session)).unwrap();
     let closing=window.sessions.iter().find(|source|source.id==id).unwrap();
-    assert!(closing.app.exit_requested&&closing.app.disconnecting);
+    assert!(closing.app.exit_requested&&closing.app.controller.closing());
     assert!(!closing.app.active_session);
     assert!(!stopped.load(Ordering::Acquire),"the controller's cleanup has deliberately not finished");
     assert!(closing.app.controller.is_some(),"retain the cleanup owner while hiding its tab");
@@ -1091,7 +1091,7 @@ impl eframe::App for Probe {
             match self.phase {
                 5 => {
                     let tail=format!("script_done={} pending_actions={} windows={:?}",pointer_script_done(),state.actions.borrow().len(),
-                        state.windows.iter().map(|window|(window.id,window.active,window.sessions.iter().map(|session|(session.id,session.app.exit_requested,session.app.disconnecting,
+                        state.windows.iter().map(|window|(window.id,window.active,window.sessions.iter().map(|session|(session.id,session.app.exit_requested,session.app.controller.closing(),
                             session.app.controller.as_ref().map(|handle|handle.stopped.load(Ordering::Acquire)),session.app.context.viewport())).collect::<Vec<_>>())).collect::<Vec<_>>());
                     if self.tail_state.as_ref()!=Some(&tail) {eprintln!("generated close tail {tail}");self.tail_state=Some(tail);}
                 }
