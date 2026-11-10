@@ -13,14 +13,14 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
     time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::{mpsc, watch},
+    sync::watch,
     time::timeout,
 };
 use webrtc::{
@@ -35,6 +35,8 @@ pub use uu_capture::CaptureSource;
 pub use uu_media::audio_capture::Source as AudioSource;
 pub use uu_media::encoder::Preference as EncoderPreference;
 pub use uu_proto::media::VideoCodec;
+mod capture_worker;
+use capture_worker::Worker as CaptureWorker;
 mod encoded_capture;
 mod encoder_startup;
 pub use encoded_capture::{EncodedCapture, CapturedSample, CaptureOptions};
@@ -306,6 +308,15 @@ pub struct HostReport {
 }
 
 impl HostReport {
+    fn update_producer(&mut self, stats: capture_worker::Statistics) {
+        self.encoder = stats.encoder;
+        self.captured = stats.captured;
+        self.producer_ms = stats.producer_ms;
+        self.capture_us = stats.capture_us;
+        self.encode_us = stats.encode_us;
+        self.backpressure_us = stats.backpressure_us;
+    }
+
     fn merge(&mut self,other:Self){
         self.encoder=other.encoder;
         self.frame_trace=other.frame_trace;
@@ -406,249 +417,8 @@ pub(crate) async fn serve_with_authority(config: HostConfig, mut stop: watch::Re
     host_session(socket, config.into(), stop, status, authority).await
 }
 
-#[derive(Default)]
-struct ProducerTimings {
-    capture_us: AtomicU64,
-    encode_us: AtomicU64,
-    backpressure_us: AtomicU64,
-}
-
 fn elapsed_us(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
-}
-
-struct CaptureWorker {
-    progress:Arc<crate::native_diagnostics::ProducerProgress>,
-    trace: Arc<crate::frame_trace::HostTrace>,
-    video_e2e: Arc<crate::video_e2e::Host>,
-    quality:crate::native_quality::Runtime,
-    quality_state:watch::Receiver<uu_media::encoder::Settings>,
-    started: Instant,
-    timings: Arc<ProducerTimings>,
-    stopped: Arc<AtomicBool>,
-    captured: Arc<AtomicU64>,
-    retired_outputs:AtomicU64,
-    frames: mpsc::Receiver<Result<TracedEncoded>>,
-    encoder: watch::Receiver<String>,
-    task: Option<tokio::task::JoinHandle<()>>,
-}
-struct TracedEncoded {
-    frame: uu_media::EncodedFrame,
-    trace: Option<crate::frame_trace::Token>,
-    source_e2e: Option<crate::video_e2e::SourceEndpoint>,
-    capture_lease:Option<crate::latest_capture::Lease>,
-}
-impl std::ops::Deref for TracedEncoded {
-    type Target=uu_media::EncodedFrame;
-    fn deref(&self)->&Self::Target {&self.frame}
-}
-impl CaptureWorker {
-    fn start(
-        capture: Box<dyn uu_capture::Capture>,
-        settings: uu_media::encoder::Settings,
-        refresh: Arc<AtomicBool>,
-        encoder: Box<dyn uu_media::VideoEncoder>,
-        live_timing:Arc<crate::native_timing::HostTiming>,
-    ) -> Self {
-        Self::start_mode(capture,settings,refresh,encoder,live_timing,None)
-    }
-    fn start_mode(capture:Box<dyn uu_capture::Capture>,settings:uu_media::encoder::Settings,
-        refresh:Arc<AtomicBool>,encoder:Box<dyn uu_media::VideoEncoder>,live_timing:Arc<crate::native_timing::HostTiming>,mode:Option<bool>)->Self {
-        let trace=live_timing.trace.clone();
-        let video_e2e=live_timing.video_e2e.clone();
-        trace.configure(settings,encoder.backend_name());
-        let stopped = Arc::new(AtomicBool::new(false));
-        let captured = Arc::new(AtomicU64::new(0));
-        let (tx, frames) = mpsc::channel(2);
-        let worker_stop = stopped.clone();
-        let counter = captured.clone();
-        let timings = Arc::new(ProducerTimings::default());
-        let worker_timings = timings.clone();
-        let started = Instant::now();
-        let (encoder_status,encoder_state)=watch::channel(encoder.backend_name().to_owned());
-        let (quality,changes)=crate::native_quality::Runtime::channel();
-        let (quality_status,quality_state)=watch::channel(settings);
-        let capture_control=quality.clone();
-        let progress=Arc::new(crate::native_diagnostics::ProducerProgress::default());
-        let worker_progress=progress.clone();
-        let task = tokio::task::spawn_blocking(move || {
-            let result = encode_source(capture, settings, encoder, refresh, worker_stop, counter, worker_timings, live_timing,encoder_status,changes,quality_status, &tx,mode,capture_control,worker_progress);
-            if let Err(error) = result {
-                let _ = tx.blocking_send(Err(error));
-            }
-        });
-        Self {
-            progress,
-            trace,
-            video_e2e,
-            quality,quality_state,
-            started,
-            timings,
-            stopped,
-            captured,
-            retired_outputs:AtomicU64::default(),
-            frames,
-            encoder: encoder_state,
-            task: Some(task),
-        }
-    }
-    async fn stop(&mut self) -> Result<()> {
-        self.stopped.store(true, Ordering::Release);
-        self.quality.wake();
-        self.frames.close();
-        if let Some(task) = self.task.take() {
-            task.await.context("native capture worker failed")?;
-        }
-        Ok(())
-    }
-}
-impl Drop for CaptureWorker {
-    fn drop(&mut self) {
-        self.stopped.store(true, Ordering::Release);
-        self.quality.wake();
-    }
-}
-
-fn apply_refresh_request(refresh:&AtomicBool,encoder:&mut dyn uu_media::VideoEncoder) {
-    if refresh.swap(false,Ordering::AcqRel) { encoder.request_keyframe(); }
-}
-
-fn encode_source(
-    capture: Box<dyn uu_capture::Capture>,
-    mut settings: uu_media::encoder::Settings,
-    mut encoder: Box<dyn uu_media::VideoEncoder>,
-    refresh: Arc<AtomicBool>,
-    stopped: Arc<AtomicBool>,
-    captured: Arc<AtomicU64>,
-    timings: Arc<ProducerTimings>,
-    live_timing:Arc<crate::native_timing::HostTiming>,
-    encoder_status: watch::Sender<String>,
-    changes:std::sync::mpsc::Receiver<crate::native_quality::Change>,
-    quality_status:watch::Sender<uu_media::encoder::Settings>,
-    output: &mpsc::Sender<Result<TracedEncoded>>,
-    mode:Option<bool>,
-    capture_control:crate::native_quality::Runtime,
-    progress:Arc<crate::native_diagnostics::ProducerProgress>,
-) -> Result<()> {
-    use crate::native_diagnostics::ProducerPhase;
-    let overlap=match mode{Some(enabled)=>enabled,None=>crate::capture_overlap::requested_from_env()?};
-    let mut capture=crate::capture_overlap::Input::new(capture,overlap,settings.fps,encoder.gpu_input(),encoder.gpu_vendor())?;
-    capture_control.set_wake(capture.interrupt_handle());
-    let result=(||->Result<()> {
-    let mut backend=encoder.backend_name().to_owned();
-    let mut interval = Duration::from_secs_f64(1.0 / settings.fps as f64);
-    let mut next = Instant::now();
-    encoder.request_keyframe();
-    while !stopped.load(Ordering::Acquire) {
-        progress.set(ProducerPhase::Pacing);
-        if !capture.owner_pacing() {
-            std::thread::sleep(next.saturating_duration_since(Instant::now()));
-        }
-        if stopped.load(Ordering::Acquire) {
-            break;
-        }
-        if let Ok(change)=changes.try_recv() {
-            progress.set(ProducerPhase::Reconfiguring);
-            let result=(||->Result<u32> {
-                ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"{}", uu_i18n::format!("画质请求已取消"));
-                change.settings.validate()?;
-                let bitrate_kbps=change.settings.bitrate_for(settings.width,settings.height,settings.codec);
-                let rate_control=change.settings.rate_control.unwrap_or_else(||crate::native_quality::RateMode::from_encoder(settings.rate_control)).encoder(bitrate_kbps);
-                let updated=uu_media::encoder::Settings{fps:change.settings.fps,bitrate_kbps,rate_control,..settings};
-                updated.validate()?;
-                if updated.fps!=settings.fps || updated.rate_control!=settings.rate_control {
-                    // Driver contexts stay on their own threads. Build first,
-                    // then start a fresh reference chain on the same transport.
-                    let reopen=if encoder.is_hardware()&&updated.preference==EncoderPreference::Auto {uu_media::encoder::Settings{preference:EncoderPreference::Hardware,..updated}}else{updated};
-                    let replacement=uu_media::encoder::create_with_device(reopen,capture.encoder_input_device())?;
-                    ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"{}", uu_i18n::format!("画质请求已取消"));
-                    capture.set_frame_rate(updated.fps)?;
-                    if change.reply.is_closed() || stopped.load(Ordering::Acquire) {
-                        capture.set_frame_rate(settings.fps)?;
-                        bail!("{}", uu_i18n::format!("画质请求已取消"));
-                    }
-                    encoder=replacement;
-                    if encoder.backend_name()!=backend {
-                        backend=encoder.backend_name().to_owned();encoder_status.send_replace(backend.clone());
-                    }
-                    encoder.request_keyframe();
-                    interval=Duration::from_secs_f64(1.0/updated.fps as f64);
-                    next=Instant::now();
-                }else{encoder.set_bitrate(bitrate_kbps)?;}
-                // The encoder owns whether a bitrate update invalidated its
-                // references; replacement encoders already start a new chain.
-                settings=updated;
-                live_timing.trace.configure(settings,encoder.backend_name());
-                live_timing.video_e2e.retire();
-                quality_status.send_replace(settings);
-                Ok(bitrate_kbps)
-            })().map_err(|error|error.to_string());
-            let _=change.reply.send(result);
-        }
-        progress.set(ProducerPhase::Capturing);
-        capture.prefer_gpu(encoder.gpu_input(),encoder.gpu_vendor())?;
-        let observed = match capture.next(live_timing.trace.enabled() || live_timing.video_e2e.enabled()) {
-            Ok(frame) => frame,
-            Err(uu_capture::CaptureError::Suspended(_)) => {
-                // Desktop transitions must not terminate an authenticated
-                // transport or transmit a cached image of the old desktop.
-                refresh.store(true, Ordering::Release);
-                next = Instant::now() + Duration::from_millis(25);
-                continue;
-            }
-            Err(error) => return Err(error.into()),
-        };
-        if observed.retired {live_timing.trace.configure(settings,encoder.backend_name());live_timing.video_e2e.retire();refresh.store(true,Ordering::Release);}
-        let capture_ready=observed.ready;
-        let capture_started=observed.started;
-        let source_info=observed.source;
-        let frame=&observed.frame;
-        let capture_us=capture_ready.duration_since(capture_started).as_micros().min(u128::from(u64::MAX)) as u64;
-        timings.capture_us.fetch_add(capture_us, Ordering::Relaxed);
-        captured.fetch_add(1, Ordering::Relaxed);
-        // RTCP already coalesces and limits recovery requests. Once requested,
-        // renew references on the next frame, even just after a previous IDR.
-        // Swap also preserves a request arriving while this frame is encoded.
-        apply_refresh_request(&refresh,encoder.as_mut());
-        let started = Instant::now();
-        let frame_token=live_timing.trace.captured(frame.pts.0,source_info,frame.gpu,capture_started,capture_ready,started);
-        live_timing.video_e2e.captured(frame.pts.0,source_info);
-        progress.set(ProducerPhase::Encoding);
-        let encoded_frames = encoder.encode(frame)?;
-        if !observed.current(){capture.retired_output();refresh.store(true,Ordering::Release);continue;}
-        let output_ready=Instant::now();
-        live_timing.trace.mark(frame_token,crate::frame_trace::Event::EncodeReturn,output_ready);
-        if encoder.backend_name()!=backend {
-            backend=encoder.backend_name().to_owned();encoder_status.send_replace(backend.clone());
-            // A runtime fallback is a new measurement generation. Do not
-            // attribute its first output to the retired backend's input.
-            live_timing.trace.configure(settings,&backend);
-            live_timing.video_e2e.retire();
-        }
-        let encode_us=output_ready.duration_since(started).as_micros().min(u128::from(u64::MAX)) as u64;
-        timings.encode_us.fetch_add(encode_us, Ordering::Relaxed);
-        let started = Instant::now();
-        progress.set(ProducerPhase::Enqueueing);
-        for encoded in encoded_frames {
-            let token=live_timing.trace.output(encoded.pts.0,encoded.is_keyframe,output_ready);
-            let source_e2e=live_timing.video_e2e.output(encoded.pts.0);
-            if output.blocking_send(Ok(TracedEncoded{frame:encoded,trace:token,source_e2e,capture_lease:observed.lease.clone()})).is_err() {
-                return Ok(());
-            }
-            live_timing.trace.mark(token,crate::frame_trace::Event::EnqueueReturn,Instant::now());
-        }
-        let wait_us=elapsed_us(started);
-        timings.backpressure_us.fetch_add(wait_us, Ordering::Relaxed);
-        live_timing.video(capture_us,encode_us,wait_us);
-        next = crate::video_pacing::next_deadline(next,interval,Instant::now());
-    }
-    Ok(())
-    })();
-    progress.set(ProducerPhase::Stopping);
-    let joined=capture.finish();
-    capture_control.set_wake(None);
-    progress.set(ProducerPhase::Stopped);
-    result.and(joined)
 }
 
 pub(crate) async fn host_session(
@@ -1011,7 +781,7 @@ async fn send_video(
                         .inspect_err(|_|peer.diagnostics.exit("capture_or_encoder_failed"))?;
                     // A retired desktop/reference generation cannot leave the
                     // encoded queue, even if it paused while encoding was blocked.
-                    if encoded.capture_lease.as_ref().is_some_and(|lease|!lease.valid()){producer.retired_outputs.fetch_add(1,Ordering::Relaxed);continue;}
+                    if !encoded.current(){producer.retired_outputs.fetch_add(1,Ordering::Relaxed);continue;}
                     producer.trace.mark(encoded.trace,crate::frame_trace::Event::Dequeue,Instant::now());
                     let bytes = encoded.data.len() as u64;
                     let sending=peer.diagnostics.video_send();
@@ -1034,12 +804,7 @@ async fn send_video(
     (report.input_events,report.input_errors)=controls.counters();
     peer.close().await;
     let stopped = producer.stop().await;
-    report.captured = producer.captured.load(Ordering::Relaxed);
-    report.producer_ms = producer.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-    report.capture_us = producer.timings.capture_us.load(Ordering::Relaxed);
-    report.encode_us = producer.timings.encode_us.load(Ordering::Relaxed);
-    report.backpressure_us = producer.timings.backpressure_us.load(Ordering::Relaxed);
-    report.encoder=producer.encoder.borrow().clone();
+    report.update_producer(producer.statistics());
     eprintln!("{}",serde_json::json!({"event":"capture_overlap_delivery","retired_encoded_aus":producer.retired_outputs.load(Ordering::Relaxed)}));
     producer.trace.write_local_report()?;
     report.frame_trace=producer.trace.report();
@@ -1302,6 +1067,7 @@ async fn wait_first_frame(stats:&MediaStats,baseline:u64,limit:Duration)->Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
     use crate::media::frame_channel;
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authenticated_host_preparation_is_visible_and_cancellable_before_answer() {
@@ -1328,96 +1094,6 @@ mod tests {
         assert_eq!(*phases.borrow(), Some(crate::native_controller::Stage::PreparingHost));
         stop.send(true).unwrap();
         timeout(Duration::from_secs(2), client).await.unwrap().unwrap().unwrap();
-    }
-    #[tokio::test(flavor="multi_thread",worker_threads=2)]
-    async fn capture_requests_initial_idr_without_adding_a_periodic_refresh() {
-        struct Source {inner:Box<dyn uu_capture::Capture>,count:u32}
-        impl uu_capture::Capture for Source {
-            fn resolution(&self)->(u32,u32){self.inner.resolution()}
-            fn next_frame(&mut self)->std::result::Result<uu_media::RawFrame,uu_capture::CaptureError> {
-                if self.count==1 {std::thread::sleep(Duration::from_millis(2100));}
-                self.count+=1;self.inner.next_frame()
-            }
-        }
-        struct Encoder(bool);
-        impl uu_media::VideoEncoder for Encoder {
-            fn backend_name(&self)->&str{"owned reference fixture"}
-            fn codec(&self)->VideoCodec{VideoCodec::H264}
-            fn request_keyframe(&mut self){self.0=true;}
-            fn set_bitrate(&mut self,_:u32)->std::result::Result<(),uu_media::CodecError>{self.0=true;Ok(())}
-            fn encode(&mut self,frame:&uu_media::RawFrame)->std::result::Result<Vec<uu_media::EncodedFrame>,uu_media::CodecError> {
-                Ok(vec![uu_media::EncodedFrame{data:vec![0u8].into(),pts:frame.pts,is_keyframe:std::mem::take(&mut self.0)}])
-            }
-        }
-        let settings=uu_media::encoder::Settings{hdr:false,source_hdr:None,tuning:Default::default(),codec:VideoCodec::H264,
-            rate_control:Default::default(),width:64,height:64,fps:60,bitrate_kbps:1000,preference:EncoderPreference::Software};
-        let source=Box::new(Source{inner:uu_capture::open(&CaptureSource::Synthetic{width:64,height:64,fps:60}).unwrap(),count:0});
-        let mut producer=CaptureWorker::start(source,settings,Arc::default(),Box::new(Encoder(false)),Arc::default());
-        assert!(timeout(Duration::from_secs(2),producer.frames.recv()).await.unwrap().unwrap().unwrap().is_keyframe);
-        assert!(!timeout(Duration::from_secs(4),producer.frames.recv()).await.unwrap().unwrap().unwrap().is_keyframe,
-            "capture added a periodic refresh even though references were intact");
-        producer.stop().await.unwrap();
-    }
-    #[tokio::test(flavor="multi_thread",worker_threads=2)]
-    async fn suspended_capture_emits_no_old_pixels_resumes_with_idr_and_cancels() {
-        struct Source {
-            inner: Box<dyn uu_capture::Capture>,
-            paused: Arc<AtomicBool>,
-            suspended: Arc<AtomicU64>,
-        }
-        impl uu_capture::Capture for Source {
-            fn resolution(&self)->(u32,u32){self.inner.resolution()}
-            fn next_frame(&mut self)->std::result::Result<uu_media::frame::RawFrame,uu_capture::CaptureError> {
-                if self.paused.load(Ordering::Acquire) {
-                    self.suspended.fetch_add(1,Ordering::Release);
-                    Err(uu_capture::CaptureError::Suspended("owned desktop transition".into()))
-                } else {self.inner.next_frame()}
-            }
-        }
-        let settings=uu_media::encoder::Settings{hdr:false,source_hdr:None,tuning:Default::default(),codec:VideoCodec::H264,
-            rate_control:Default::default(),width:64,height:64,fps:60,bitrate_kbps:1000,preference:EncoderPreference::Software};
-        let paused=Arc::new(AtomicBool::new(false));let suspended=Arc::new(AtomicU64::new(0));
-        let capture=Box::new(Source {inner:uu_capture::open(&CaptureSource::Synthetic{width:64,height:64,fps:60}).unwrap(),paused:paused.clone(),suspended:suspended.clone()});
-        let mut producer=CaptureWorker::start(capture,settings,Arc::default(),uu_media::encoder::create(settings).unwrap(),Arc::default());
-        let _=timeout(Duration::from_secs(2),producer.frames.recv()).await.unwrap().unwrap().unwrap();
-        paused.store(true,Ordering::Release);
-        timeout(Duration::from_secs(2),async {
-            while suspended.load(Ordering::Acquire)==0 {
-                while producer.frames.try_recv().is_ok() {}
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        }).await.unwrap();
-        while producer.frames.try_recv().is_ok() {}
-        assert!(timeout(Duration::from_millis(80),producer.frames.recv()).await.is_err(),"no old desktop frame is repeated");
-        paused.store(false,Ordering::Release);
-        let frame=timeout(Duration::from_secs(2),producer.frames.recv()).await.unwrap().unwrap().unwrap();
-        assert!(frame.is_keyframe);
-        assert!(uu_media::software_decoder().unwrap().decode(&frame).unwrap().is_some());
-        paused.store(true,Ordering::Release);
-        timeout(Duration::from_millis(500),producer.stop()).await.unwrap().unwrap();
-    }
-    #[tokio::test(flavor="multi_thread",worker_threads=2)]
-    async fn recovery_immediately_after_an_idr_is_encoded_in_the_next_capture_batch() {
-        let settings=uu_media::encoder::Settings{hdr:false,source_hdr:None,tuning:Default::default(),codec:VideoCodec::H264,
-            rate_control:Default::default(),width:64,height:64,fps:60,bitrate_kbps:1000,preference:EncoderPreference::Software};
-        let capture=uu_capture::open(&CaptureSource::Synthetic{width:64,height:64,fps:60}).unwrap();
-        let encoder=uu_media::encoder::create(settings).unwrap();
-        let refresh=Arc::new(AtomicBool::new(false));
-        let mut producer=CaptureWorker::start(capture,settings,refresh.clone(),encoder,Arc::default());
-        let first=timeout(Duration::from_secs(2),producer.frames.recv()).await.unwrap().unwrap().unwrap();
-        assert!(first.is_keyframe);
-        refresh.store(true,Ordering::Release);
-        // Allow the two already-buffered frames; a new request must reach the
-        // next captured frame rather than wait for a 250 ms debounce window.
-        let mut recovered=None;
-        for _ in 0..3 {
-            let frame=timeout(Duration::from_secs(2),producer.frames.recv()).await.unwrap().unwrap().unwrap();
-            if frame.is_keyframe {recovered=Some(frame);break;}
-        }
-        producer.stop().await.unwrap();
-        let recovered=recovered.expect("recovery feedback was delayed after a recent IDR");
-        let mut decoder=uu_media::software_decoder().unwrap();
-        assert!(decoder.decode(&recovered).unwrap().is_some(),"recovery is independently decodable");
     }
     struct InvitationFile(PathBuf);
     impl Drop for InvitationFile {
@@ -1926,108 +1602,5 @@ mod tests {
         let (mut writer, mut reader) = tokio::io::duplex(8);
         writer.write_u32(u32::MAX).await.unwrap();
         assert!(read_message::<Offer>(&mut reader).await.is_err());
-    }
-}
-
-#[cfg(test)]
-mod overlap_integration_tests {
-    use super::*;
-    use std::sync::mpsc as channel;
-    enum Event {Frame(u8),Pause,Fence(channel::SyncSender<()>)}
-    struct Capture {rx:channel::Receiver<Event>,info:Option<uu_capture::frame_info::FrameInfo>,generation:u64}
-    impl uu_capture::Capture for Capture {
-        fn resolution(&self)->(u32,u32){(64,64)}
-        fn enable_overlap(&mut self)->std::result::Result<(),uu_capture::CaptureError>{Ok(())}
-        fn frame_info(&self)->Option<uu_capture::frame_info::FrameInfo>{self.info}
-        fn next_frame(&mut self)->std::result::Result<uu_media::RawFrame,uu_capture::CaptureError>{
-            let info=self.info.as_mut().ok_or_else(||uu_capture::CaptureError::Suspended("waiting owned image".into()))?;info.duplicate=true;let id=info.frame_id as u8;
-            Ok(uu_media::RawFrame::new_i420(64,64,vec![id;64*64*3/2],uu_media::Timestamp(u64::from(id)*10000)))
-        }
-        fn wait_updated_frame(&mut self,wait:Duration)->std::result::Result<Option<uu_media::RawFrame>,uu_capture::CaptureError>{
-            loop {match self.rx.recv_timeout(wait) {
-                Ok(Event::Frame(id))=>{
-                    self.info=Some(uu_capture::frame_info::FrameInfo{generation:self.generation,frame_id:u64::from(id),duplicate:false,accumulated_frames:1,present:None,present_age_us:None});
-                    return Ok(Some(uu_media::RawFrame::new_i420(64,64,vec![id;64*64*3/2],uu_media::Timestamp(u64::from(id)*10000))));
-                },
-                Ok(Event::Pause)=>{self.generation+=1;self.info=None;return Err(uu_capture::CaptureError::Suspended("owned pause".into()));},
-                Ok(Event::Fence(done))=>{done.send(()).unwrap();},
-                Err(channel::RecvTimeoutError::Timeout)=>return Ok(None),
-                Err(_)=>return Err(uu_capture::CaptureError::Backend("owned source closed".into())),
-            }}
-        }
-    }
-    struct Encoder {entered:channel::SyncSender<u8>,release:channel::Receiver<()>,first:bool,keyframe:bool,fail:bool}
-    impl uu_media::VideoEncoder for Encoder {
-        fn codec(&self)->VideoCodec{VideoCodec::H264}
-        fn backend_name(&self)->&str{"owned overlap encoder"}
-        fn set_bitrate(&mut self,_:u32)->std::result::Result<(),uu_media::CodecError>{Ok(())}
-        fn request_keyframe(&mut self){self.keyframe=true;}
-        fn encode(&mut self,frame:&uu_media::RawFrame)->std::result::Result<Vec<uu_media::EncodedFrame>,uu_media::CodecError>{
-            let id=frame.data[0];
-            if std::mem::take(&mut self.first){self.entered.send(id).unwrap();self.release.recv_timeout(Duration::from_secs(2)).unwrap();}
-            assert!(frame.data.iter().all(|v|*v==id),"inflight pixels changed");
-            if self.fail{return Err(uu_media::CodecError::Backend("injected encode failure".into()));}
-            Ok(vec![uu_media::EncodedFrame{data:vec![id].into(),pts:frame.pts,is_keyframe:std::mem::take(&mut self.keyframe)}])
-        }
-    }
-    fn setup(fail:bool)->(CaptureWorker,channel::Sender<Event>,channel::Receiver<u8>,channel::SyncSender<()>,Arc<AtomicBool>) {
-        let(tx,rx)=channel::channel();let(entered,observed)=channel::sync_channel(1);let(release,resume)=channel::sync_channel(1);let refresh=Arc::new(AtomicBool::new(false));
-        let settings=uu_media::encoder::Settings{width:64,height:64,fps:60,bitrate_kbps:1000,codec:VideoCodec::H264,preference:EncoderPreference::Software,rate_control:Default::default(),tuning:Default::default(),hdr:false,source_hdr:None};
-        let worker=CaptureWorker::start_mode(Box::new(Capture{rx,info:None,generation:1}),settings,refresh.clone(),Box::new(Encoder{entered,release:resume,first:true,keyframe:false,fail}),Arc::default(),Some(true));
-        (worker,tx,observed,release,refresh)
-    }
-    fn fence(tx:&channel::Sender<Event>){let(done,rx)=channel::sync_channel(1);tx.send(Event::Fence(done)).unwrap();rx.recv_timeout(Duration::from_secs(1)).unwrap();}
-    #[tokio::test(flavor="multi_thread",worker_threads=2)]
-    async fn slow_encode_gets_latest_pixels_preserves_idr_and_ignores_cancelled_quality(){
-        let(mut worker,tx,entered,release,refresh)=setup(false);tx.send(Event::Frame(1)).unwrap();assert_eq!(entered.recv_timeout(Duration::from_secs(1)).unwrap(),1);
-        for id in 2..=10 {tx.send(Event::Frame(id)).unwrap();}fence(&tx);
-        let cancelled=worker.quality.request(crate::native_quality::Update{fps:24,bitrate_kbps:Some(500),rate_control:None}).unwrap();drop(cancelled);refresh.store(true,Ordering::Release);release.send(()).unwrap();
-        let first=timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert_eq!(first.data[0],1);
-        let latest=timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert_eq!(latest.data[0],10);assert!(latest.is_keyframe,"IDR arriving during encode was lost");assert_eq!(worker.quality_state.borrow().fps,60);
-        worker.stop().await.unwrap();
-    }
-    #[tokio::test(flavor="multi_thread",worker_threads=2)]
-    async fn pause_while_encoding_retires_old_pixels_and_resumes_with_new_idr(){
-        let(mut worker,tx,entered,release,_)=setup(false);tx.send(Event::Frame(1)).unwrap();entered.recv_timeout(Duration::from_secs(1)).unwrap();
-        tx.send(Event::Pause).unwrap();fence(&tx);release.send(()).unwrap();assert!(timeout(Duration::from_millis(80),worker.frames.recv()).await.is_err());
-        tx.send(Event::Frame(2)).unwrap();let resumed=timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert_eq!(resumed.data[0],2);assert!(resumed.is_keyframe);assert!(resumed.capture_lease.as_ref().unwrap().valid());
-        timeout(Duration::from_millis(500),worker.stop()).await.unwrap().unwrap();
-    }
-    #[tokio::test(flavor="multi_thread",worker_threads=2)]
-    async fn applied_quality_ack_retires_old_raw_and_new_encoder_starts_a_matching_chain(){
-        let(mut worker,tx,entered,release,_)=setup(false);tx.send(Event::Frame(1)).unwrap();entered.recv_timeout(Duration::from_secs(1)).unwrap();
-        tx.send(Event::Frame(2)).unwrap();fence(&tx);
-        let applied=worker.quality.request(crate::native_quality::Update{fps:24,bitrate_kbps:Some(500),rate_control:None}).unwrap();release.send(()).unwrap();
-        let first=timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert_eq!(first.data[0],1);
-        assert_eq!(timeout(Duration::from_secs(2),applied).await.unwrap().unwrap().unwrap(),500);
-        assert!(!first.capture_lease.as_ref().unwrap().valid(),"old raw generation survived quality acknowledgement");
-        let next=timeout(Duration::from_secs(2),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert!(next.is_keyframe);assert!(uu_media::software_decoder().unwrap().decode(&next).unwrap().is_some());assert_eq!(worker.quality_state.borrow().fps,24);
-        assert_eq!(worker.trace.report().unwrap().counts.unmatched_outputs,0,"new encoder was retired again after capture");
-        worker.stop().await.unwrap();
-    }
-    #[tokio::test(flavor="multi_thread",worker_threads=2)]
-    async fn encoder_failure_and_closed_output_stop_the_owned_source(){
-        let(mut worker,tx,entered,release,_)=setup(true);tx.send(Event::Frame(1)).unwrap();entered.recv_timeout(Duration::from_secs(1)).unwrap();release.send(()).unwrap();
-        assert!(timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().is_err());worker.stop().await.unwrap();assert!(tx.send(Event::Frame(2)).is_err());
-        let(mut idle,_tx,_entered,_release,_)=setup(false);timeout(Duration::from_millis(600),idle.stop()).await.unwrap().unwrap();
-    }
-}
-
-#[cfg(test)]
-mod owner_pacing_idr_tests {
-    use super::*;
-    struct Encoder { requests:u32 }
-    impl uu_media::VideoEncoder for Encoder {
-        fn codec(&self)->VideoCodec { VideoCodec::Av1 }
-        fn encode(&mut self,_frame:&uu_media::RawFrame)->Result<Vec<uu_media::EncodedFrame>,uu_media::CodecError> { Ok(vec![]) }
-        fn request_keyframe(&mut self) { self.requests+=1; }
-        fn set_bitrate(&mut self,_kbps:u32)->Result<(),uu_media::CodecError> { Ok(()) }
-    }
-    #[test]
-    fn repeat_opportunity_consumes_idr_once_without_requiring_new_source() {
-        let refresh=AtomicBool::new(true);let mut encoder=Encoder{requests:0};
-        apply_refresh_request(&refresh,&mut encoder);assert_eq!(encoder.requests,1);
-        apply_refresh_request(&refresh,&mut encoder);assert_eq!(encoder.requests,1);
-        refresh.store(true,Ordering::Release);apply_refresh_request(&refresh,&mut encoder);assert_eq!(encoder.requests,2);
     }
 }

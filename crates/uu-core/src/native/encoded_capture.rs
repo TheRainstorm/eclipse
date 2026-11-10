@@ -1,5 +1,8 @@
 //! The common bounded capture/encode actor, usable by other session protocols.
-use super::*;
+use super::{capture_worker::{Sample, Worker}, validate_video, HostReport, SharingConfig};
+use anyhow::{ensure, Context, Result};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use uu_proto::media::VideoCodec;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CaptureOptions {
@@ -12,10 +15,10 @@ struct CancelOpen(Arc<AtomicBool>);
 impl Drop for CancelOpen {
     fn drop(&mut self) { self.0.store(true, Ordering::Release); }
 }
-pub struct CapturedSample(TracedEncoded);
+pub struct CapturedSample(Sample);
 impl CapturedSample {
     pub fn current(&self) -> bool {
-        self.0.capture_lease.as_ref().is_none_or(|lease| lease.valid())
+        self.0.current()
     }
 }
 impl std::ops::Deref for CapturedSample {
@@ -25,7 +28,7 @@ impl std::ops::Deref for CapturedSample {
 /// Caller must complete its protocol's authorization before opening a source.
 /// All outputs retain the same GPU/capture leases as native sessions.
 pub struct EncodedCapture {
-    worker: CaptureWorker,
+    worker: Worker,
     refresh: Arc<AtomicBool>,
     rect: Option<uu_capture::DesktopRect>,
     injector: Option<Box<dyn uu_input::InputInjector>>,
@@ -65,7 +68,7 @@ impl EncodedCapture {
         let rect=capture.desktop_rect();
         let injector=capture.input_injector();
         let refresh=Arc::new(AtomicBool::new(true));
-        let worker=CaptureWorker::start(capture,settings,refresh.clone(),encoder,Arc::default());
+        let worker=Worker::start(capture,settings,refresh.clone(),encoder,Arc::default());
         Ok(Self { worker,refresh,rect,injector,_cancel:cancelled })
     }
     pub fn settings(&self)->uu_media::encoder::Settings { *self.worker.quality_state.borrow() }
@@ -83,13 +86,9 @@ impl EncodedCapture {
         (self.rect,self.injector.take())
     }
     pub fn report(&self)->HostReport {
-        HostReport {
-            encoder:self.backend(),captured:self.worker.captured.load(Ordering::Relaxed),
-            producer_ms:self.worker.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
-            capture_us:self.worker.timings.capture_us.load(Ordering::Relaxed),
-            encode_us:self.worker.timings.encode_us.load(Ordering::Relaxed),
-            backpressure_us:self.worker.timings.backpressure_us.load(Ordering::Relaxed),..Default::default()
-        }
+        let mut report = HostReport::default();
+        report.update_producer(self.worker.statistics());
+        report
     }
     pub async fn stop(&mut self)->Result<()> { self.worker.stop().await }
 }
@@ -97,6 +96,9 @@ impl EncodedCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::{CaptureSource, EncoderPreference};
+    use std::time::Duration;
+    use tokio::time::timeout;
     fn config()->SharingConfig {
         SharingConfig { encoder_tuning:Default::default(),session:None,video_policy:None,codec:VideoCodec::H264,
             rate_control:uu_media::encoder::RateControl::Cbr,source:CaptureSource::Synthetic {width:320,height:180,fps:60},
@@ -116,7 +118,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         timeout(Duration::from_secs(3),capture.stop()).await.unwrap().unwrap();
         assert!(capture.report().captured>0);
-        assert!(capture.worker.task.is_none());
     }
     #[tokio::test]
     async fn disabled_codecs_and_invalid_geometry_fail_before_capture() {
