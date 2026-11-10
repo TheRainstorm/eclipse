@@ -84,17 +84,6 @@ impl Manager {
             .collect()
     }
 
-    pub(super) fn allocated_count_from_records(
-        entries: &BTreeMap<LeaseId, Entry>,
-        records: &[SavedDisplay],
-    ) -> usize {
-        entries.len()
-            + records
-                .iter()
-                .filter(|saved| saved.enabled && !entries.contains_key(&LeaseId(saved.id)))
-                .count()
-    }
-
     fn status_from_inventory(
         &self,
         entries: &BTreeMap<LeaseId, Entry>,

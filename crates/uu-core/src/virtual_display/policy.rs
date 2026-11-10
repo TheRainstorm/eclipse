@@ -190,6 +190,17 @@ impl Manager {
         let file=self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.file.clone();
         file.map(|file|file.read().map(|policy|policy.displays)).unwrap_or_else(||Ok(Vec::new()))
     }
+    pub(super) fn allocated_count_from_records(
+        entries: &BTreeMap<LeaseId, Entry>,
+        records: &[SavedDisplay],
+    ) -> usize {
+        entries.len()
+            + records
+                .iter()
+                .filter(|saved| saved.enabled && !entries.contains_key(&LeaseId(saved.id)))
+                .count()
+    }
+
     pub(super) fn allocated_count(&self,entries:&BTreeMap<LeaseId,Entry>)->Result<usize> {
         Ok(Self::allocated_count_from_records(entries, &self.saved_records()?))
     }
