@@ -12,6 +12,8 @@ use std::{
     sync::Arc,
 };
 mod inventory;
+mod budget;
+use budget::Candidate as BudgetCandidate;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -203,37 +205,6 @@ struct Session {
     id: u64,
     activated:Option<std::time::Instant>,
     app: App,
-}
-struct BudgetState {
-    factor:f32,
-    last_eval:Option<std::time::Instant>,
-    last_decrease:Option<std::time::Instant>,
-    last_increase:Option<std::time::Instant>,
-}
-impl Default for BudgetState {
-    fn default()->Self {Self{factor:1.,last_eval:None,last_decrease:None,last_increase:None}}
-}
-impl BudgetState {
-    fn observe(&mut self,loss_ppm:Option<u32>,rtt_ms:Option<u32>,now:std::time::Instant) {
-        if self.last_eval.is_some_and(|last|now.duration_since(last)<std::time::Duration::from_secs(1)){return;}
-        let severe=loss_ppm.is_some_and(|loss|loss>=20_000)||rtt_ms.is_some_and(|rtt|rtt>=250);
-        let good=loss_ppm.is_some_and(|loss|loss<=5_000)&&rtt_ms.is_none_or(|rtt|rtt<=150);
-        if severe {self.factor=(self.factor*0.8).max(0.15);self.last_decrease=Some(now);}
-        else if good&&self.last_decrease.is_none_or(|last|now.duration_since(last)>=std::time::Duration::from_secs(5))&&self.last_increase.is_none_or(|last|now.duration_since(last)>=std::time::Duration::from_secs(2)) {
-            self.factor=(self.factor+0.05).min(1.);self.last_increase=Some(now);
-        }
-        self.last_eval=Some(now);
-    }
-}
-#[derive(Clone)]
-struct BudgetCandidate {
-    session:u64,
-    weight:u64,
-    fixed:Option<u32>,
-    budget_kbps:u32,
-    loss_ppm:Option<u32>,
-    rtt_ms:Option<u32>,
-    deferred:bool,
 }
 fn active_budget_candidate(session:&Session)->Option<BudgetCandidate> {
     let app=&session.app;
@@ -806,8 +777,7 @@ struct State {
     actions: Rc<RefCell<Vec<Action>>>,
     local_desktop: bool,
     restore_window: Option<u64>,
-    budget:std::collections::HashMap<u64,BudgetState>,
-    budget_refresh:Option<std::time::Instant>,
+    budget:budget::Controller,
 }
 impl Workspace {
     pub fn new(
@@ -839,7 +809,6 @@ impl Workspace {
                 local_desktop: false,
                 restore_window: None,
                 budget:Default::default(),
-                budget_refresh:None,
             })
         });
         Self { owner }
@@ -856,36 +825,24 @@ impl State {
         self.windows.iter().flat_map(|window|&window.sessions).any(|session|session.app.connect_deferred&&session.app.controller.is_none()&&!session.app.exit_requested)
     }
     fn rebalance_budgets(&mut self,force:bool) {
-        let now=std::time::Instant::now();
-        if !force&&self.budget_refresh.is_some_and(|last|now.duration_since(last)<std::time::Duration::from_secs(1)){return;}
-        self.budget_refresh=Some(now);
-        let mut groups:std::collections::HashMap<ConnectionTarget,Vec<BudgetCandidate>>=Default::default();
-        let mut active=std::collections::HashSet::new();
-        for window in &self.windows {
-            for session in &window.sessions {
-                let Some(target)=session.app.stream_target.as_ref() else{continue;};
-                let candidate=active_budget_candidate(session).or_else(||deferred_budget_candidate(session,&self.sources));
-                if let Some(candidate)=candidate {
-                    active.insert(session.id);
-                    groups.entry(base_key(target)).or_default().push(candidate);
+        let windows = &self.windows;
+        let sources = &self.sources;
+        let Some(updates) = self.budget.rebalance(std::time::Instant::now(), force, || {
+            let mut groups = std::collections::HashMap::new();
+            for window in windows {
+                for session in &window.sessions {
+                    let Some(target) = session.app.stream_target.as_ref() else { continue; };
+                    let candidate = active_budget_candidate(session)
+                        .or_else(|| deferred_budget_candidate(session, sources));
+                    if let Some(candidate) = candidate {
+                        groups.entry(base_key(target)).or_insert_with(Vec::new).push(candidate);
+                    }
                 }
             }
-        }
-        let mut updates=Vec::new();
-        for (device,candidates) in groups {
-            let total=candidates.iter().map(|candidate|candidate.budget_kbps).min().unwrap_or(0);
-            let items=candidates.iter().map(|candidate|(candidate.weight,candidate.fixed)).collect::<Vec<_>>();
-            let allocations=uu_core::client_settings::allocate_bitrate_budget(total,&items);
-            for (candidate,allocation) in candidates.into_iter().zip(allocations) {
-                let state=self.budget.entry(candidate.session).or_default();
-                state.observe(candidate.loss_ppm,candidate.rtt_ms,now);
-                let target=if candidate.fixed.is_some(){None}else{Some((allocation as f32*state.factor).round() as u32)};
-                let deferred=if candidate.deferred{Some(device.clone())}else{None};
-                updates.push((candidate.session,target,deferred));
-            }
-        }
+            groups
+        }) else { return; };
         let mut deferred=Vec::new();
-        for (id,target,device) in updates {
+        for budget::Update { session: id, bitrate_kbps: target, deferred_device: device } in updates {
             for window in &mut self.windows {
                 if let Some(session)=window.sessions.iter_mut().find(|session|session.id==id) {
                     if session.app.budget_alloc_kbps!=target {
@@ -903,7 +860,6 @@ impl State {
                 if session.app.connect_deferred {session.app.connect();}
             }
         }
-        self.budget.retain(|id,_|active.contains(id));
     }
     fn toggle_local_desktop(&mut self,ctx:&egui::Context) {
         if self.windows.iter().all(|window|window.closing) {return;}
