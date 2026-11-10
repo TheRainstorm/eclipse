@@ -3,10 +3,7 @@
 use eframe::egui;
 use std::{
     collections::HashMap,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
-    },
+    sync::mpsc,
     time::{Duration, Instant},
 };
 use uu_core::{
@@ -16,12 +13,36 @@ use uu_core::{
     service_admin::{windows::*, PluginRequest, PluginSnapshot, Request, Response, TrustRequest, TrustSnapshot},
 };
 use windows_sys::Win32::System::Services::{SERVICE_RUNNING, SERVICE_STOPPED};
+#[cfg(test)]
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 mod connections;
+mod deployment;
+mod worker;
+use deployment::{automatic_restart_ready, Deployment, DeploymentOutcome};
+#[cfg(test)]
+use deployment::automatic_restart_safe;
+use worker::{Event, Job};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+enum Section {
+    #[default]
+    Management = 0,
+    Input = 1,
+    AudioVideo = 2,
+    Encoder = 3,
+    Pairing = 4,
+    Connections = 5,
+    VirtualDisplays = 6,
+}
+impl Section {
+    fn scope(self) -> crate::ui_feedback::Scope { crate::ui_feedback::Scope::Services(self as u8) }
+}
 
 #[derive(Default)]
 pub(super) struct Entry {
     manager: Option<Manager>,
-    requested_section: Option<u8>,
+    requested_section: Option<Section>,
     deployment: Option<Deployment>,
     job: Option<mpsc::Receiver<Result<DeploymentOutcome, String>>>,
     feedback: super::ui_feedback::Feedback,
@@ -105,42 +126,7 @@ impl Entry {
             self.job = Some(receive);
             let ctx = ctx.clone();
             std::thread::spawn(move || {
-                let result = (|| -> anyhow::Result<DeploymentOutcome> {
-                    let exe = std::env::current_exe()?;
-                    uu_core::service_admin::package::verify(
-                        exe.parent()
-                            .ok_or_else(|| anyhow::anyhow!("application directory unavailable"))?,
-                        env!("UU_BUILD_COMMIT"),
-                    )?;
-                    // Recheck immediately before an automatic restart. A host
-                    // with temporary displays or an accepted preparation is
-                    // still in use even when its stream count reaches zero.
-                    if automatic && !automatic_restart_ready()? {return Ok(DeploymentOutcome::Deferred);}
-                    let config = uu_core::Config::from_env()?;
-                    if matches!(deployment, Deployment::Install) { uu_core::service_profile::prepare_source(&config)?; }
-                    match elevated_exit_code(
-                        &exe,
-                        &format!(
-                            "--background-service-action {} --source-data \"{}\"{}",
-                            deployment.action(),
-                            config.data_dir.display(),
-                            if automatic {" --defer-if-busy"}else{""}
-                        ),
-                    ) {
-                        Ok(0) => Ok(DeploymentOutcome::Applied),
-                        Ok(10) => Ok(DeploymentOutcome::Deferred),
-                        Ok(code) => anyhow::bail!("Eclipse update helper exited with status {code}"),
-                        Err(error)
-                            if error
-                                .downcast_ref::<std::io::Error>()
-                                .is_some_and(|e| e.raw_os_error() == Some(1223)) =>
-                        {
-                            Ok(DeploymentOutcome::Cancelled)
-                        }
-                        Err(error) => Err(error),
-                    }
-                })()
-                .map_err(|e| format!("{e:#}"));
+                let result = deployment::execute(deployment, automatic);
                 let _ = send.send(result);
                 ctx.request_repaint();
             });
@@ -191,9 +177,9 @@ impl Entry {
             .map(|t| t.password_permissions.is_some())
     }
     pub fn open_pairing(&mut self) {
-        self.select_section(4);
+        self.select_section(Section::Pairing);
     }
-    fn select_section(&mut self,section:u8) {
+    fn select_section(&mut self,section:Section) {
         self.requested_section=Some(section);
         if let Some(manager) = &mut self.manager {
             manager.section = section;
@@ -201,7 +187,7 @@ impl Entry {
         }
     }
     pub fn open_virtual_displays(&mut self, _ctx: &egui::Context) {
-        self.select_section(6);
+        self.select_section(Section::VirtualDisplays);
     }
     pub fn online(&self) -> bool {
         self.manager.as_ref().is_some_and(|m| m.ready && m.owns_profile())
@@ -220,7 +206,7 @@ impl Entry {
             } else if manager.state == SERVICE_RUNNING {
                 manager.request_action(Confirmation::Stop);
             } else if manager.state == SERVICE_STOPPED {
-                manager.submit(Job::Control(true));
+                manager.submit(Job::Start);
             }
         }
     }
@@ -248,8 +234,8 @@ impl Entry {
             if self.job.is_some() {ui.horizontal(|ui|{ui.spinner();ui.label(uu_i18n::text("正在完成更新…"));});}
             manager.show_tabs(ui);
         }
-        let section = self.manager.as_ref().map_or(0, |manager| manager.section);
-        if section == 0 {
+        let section = self.manager.as_ref().map_or(Section::Management, |manager| manager.section);
+        if section == Section::Management {
             self.show_status_card(ui, available);
         }
         if let Some(manager) = &mut self.manager {
@@ -346,7 +332,7 @@ impl Entry {
                             .clicked()
                         {
                             if manager.state == SERVICE_STOPPED {
-                                manager.submit(Job::Control(true));
+                                manager.submit(Job::Start);
                             } else {
                                 manager.request_action(Confirmation::Stop);
                             }
@@ -414,36 +400,6 @@ fn version_labels(ui: &mut egui::Ui, build: &BuildStatus) {
     }
     ui.weak(crate::build_info::label());
 }
-#[derive(Clone, Copy)]
-enum Deployment {
-    Install,
-    ImportPlugins,
-}
-enum DeploymentOutcome { Applied, Cancelled, Deferred }
-fn automatic_restart_ready()->anyhow::Result<bool> {
-    if status()?!=SERVICE_RUNNING {return Ok(true);}
-    let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    runtime.block_on(async {
-        let host=request_remote(Request::Status).await?;
-        if !matches!(host,Response::Status{ref snapshot,..} if snapshot.connections.is_empty()) {return Ok(false);}
-        let displays=request_remote(Request::VirtualDisplay{request:uu_core::native_virtual_display::Request::Inspect.into()}).await?;
-        Ok(automatic_restart_safe(&displays))
-    })
-}
-fn automatic_restart_safe(response:&Response)->bool {
-    matches!(response,Response::VirtualDisplay{response:uu_core::native_virtual_display::Response::Snapshot{displays,status,..}}
-        if displays.iter().all(|d|(!d.enabled||d.persistent)&&!d.cleanup_pending)
-            && status.preparation.as_ref().is_none_or(|p|!super::virtual_display_ui::preparation_active(p)
-                && p.phase!=uu_core::virtual_display::preparation::Phase::RecoveryPending))
-}
-impl Deployment {
-    fn action(self) -> &'static str {
-        match self {
-            Self::Install => "install",
-            Self::ImportPlugins => "import-plugins",
-        }
-    }
-}
 #[derive(Clone)]
 enum Confirmation {
     Update,
@@ -451,45 +407,11 @@ enum Confirmation {
     Stop,
     Restart,
 }
-enum Job {
-    Refresh,
-    Control(bool),
-    Rpc(Request),
-}
-impl Job {
-    /// Background refresh has no completion event; locking the whole service
-    /// form for it leaves stale busy state after a successful deployment.
-    fn foreground(&self) -> bool {
-        !matches!(self, Self::Refresh)
-    }
-}
-enum Event {
-    State {
-        state: u32,
-        build: Option<BuildStatus>,
-        response: Result<Response, String>,
-    },
-    Done(Result<Response, String>),
-    Trust {
-        completed: bool,
-        result: Result<Response, String>,
-    },
-    Connections {
-        completed: bool,
-        result: Result<Response, String>,
-    },
-    Plugins {
-        completed: bool,
-        result: Result<Response, String>,
-    },
-}
 struct Manager {
     expected_profile: Option<String>,
     allow_legacy_profile: bool,
     virtual_display: super::virtual_display_ui::State,
-    sender: mpsc::SyncSender<Job>,
-    events: mpsc::Receiver<Event>,
-    stop: Arc<AtomicBool>,
+    worker: worker::Worker,
     state: u32,
     build: Option<BuildStatus>,
     ready: bool,
@@ -506,9 +428,9 @@ struct Manager {
     revision: String,
     dirty: bool,
     busy: bool,
-    section: u8,
+    section: Section,
     feedback: super::ui_feedback::Feedback,
-    job_section: Option<u8>,
+    job_section: Option<Section>,
     codes: HashMap<String, zeroize::Zeroizing<String>>,
     permissions: HashMap<String, Permissions>,
     pairing: ServicePairing,
@@ -516,164 +438,26 @@ struct Manager {
     deployment: Option<Deployment>,
     loaded_plugins: Vec<uu_plugin_sdk::Manifest>,
 }
-impl Drop for Manager {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-    }
-}
 impl Manager {
     fn new() -> anyhow::Result<Self> {
         let config = uu_core::Config::from_env()?;
         let expected_profile = uu_core::service_profile::directory_key(&config.data_dir)?;
         let allow_legacy_profile = false;
-        let (sender, jobs) = mpsc::sync_channel(8);
-        let (send, events) = mpsc::sync_channel(16);
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = stop.clone();
-        std::thread::spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = send.send(Event::Done(Err(e.to_string())));
-                    return;
-                }
-            };
-            let mut trust_at = Instant::now();
-            let mut plugins_at = Instant::now();
-            while !stopped.load(Ordering::Acquire) {
-                match jobs.recv_timeout(Duration::from_millis(750)) {
-                    Ok(Job::Refresh) => {}
-                    Ok(Job::Control(start)) => {
-                        let result = control_owner(start)
-                            .map(|_| Response::Applied)
-                            .map_err(|e| format!("{e:#}"));
-                        let _ = send.send(Event::Done(result));
-                    }
-                    Ok(Job::Rpc(request)) => {
-                        let trust = matches!(request, Request::Trust { .. });
-                        let connections = matches!(request, Request::Connections { .. });
-                        let plugins = matches!(request, Request::Plugins { .. });
-                        let result = runtime
-                            .block_on(request_remote(request))
-                            .map_err(|e| format!("{e:#}"));
-                        let _ = send.send(if trust {
-                            Event::Trust {
-                                completed: true,
-                                result,
-                            }
-                        } else if connections {
-                            Event::Connections {
-                                completed: true,
-                                result,
-                            }
-                        } else if plugins {
-                            Event::Plugins {
-                                completed: true,
-                                result,
-                            }
-                        } else {
-                            Event::Done(result)
-                        });
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                }
-                let build = build_status().ok();
-                let state = build
-                    .as_ref()
-                    .map(|b| b.state)
-                    .unwrap_or_else(|| match status() {
-                        Ok(state) => state,
-                        Err(error)
-                            if error.downcast_ref::<std::io::Error>().is_some_and(|e| {
-                                e.raw_os_error()
-                                    == Some(
-                                        windows_sys::Win32::Foundation::ERROR_SERVICE_DOES_NOT_EXIST
-                                            as i32,
-                                    )
-                            }) =>
-                        {
-                            0
-                        }
-                        Err(_) => u32::MAX,
-                    });
-                let response = if state == SERVICE_RUNNING {
-                    runtime
-                        .block_on(request_remote(Request::Status))
-                        .map_err(|e| format!("{e:#}"))
-                } else {
-                    Err(uu_i18n::text("后台服务未启动；启动服务后读取和修改同一份配置。").into())
-                };
-                if send
-                    .send(Event::State {
-                        state,
-                        build,
-                        response,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-                if state == SERVICE_RUNNING && Instant::now() >= trust_at {
-                    let result = runtime
-                        .block_on(request_remote(Request::Trust {
-                            request: TrustRequest::Inspect,
-                        }))
-                        .map_err(|e| format!("{e:#}"));
-                    if send
-                        .send(Event::Trust {
-                            completed: false,
-                            result,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                    trust_at = Instant::now() + Duration::from_secs(5);
-                    let result = runtime
-                        .block_on(request_remote(Request::Connections {
-                            request: uu_core::service_admin::connections::Request::Inspect,
-                        }))
-                        .map_err(|e| format!("{e:#}"));
-                    if send
-                        .send(Event::Connections {
-                            completed: false,
-                            result,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                if state == SERVICE_RUNNING && Instant::now() >= plugins_at {
-                    let result = runtime
-                        .block_on(request_remote(Request::Plugins{request:PluginRequest::Inspect}))
-                        .map_err(|e| format!("{e:#}"));
-                    if send.send(Event::Plugins{completed:false,result}).is_err(){break;}
-                    plugins_at=Instant::now()+Duration::from_secs(5);
-                }
-            }
-        });
-        let mut manager = Self::empty(sender, events, stop);
+        let mut manager = Self::with_worker(worker::Worker::start());
         manager.expected_profile = Some(expected_profile);
         manager.allow_legacy_profile = allow_legacy_profile;
         Ok(manager)
     }
-    fn empty(
-        sender: mpsc::SyncSender<Job>,
-        events: mpsc::Receiver<Event>,
-        stop: Arc<AtomicBool>,
-    ) -> Self {
+    #[cfg(test)]
+    fn empty(sender: mpsc::SyncSender<Job>, events: mpsc::Receiver<Event>, stop: Arc<AtomicBool>) -> Self {
+        Self::with_worker(worker::Worker::from_channels(sender, events, stop))
+    }
+    fn with_worker(worker: worker::Worker) -> Self {
         Self {
             expected_profile: None,
             allow_legacy_profile: true,
             virtual_display: Default::default(),
-            sender,
-            events,
-            stop,
+            worker,
             state: 0,
             build: None,
             ready: false,
@@ -690,7 +474,7 @@ impl Manager {
             revision: String::new(),
             dirty: false,
             busy: false,
-            section: 0,
+            section: Section::Management,
             feedback: Default::default(),
             job_section: None,
             codes: HashMap::new(),
@@ -706,7 +490,7 @@ impl Manager {
         if foreground && self.busy {
             return;
         }
-        match self.sender.try_send(job) {
+        match self.worker.sender.try_send(job) {
             Ok(()) => {
                 if foreground {
                     self.busy = true;
@@ -714,13 +498,13 @@ impl Manager {
                 }
             }
             Err(error) => self.feedback.error(
-                super::ui_feedback::Scope::Services(self.section),
+                self.section.scope(),
                 error.to_string(),
             ),
         }
     }
     fn completion_scope(&mut self) -> super::ui_feedback::Scope {
-        super::ui_feedback::Scope::Services(self.job_section.take().unwrap_or(self.section))
+        self.job_section.take().unwrap_or(self.section).scope()
     }
     fn report_completion(&mut self, result: Result<String, String>) {
         let scope = self.completion_scope();
@@ -736,7 +520,7 @@ impl Manager {
     }
     fn poll(&mut self) {
         loop {
-            let event = match self.events.try_recv() {
+            let event = match self.worker.events.try_recv() {
                 Ok(event) => event,
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -912,7 +696,7 @@ impl Manager {
         match action {
             Confirmation::Update=>self.deployment=Some(Deployment::Install),
             Confirmation::ImportPlugins=>self.deployment=Some(Deployment::ImportPlugins),
-            Confirmation::Stop=>self.submit(Job::Control(false)),
+            Confirmation::Stop=>self.submit(Job::Stop),
             Confirmation::Restart=>self.save(true),
 
         }
@@ -986,13 +770,13 @@ impl Manager {
         ui.add_space(10.);
         ui.add_enabled_ui(self.confirm.is_none(),|ui|ui.horizontal_wrapped(|ui| {
             for (tab, label) in [
-                (0, "服务管理"),
-                (1, "输入"),
-                (2, "音频 / 视频"),
-                (3, "编码器"),
-                (4, "配对设置"),
-                (5, "连接服务"),
-                (6, "虚拟显示器"),
+                (Section::Management, "服务管理"),
+                (Section::Input, "输入"),
+                (Section::AudioVideo, "音频 / 视频"),
+                (Section::Encoder, "编码器"),
+                (Section::Pairing, "配对设置"),
+                (Section::Connections, "连接服务"),
+                (Section::VirtualDisplays, "虚拟显示器"),
             ] {
                 crate::theme::tab_value(ui, &mut self.section, tab, uu_i18n::text(label));
             }
@@ -1006,10 +790,10 @@ impl Manager {
     fn show_body_contents(&mut self, ui: &mut egui::Ui) {
         self.feedback.tick(ui.ctx());
         self.feedback
-            .show(ui, super::ui_feedback::Scope::Services(self.section));
+            .show(ui, self.section.scope());
         let enabled = self.snapshot.is_some() && !self.busy;
         match self.section {
-            0 => {
+            Section::Management => {
                 section_card(ui, uu_i18n::text("连接入口"), |ui| {
                     for (name, state) in &self.endpoints {
                         ui.label(format!("{name} · {state}"));
@@ -1040,18 +824,18 @@ impl Manager {
                 });
                 section_card(ui, uu_i18n::text("会话"), |ui| self.connections(ui));
             }
-            1..=4 => {
+            Section::Input | Section::AudioVideo | Section::Encoder | Section::Pairing => {
                 let title = match self.section {
-                    1 => uu_i18n::text("输入"),
-                    2 => uu_i18n::text("音频 / 视频"),
-                    3 => uu_i18n::text("编码器"),
+                    Section::Input => uu_i18n::text("输入"),
+                    Section::AudioVideo => uu_i18n::text("音频 / 视频"),
+                    Section::Encoder => uu_i18n::text("编码器"),
                     _ => uu_i18n::text("配对设置"),
                 };
                 section_card(ui, title, |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
                         let before = self.draft.clone();
                         match self.section {
-                            1..=3 => {
+                            Section::Input | Section::AudioVideo | Section::Encoder => {
                                 let monitors = self
                                     .snapshot
                                     .as_ref()
@@ -1062,8 +846,8 @@ impl Manager {
                                     ui,
                                     &mut self.draft,
                                     match self.section {
-                                        1 => 2,
-                                        2 => 0,
+                                        Section::Input => 2,
+                                        Section::AudioVideo => 0,
                                         _ => 1,
                                     },
                                     &monitors,
@@ -1072,7 +856,7 @@ impl Manager {
                                     false,
                                 );
                             }
-                            4 => {
+                            Section::Pairing => {
                                 super::server_config_ui::device_name(ui, &mut self.draft, true);
                                 if let Some(snapshot) = &self.trust {
                                     let mut commands = vec![];
@@ -1122,7 +906,7 @@ impl Manager {
                     });
                 });
             }
-            5 => {
+            Section::Connections => {
                 section_card(ui, uu_i18n::text("连接服务"), |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
                         let before = self.draft.clone();
@@ -1199,7 +983,7 @@ impl Manager {
                 }
                 self.plugins_ui(ui, enabled);
             }
-            6 => {
+            Section::VirtualDisplays => {
                 section_frame(ui, |ui| {
                     if self.snapshot.is_some() {
                         let service_busy = self.busy;
@@ -1212,7 +996,6 @@ impl Manager {
                     }
                 });
             }
-            _ => {}
         }
         for pending in self.pending.clone() {
             crate::theme::card(ui.visuals()).show(ui, |ui| {
@@ -1300,9 +1083,6 @@ impl Manager {
             ui.weak(uu_i18n::text("连接服务后显示当前会话。"));
         }
     }
-}
-async fn request_remote(request: Request) -> anyhow::Result<Response> {
-    uu_core::service_admin::windows::request_owner(request).await
 }
 struct Standalone {
     entry: Entry,
@@ -1494,7 +1274,7 @@ fn run_manager(virtual_displays: bool) -> eframe::Result {
             super::setup_style(&cc.egui_ctx);
             let appearance = super::theme::PreferenceWatch::load_current(&cc.egui_ctx);
             if virtual_displays {
-                manager.section = 6;
+                manager.section = Section::VirtualDisplays;
             }
             Ok(Box::new(Standalone {
                 entry: Entry {
@@ -1772,14 +1552,14 @@ mod tests {
     fn tray_management_selection_survives_service_manager_initialization() {
         let ctx=egui::Context::default();let mut entry=Entry::default();
         entry.open_virtual_displays(&ctx);
-        assert_eq!(entry.requested_section,Some(6));
+        assert_eq!(entry.requested_section,Some(Section::VirtualDisplays));
         let (manager,_send,_jobs,_stop)=fixture();
         entry.manager=Some(manager);
         entry.poll(&ctx,&mut Default::default());
-        assert_eq!(entry.manager.as_ref().unwrap().section,6);
+        assert_eq!(entry.manager.as_ref().unwrap().section,Section::VirtualDisplays);
         assert!(entry.requested_section.is_none());
         entry.open_pairing();
-        assert_eq!(entry.manager.as_ref().unwrap().section,4);
+        assert_eq!(entry.manager.as_ref().unwrap().section,Section::Pairing);
     }
     #[test]
     fn service_readiness_and_lost_connection_control_the_online_state() {
@@ -1891,8 +1671,8 @@ mod tests {
             let (mut manager, send, _jobs, _stop) = fixture();
             manager.busy = true;
             manager.dirty = true;
-            manager.job_section = Some(2);
-            manager.section = 6;
+            manager.job_section = Some(Section::AudioVideo);
+            manager.section = Section::VirtualDisplays;
             send.send(event).unwrap();
             manager.poll();
             assert!(!manager.busy);
@@ -1918,10 +1698,10 @@ mod tests {
     #[test]
     fn firewall_result_stays_on_its_own_tab_and_is_informational() {
         let (mut manager, send, jobs, _stop) = fixture();
-        manager.section = 0;
+        manager.section = Section::Management;
         manager.submit(Job::Rpc(Request::Firewall { repair: false }));
         assert!(matches!(jobs.try_recv(), Ok(Job::Rpc(Request::Firewall { repair: false }))));
-        manager.section = 5;
+        manager.section = Section::Connections;
         send.send(Event::Done(Ok(Response::Firewall {
             message: "已检查防火墙：Generated result".into(),
         })))
@@ -2034,7 +1814,7 @@ mod tests {
         let (mut manager, send, _jobs, _stop) = fixture();
         send.send(state(false, Sharing::default())).unwrap();
         manager.poll();
-        manager.section = 0;
+        manager.section = Section::Management;
         let mut entry = Entry { manager: Some(manager), ..Default::default() };
         let mut host = super::super::sharing_ui::HostUi::default();
         let ctx = egui::Context::default();
@@ -2042,7 +1822,7 @@ mod tests {
         let service = draw_service(&mut entry, &mut host, &ctx);
         assert!(service.contains(uu_i18n::text("Eclipse 服务")));
         assert!(service.contains(uu_i18n::text("后台服务未启动或尚未就绪")));
-        entry.manager.as_mut().unwrap().section = 1;
+        entry.manager.as_mut().unwrap().section = Section::Input;
         let input = draw_service(&mut entry, &mut host, &ctx);
         assert!(input.contains(uu_i18n::text("服务管理")));
         assert!(!input.contains(uu_i18n::text("Eclipse 服务")));
@@ -2219,7 +1999,7 @@ mod tests {
 
     #[test]
     fn restart_with_no_streams_applies_from_the_current_settings_tab() {
-        for section in [1,2,3,5] {
+        for section in [Section::Input,Section::AudioVideo,Section::Encoder,Section::Connections] {
             let mut h=Harness::new();h.manager.section=section;
             h.click("保存并重启服务");
             assert_eq!(h.manager.section,section);
@@ -2236,10 +2016,10 @@ mod tests {
     }
     #[test]
     fn active_restart_confirms_on_current_tab_and_cancel_keeps_the_draft() {
-        let mut h=Harness::new();h.manager.section=3;active_stream(&mut h.manager);
+        let mut h=Harness::new();h.manager.section=Section::Encoder;active_stream(&mut h.manager);
         h.manager.draft.audio=false;h.manager.dirty=true;
         h.click("保存并重启服务");
-        assert!(h.manager.confirm.is_some());assert_eq!(h.manager.section,3);
+        assert!(h.manager.confirm.is_some());assert_eq!(h.manager.section,Section::Encoder);
         assert!(h.has("此操作会断开当前 1 个串流会话。"));
         assert!(matches!(h.jobs.try_recv(),Err(mpsc::TryRecvError::Empty)));
         h.click("取消");
@@ -2248,7 +2028,7 @@ mod tests {
     }
     #[test]
     fn unknown_stream_count_confirms_and_zero_count_never_shows_a_zero_warning() {
-        let mut h=Harness::new();h.manager.section=5;h.manager.snapshot=None;
+        let mut h=Harness::new();h.manager.section=Section::Connections;h.manager.snapshot=None;
         h.manager.request_action(Confirmation::Update);h.frame(vec![]);h.frame(vec![]);
         assert!(h.has("无法确认当前连接数；此操作可能会断开正在进行的串流。"));
         h.send.send(state(true,Sharing::default())).unwrap();h.frame(vec![]);
@@ -2259,7 +2039,7 @@ mod tests {
     }
     #[test]
     fn only_loaded_plugins_appear_and_technical_errors_stay_in_diagnostics() {
-        let mut h=Harness::new();h.manager.section=5;
+        let mut h=Harness::new();h.manager.section=Section::Connections;
         h.manager.apply_plugin_snapshot(PluginSnapshot{directory:"generated/private/plugin/path".into(),plugins:vec![uu_core::service_admin::PluginInfo {
             id:"fixture".into(),name:"Generated extension".into(),version:"1".into(),enabled:false,compatible:false,error:"generated SDK mismatch detail".into(),preferences:Default::default(),
         }]});
