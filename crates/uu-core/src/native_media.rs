@@ -43,6 +43,8 @@ use webrtc::{
 pub(crate) mod socket_lifetime_test;
 #[cfg(all(test,target_os="linux"))]
 mod forwarded_test;
+#[cfg(all(test,target_os="linux"))]
+mod turn_test;
 
 // ICMP port-unreachable replies during ICE probing are not a teardown of this
 // connectionless socket. Otherwise Windows reports 10054 to the mux, whose
