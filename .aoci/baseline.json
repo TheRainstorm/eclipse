@@ -17,9 +17,9 @@
     },
     ".github/workflows/build-release.yml": {
       "role": "index",
-      "sha256": "808e269dc533cef90ff1a8eef6b3f0eea5b3a5641b85de3497ead05ce1ee14d0",
-      "size": 28861,
-      "normalized_sha256": "808e269dc533cef90ff1a8eef6b3f0eea5b3a5641b85de3497ead05ce1ee14d0"
+      "sha256": "10d653834e2888e4b230482fb0f9aaea07c3ed776f22a902e388537f28ef4dd9",
+      "size": 29817,
+      "normalized_sha256": "10d653834e2888e4b230482fb0f9aaea07c3ed776f22a902e388537f28ef4dd9"
     },
     ".gitignore": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "261bee6e7d275b33bc6ddf47ebb126c709deda830146446b6d487ac85e53b911",
-      "size": 227321,
-      "normalized_sha256": "261bee6e7d275b33bc6ddf47ebb126c709deda830146446b6d487ac85e53b911"
+      "sha256": "f3de72aff79e69e96825d2b77f52f886be7a5386ea9fa6d22b00e6354405fde6",
+      "size": 227360,
+      "normalized_sha256": "f3de72aff79e69e96825d2b77f52f886be7a5386ea9fa6d22b00e6354405fde6"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -3850,9 +3850,9 @@
     },
     "tools/release/test_build_provenance.py": {
       "role": "observe",
-      "sha256": "057e2a6aefa501c35621f59b2d2514674aa7fd3998e0f6ff3e8635e89c5c061e",
-      "size": 3761,
-      "normalized_sha256": "057e2a6aefa501c35621f59b2d2514674aa7fd3998e0f6ff3e8635e89c5c061e"
+      "sha256": "d4697d11b1f0e71fbdef77cbb27969464a8fa6b4363508602b134018b2bbbe09",
+      "size": 6685,
+      "normalized_sha256": "d4697d11b1f0e71fbdef77cbb27969464a8fa6b4363508602b134018b2bbbe09"
     },
     "tools/release/test_check_version.py": {
       "role": "observe",

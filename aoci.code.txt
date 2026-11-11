@@ -13,7 +13,7 @@ README.md[SG7S]: F:介绍0.24.1多屏、老板键、收藏、端口转发及安�
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
 
 ===/home/yfy/Repo/uu_remote/.github/workflows/===
-build-release.yml[OV8L]: F:执行Eclipse双平台回归与完整包发布，支持当前流程验证并重建不可变原标签 | R:code:tools/windows/package.py,code:tools/linux/package.py,code:tools/windows/test_installer.ps1,code:tools/native/wayland_smoke.py,code:tools/release/check_version.py | A:linux-media,windows-installer,build,windows-smoke,release | S:Linux工作区测试串行共享十端口池；release_tag须已推含v标签；产品固定标签，Windows安装及Wayland夹具用当前工作流，后者按workflow_sha提取到临时目录；已发布资产核验保留；探针记HEAD，烟测须生产程序；生成非桌面验收
+build-release.yml[OV8L]: F:执行双平台回归打包发布，以当前验证夹具重跑不可变产品标签并保留已发布资产 | R:code:tools/windows/package.py,code:tools/linux/package.py,code:tools/release/test_build_provenance.py,code:tools/windows/test_installer.ps1,code:tools/native/wayland_smoke.py,code:tools/release/check_version.py | A:linux-media,windows-installer,build,windows-smoke,release | S:Linux测试串行共享十端口池；release_tag须已推含v标签；产品固定原标签，安装和Wayland及构建来源夹具跟随workflow_sha，后者仅替换测试；已发布包重下核验并保留；探针记HEAD，烟测须生产程序；生成非桌面验收
 
 ===/home/yfy/Repo/uu_remote/assets/branding/===
 README.md[SU4T]: F:说明Eclipse日蚀品牌、图标来源和资源导出方法及UU标识权属 | R:code:README.md | A:- | S:UU原始favicon不属于本项目双许可
