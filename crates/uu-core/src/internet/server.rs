@@ -25,22 +25,36 @@ use tokio_tungstenite::{
         Message,
     },
 };
+pub use super::turn::Config as TurnConfig;
+use super::turn::Credentials;
+use webrtc::ice_transport::ice_server::RTCIceServer;
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Device {
+    pub device: String,
+    pub name: String,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Request {
     Probe { version: u32, devices: Vec<String> },
+    Directory { version: u32 },
     Host { version: u32, device: String },
     Join { version: u32, device: String },
     Signal { session: String, body: Value },
     Leave { session: String },
+    Publish { name: String },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Event {
     Presence { online: Vec<String> },
+    Directory { devices: Vec<Device> },
     Ready,
     Connected { session: String, stun: Vec<String> },
+    Session { session: String, stun: Vec<String>, turn: Vec<RTCIceServer> },
     Signal { session: String, body: Value },
     Ended { session: String },
     Error { code: String },
@@ -51,6 +65,7 @@ pub struct Config {
     pub private_key: PathBuf,
     pub token_file: PathBuf,
     pub stun: Vec<String>,
+    pub turn: Option<TurnConfig>,
 }
 type Sender = mpsc::Sender<Event>;
 struct Viewer {
@@ -63,6 +78,8 @@ struct Host {
     tx: Sender,
     viewers: HashMap<String, Viewer>,
     multiplexed: bool,
+    version: u32,
+    name: String,
 }
 #[derive(Default)]
 struct Rooms {
@@ -72,6 +89,7 @@ struct Rooms {
 struct State {
     rooms: Arc<Mutex<Rooms>>,
     stun: Vec<String>,
+    turn: Option<Arc<Credentials>>,
 }
 enum Membership {
     Host {
@@ -85,6 +103,19 @@ enum Membership {
     },
 }
 impl State {
+    fn directory(&self, version:u32)->Result<Vec<Device>> {
+        ensure!(version==1,"unsupported_version");
+        let rooms=self.rooms.lock().unwrap();
+        let mut devices:Vec<_>=rooms.hosts.iter().filter(|(_,h)|!h.tx.is_closed())
+            .map(|(device,h)|Device{device:device.clone(),name:h.name.clone()}).collect();
+        devices.sort_by(|a,b|a.name.cmp(&b.name).then_with(||a.device.cmp(&b.device)));
+        Ok(devices)
+    }
+    fn connected(&self, session:&str, modern:bool, role:&str)->Result<Event> {
+        Ok(if modern {Event::Session{session:session.into(),stun:self.stun.clone(),
+            turn:self.turn.as_ref().map(|t|t.issue(session,role)).transpose()?.unwrap_or_default()}}
+        else {Event::Connected{session:session.into(),stun:self.stun.clone()}})
+    }
     fn presence(&self, version:u32,devices:&[String])->Result<Vec<String>> {
         ensure!(version==1 && !devices.is_empty() && devices.len()<=128,"invalid_probe");
         for device in devices {validate_identity(1,device,1)?;}
@@ -95,7 +126,7 @@ impl State {
         let mut rooms = self.rooms.lock().unwrap();
         match request {
             Request::Host { version, device } => {
-                validate_identity(version, &device, 2)?;
+                validate_identity(version, &device, 3)?;
                 ensure!(!rooms.hosts.contains_key(&device), "device_already_online");
                 ensure!(rooms.hosts.len() < 128, "server_full");
                 let id = uuid::Uuid::new_v4();
@@ -106,27 +137,24 @@ impl State {
                         id,
                         tx,
                         viewers: HashMap::new(),
-                        multiplexed: version==2,
+                        multiplexed: version>=2,
+                        version,
+                        name: device.clone(),
                     },
                 );
                 Ok(Membership::Host { device, id })
             }
             Request::Join { version, device } => {
-                validate_identity(version, &device, 1)?;
+                validate_identity(version, &device, 2)?;
                 let host = rooms.hosts.get_mut(&device).context("device_offline")?;
                 // v1 hosts opt into a single route; v2's session IDs allow
                 // independent viewers without a fixed per-host count limit.
                 ensure!(host.multiplexed || host.viewers.is_empty(), "device_busy");
                 let id = uuid::Uuid::new_v4();
                 let session = uuid::Uuid::new_v4().to_string();
-                host.tx.try_send(Event::Connected {
-                    session: session.clone(),
-                    stun: self.stun.clone(),
-                })?;
-                tx.try_send(Event::Connected {
-                    session: session.clone(),
-                    stun: self.stun.clone(),
-                })?;
+                let modern=host.version>=3 && version>=2;
+                host.tx.try_send(self.connected(&session,modern,"host")?)?;
+                tx.try_send(self.connected(&session,modern,"viewer")?)?;
                 host.viewers.insert(session.clone(), Viewer {
                     id,
                     session: session.clone(),
@@ -143,6 +171,12 @@ impl State {
     }
     fn route(&self, member: &Membership, request: Request) -> Result<()> {
         let mut rooms = self.rooms.lock().unwrap();
+        if let Request::Publish{name}=request {
+            ensure!(!name.trim().is_empty() && name.chars().count()<=64 && !name.chars().any(char::is_control),"invalid_device_name");
+            let Membership::Host{device,id}=member else {anyhow::bail!("host_required");};
+            let host=rooms.hosts.get_mut(device).filter(|h|h.id==*id && h.version>=3).context("stale_host")?;
+            host.name=name.trim().into(); return Ok(());
+        }
         let (session, body) = match request {
             Request::Signal { session, body } => (session, Some(body)),
             Request::Leave { session } => (session, None),
@@ -261,6 +295,7 @@ pub async fn serve(config: Config, mut stop: watch::Receiver<bool>) -> Result<()
     let stun = crate::direct_ice::InternetIce::new(config.stun)?
         .urls()
         .to_vec();
+    let turn=config.turn.map(Credentials::load).transpose()?.map(Arc::new);
     let token = Arc::new(read_token(&config.token_file)?);
     let chain = CertificateDer::pem_file_iter(&config.certificate)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -271,10 +306,11 @@ pub async fn serve(config: Config, mut stop: watch::Receiver<bool>) -> Result<()
     let acceptor = TlsAcceptor::from(Arc::new(tls));
     let listener = crate::listen_socket::tcp(config.bind)
         .context("cannot bind signaling service")?;
-    tracing::info!(address=%listener.local_addr()?,"native signaling listening; media forwarding disabled");
+    tracing::info!(address=%listener.local_addr()?,turn_configured=turn.is_some(),"native connection signaling listening");
     let state = State {
         rooms: Arc::default(),
         stun,
+        turn,
     };
     let slots = Arc::new(Semaphore::new(256));
     let mut tasks = tokio::task::JoinSet::new();
@@ -325,6 +361,11 @@ async fn handle<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         ws.send(Message::Text(serde_json::to_string(&Event::Presence{online})?.into())).await?;
         let _=ws.close(None).await;
         return Ok(());
+    }
+    if let Request::Directory{version}=request {
+        let devices=state.directory(version)?;
+        ws.send(Message::Text(serde_json::to_string(&Event::Directory{devices})?.into())).await?;
+        let _=ws.close(None).await;return Ok(());
     }
     let (tx, mut rx) = mpsc::channel(16);
     let member = match state.register(request, tx) {
@@ -377,10 +418,31 @@ async fn handle<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn relay_capability_is_negotiated_per_pair_and_directory_names_do_not_authorize_sessions() {
+        for (host_version,viewer_version,modern) in [(1,1,false),(2,2,false),(3,1,false),(3,2,true)] {
+            let state=State{rooms:Arc::default(),stun:vec![],turn:None};
+            let (tx,mut host_events)=mpsc::channel(16);
+            let host=state.register(Request::Host{version:host_version,device:"generated-host".into()},tx).unwrap();
+            assert!(matches!(host_events.recv().await,Some(Event::Ready)));
+            if host_version==3 {
+                state.route(&host,Request::Publish{name:"Generated host".into()}).unwrap();
+                assert_eq!(state.directory(1).unwrap()[0].name,"Generated host");
+            }
+            let (tx,mut viewer_events)=mpsc::channel(16);
+            let viewer=state.register(Request::Join{version:viewer_version,device:"generated-host".into()},tx).unwrap();
+            for event in [host_events.recv().await.unwrap(),viewer_events.recv().await.unwrap()] {
+                assert_eq!(matches!(event,Event::Session{..}),modern);
+            }
+            assert!(state.route(&viewer,Request::Publish{name:"Another host".into()}).is_err());
+            state.remove(&host);
+            assert!(state.directory(1).unwrap().is_empty());
+        }
+    }
     #[test]
     fn signaling_v1_retains_one_route_and_v2_accepts_more_than_four_viewers(){
         for (version,count) in [(1,1),(2,6)] {
-            let state=State{rooms:Arc::default(),stun:vec![]};let (tx,_host_receive)=mpsc::channel(32);
+            let state=State{rooms:Arc::default(),turn:None,stun:vec![]};let (tx,_host_receive)=mpsc::channel(32);
             state.register(Request::Host{version,device:"generated-compatibility-host".into()},tx).unwrap();
             let mut receive=Vec::new();
             for _ in 0..count {let (tx,rx)=mpsc::channel(16);receive.push(rx);state.register(Request::Join{version:1,device:"generated-compatibility-host".into()},tx).unwrap();}
@@ -392,7 +454,7 @@ mod tests {
     }
     #[tokio::test]
     async fn concurrent_routes_are_private_and_host_leaves_only_one_session() {
-        let state=State{rooms:Arc::default(),stun:vec![]};
+        let state=State{rooms:Arc::default(),turn:None,stun:vec![]};
         let (host_tx,mut host_rx)=mpsc::channel(32);
         let host=state.register(Request::Host{version:2,device:"generated-host".into()},host_tx).unwrap();
         host_rx.recv().await.unwrap();let mut viewers=Vec::new();let mut receive=Vec::new();
@@ -419,6 +481,7 @@ mod tests {
     async fn stale_viewer_release_cannot_close_the_next_session() {
         let state = State {
             rooms: Arc::default(),
+            turn: None,
             stun: vec![],
         };
         let (tx, mut host_rx) = mpsc::channel(16);

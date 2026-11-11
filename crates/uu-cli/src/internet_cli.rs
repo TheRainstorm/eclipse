@@ -27,6 +27,12 @@ pub enum Command {
         token_file: PathBuf,
         #[arg(long)]
         stun: Vec<String>,
+        #[arg(long, requires = "turn_secret_file")]
+        turn_url: Vec<String>,
+        #[arg(long, requires = "turn_url")]
+        turn_secret_file: Option<PathBuf>,
+        #[arg(long, default_value_t = 86400)]
+        turn_ttl_seconds: u64,
     },
     /// Share a native source using an installed provider or self-hosted service.
     Host {
@@ -89,6 +95,9 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             private_key,
             token_file,
             stun,
+            turn_url,
+            turn_secret_file,
+            turn_ttl_seconds,
         } => {
             let (stop, rx) = watch::channel(false);
             let service = internet::server::serve(
@@ -98,6 +107,10 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
                     private_key,
                     token_file,
                     stun,
+                    turn: if turn_url.is_empty() {None} else {Some(internet::server::TurnConfig {
+                        urls:turn_url,secret_file:turn_secret_file.context("--turn-url requires --turn-secret-file")?,
+                        credential_lifetime:Duration::from_secs(turn_ttl_seconds),
+                    })},
                 },
                 rx,
             );

@@ -206,6 +206,7 @@ async fn unified_device_wss_listener_republishes_and_reconnects_with_the_same_gr
     let (service_stop, service_rx) = watch::channel(false);
     let service = tokio::spawn(internet::server::serve(
         internet::server::Config {
+            turn: None,
             bind: address,
             certificate: cert.clone(),
             private_key: key,

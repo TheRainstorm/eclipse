@@ -99,6 +99,48 @@ async fn receive(socket: &mut Socket) -> Result<Event> {
 pub struct Host {
     socket: Option<Socket>,
 }
+pub use super::server::Device;
+/// The service credential reveals presence, never desktop authorization.
+pub async fn directory(config:&Config)->Result<Vec<Device>> {
+    let mut socket=open(config,Request::Directory{version:1}).await?;
+    let result=match receive(&mut socket).await? {
+        Event::Directory{devices}=>{
+            ensure!(devices.len()<=128 && devices.iter().all(|d| !d.device.is_empty() && d.device.len()<=80
+                && d.device.bytes().all(|b|b.is_ascii_alphanumeric()||b"-_".contains(&b))
+                && !d.name.trim().is_empty() && d.name.chars().count()<=64 && !d.name.chars().any(char::is_control)),"invalid device directory");
+            Ok(devices)
+        },
+        _=>bail!("connection service does not support device discovery"),
+    };
+    let _=socket.close(None).await;result
+}
+async fn register(config:&Config,device:&str,name:&str)->Result<Socket> {
+    let mut version=3;
+    loop {
+        let mut socket=open(config,Request::Host{version,device:device.into()}).await?;
+        match receive(&mut socket).await? {
+            Event::Ready=>{
+                if version>=3 {
+                    let label: String=name.trim().chars().filter(|c|!c.is_control()).take(64).collect();
+                    let label=if label.is_empty(){device.chars().take(64).collect()}else{label};
+                    socket.send(Message::Text(serde_json::to_string(&Request::Publish{name:label})?.into())).await?;
+                }
+                return Ok(socket);
+            },
+            Event::Error{code} if version>1 && code=="unsupported_version"=>{let _=socket.close(None).await;version-=1;},
+            Event::Error{code}=>bail!("signaling registration rejected: {code}"),
+            _=>bail!("unexpected signaling registration response"),
+        }
+    }
+}
+fn session(event:Event)->Result<(String,crate::direct_ice::InternetIce)> {
+    match event {
+        Event::Connected{session,stun}=>Ok((session,crate::direct_ice::InternetIce::new(stun)?)),
+        Event::Session{session,stun,turn}=>Ok((session,crate::direct_ice::InternetIce::automatic(stun,turn)?)),
+        Event::Error{code}=>bail!("signaling connection rejected: {code}"),
+        _=>bail!("unexpected signaling session response"),
+    }
+}
 /// Read presence using the service credential, without creating a viewer or
 /// asking the host to start a media/authentication session. Old servers fail
 /// this request; callers must display unknown rather than offline in that case.
@@ -117,21 +159,7 @@ pub async fn presence(config:&Config,devices:&[String])->Result<Vec<String>> {
 }
 impl Host {
     pub async fn online(config: &Config, device: &str) -> Result<Self> {
-        let mut socket = open(
-            config,
-            Request::Host {
-                version: 1,
-                device: device.to_owned(),
-            },
-        )
-        .await?;
-        match receive(&mut socket).await? {
-            Event::Ready => Ok(Self {
-                socket: Some(socket),
-            }),
-            Event::Error { code } => bail!("signaling registration rejected: {code}"),
-            _ => bail!("unexpected signaling registration response"),
-        }
+        Ok(Self { socket: Some(register(config,device,device).await?) })
     }
     pub async fn accept(&mut self) -> Result<Connection> {
         let socket = self
@@ -140,8 +168,8 @@ impl Host {
             .context("host session already consumed")?;
         loop {
             match receive(socket).await? {
-                Event::Connected { session, stun } => {
-                    let ice = crate::direct_ice::InternetIce::new(stun)?;
+                event @ (Event::Connected { .. } | Event::Session { .. }) => {
+                    let (session,ice)=session(event)?;
                     return Ok(Connection {
                         transport: Box::new(SelfTransport {
                             socket: self.socket.take().unwrap(),
@@ -164,18 +192,24 @@ impl Host {
     }
 }
 pub async fn join(config: &Config, device: &str) -> Result<Connection> {
-    let mut socket = open(
+    let mut version=2;
+    let (socket,event)=loop {
+      let mut socket = open(
         config,
         Request::Join {
-            version: 1,
+            version,
             device: device.to_owned(),
         },
     )
-    .await?;
-    match receive(&mut socket).await? {
-        Event::Connected { session, stun } => {
-            let ice = crate::direct_ice::InternetIce::new(stun)?;
-            Ok(Connection {
+      .await?;
+      let event=receive(&mut socket).await?;
+      if matches!(&event,Event::Error{code}if version==2 && code=="unsupported_version") {
+          let _=socket.close(None).await;version=1;continue;
+      }
+      break (socket,event);
+    };
+    let (session,ice)=session(event)?;
+    Ok(Connection {
                 transport: Box::new(SelfTransport {
                     socket,
                     session: session.clone(),
@@ -183,11 +217,7 @@ pub async fn join(config: &Config, device: &str) -> Result<Connection> {
                 }),
                 session,
                 ice,
-            })
-        }
-        Event::Error { code } => bail!("signaling connection rejected: {code}"),
-        _ => bail!("unexpected signaling join response"),
-    }
+    })
 }
 struct SelfTransport {
     socket: Socket,
@@ -250,20 +280,12 @@ pub struct Listener {
 const INCOMING_QUEUE_CAPACITY: usize = 4;
 impl Listener {
     pub async fn online(config: &Config, device: &str) -> Result<Self> {
+        Self::online_named(config,device,device).await
+    }
+    pub async fn online_named(config:&Config,device:&str,name:&str)->Result<Self> {
         // Version 2 opts a host into multiplexing. A v1 host is kept at one
         // viewer by new servers, and an old server can explicitly decline v2.
-        let mut socket = {
-            let mut version=2;
-            loop {
-                let mut candidate=open(config,Request::Host{version,device:device.into()}).await?;
-                match receive(&mut candidate).await? {
-                    Event::Ready=>{tracing::info!(version,multiplexed=version==2,"self-hosted signaling registered");break candidate;}
-                    Event::Error{code} if version==2&&code=="unsupported_version"=>{let _=candidate.close(None).await;version=1;},
-                    Event::Error{code}=>bail!("signaling registration rejected: {code}"),
-                    _=>bail!("unexpected signaling registration response"),
-                }
-            }
-        };
+        let mut socket = register(config,device,name).await?;
         let (outgoing, mut requests) = tokio::sync::mpsc::channel::<Request>(128);
         let (accepted, incoming) = tokio::sync::mpsc::channel(INCOMING_QUEUE_CAPACITY);
         let task = tokio::spawn(async move {
@@ -278,8 +300,8 @@ impl Listener {
                     },
                     event=receive(&mut socket)=>{
                         match event {
-                            Ok(Event::Connected{session,stun})=>{
-                                let Ok(ice)=crate::direct_ice::InternetIce::new(stun) else{break;};
+                            Ok(event @ (Event::Connected{..} | Event::Session{..}))=>{
+                                let Ok((session,ice))=session(event) else{break;};
                                 if sessions.contains_key(&session) {break;}
                                 let (send,receive)=tokio::sync::mpsc::channel(64);
                                 sessions.insert(session.clone(),send);
@@ -349,6 +371,89 @@ impl Drop for RoutedTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn modern_clients_downgrade_only_on_explicit_unsupported_version() {
+        for maximum in [1,2] {
+            crate::install_crypto_provider();
+            let root=std::env::temp_dir().join(format!("eclipse-wss-legacy-{}",uuid::Uuid::new_v4()));std::fs::create_dir(&root).unwrap();
+            let certificate=rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+            let ca=root.join("ca.pem");let token=root.join("token");
+            std::fs::write(&ca,certificate.cert.pem()).unwrap();std::fs::write(&token,"00".repeat(32)).unwrap();
+            let tls=rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(vec![certificate.cert.der().clone()],
+                rustls_pki_types::PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der()).into()).unwrap();
+            let acceptor=tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+            let tcp=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=tcp.local_addr().unwrap();
+            let server=tokio::spawn(async move {
+                for expected in (maximum..=3).rev() {
+                    let (tcp,_)=tcp.accept().await.unwrap();
+                    let mut ws=tokio_tungstenite::accept_async(acceptor.accept(tcp).await.unwrap()).await.unwrap();
+                    let first=receive_request(&mut ws).await;
+                    assert!(matches!(first,Request::Host{version,..}if version==expected));
+                    if expected>maximum {
+                        ws.send(Message::Text(serde_json::to_string(&Event::Error{code:"unsupported_version".into()}).unwrap().into())).await.unwrap();continue;
+                    }
+                    ws.send(Message::Text(serde_json::to_string(&Event::Ready).unwrap().into())).await.unwrap();
+                    ws.send(Message::Text(serde_json::to_string(&Event::Connected{session:"legacy-session".into(),stun:vec![]}).unwrap().into())).await.unwrap();
+                    assert!(matches!(receive_request(&mut ws).await,Request::Signal{..}),"legacy hosts never receive Publish or new ICE fields");
+                }
+            });
+            let config=Config{url:format!("wss://{address}/v1/signal"),token_file:token,ca_file:Some(ca)};
+            let mut listener=Listener::online_named(&config,"legacy-host","Named host").await.unwrap();
+            let mut connection=timeout(Duration::from_secs(3),listener.accept()).await.unwrap().unwrap();
+            assert!(connection.ice.configuration().ice_servers.is_empty());
+            connection.transport.send(serde_json::json!({"legacy":true})).await.unwrap();
+            timeout(Duration::from_secs(3),server).await.unwrap().unwrap();
+            listener.close().await;std::fs::remove_dir_all(root).unwrap();
+        }
+        async fn receive_request(ws:&mut WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>)->Request {
+            let message=timeout(Duration::from_secs(3),ws.next()).await.unwrap().unwrap().unwrap();
+            serde_json::from_str(message.to_text().unwrap()).unwrap()
+        }
+    }
+    #[tokio::test]
+    async fn two_outbound_hosts_discover_and_connect_in_both_directions() {
+        crate::install_crypto_provider();
+        let root=std::env::temp_dir().join(format!("eclipse-wss-bidirectional-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let certificate=rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+        let ca_file=root.join("ca.pem");let key_file=root.join("key.pem");let token_file=root.join("token");
+        std::fs::write(&ca_file,certificate.cert.pem()).unwrap();
+        std::fs::write(&key_file,certificate.key_pair.serialize_pem()).unwrap();
+        std::fs::write(&token_file,"00".repeat(32)).unwrap();
+        let reservation=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=reservation.local_addr().unwrap();drop(reservation);
+        let (stop,rx)=tokio::sync::watch::channel(false);
+        let serving=tokio::spawn(super::super::server::serve(super::super::server::Config {
+            bind:address,certificate:ca_file.clone(),private_key:key_file,token_file:token_file.clone(),stun:vec![],turn:None,
+        },rx));
+        let config=Config{url:format!("wss://{address}/v1/signal"),token_file,ca_file:Some(ca_file)};
+        let mut a=timeout(Duration::from_secs(3),async {
+            loop {match Listener::online_named(&config,"device-a","Generated A").await {
+                Ok(listener)=>break listener,Err(_)=>tokio::time::sleep(Duration::from_millis(10)).await,
+            }}
+        }).await.unwrap();
+        let mut b=Listener::online_named(&config,"device-b","Generated B").await.unwrap();
+        timeout(Duration::from_secs(3),async {
+            loop {
+                let devices=directory(&config).await.unwrap();
+                if devices.len()==2 && devices[0].name=="Generated A" && devices[1].name=="Generated B" {break;}
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        let mut b_to_a=join(&config,"device-a").await.unwrap();
+        let mut at_a=a.accept().await.unwrap();
+        let mut a_to_b=join(&config,"device-b").await.unwrap();
+        let mut at_b=b.accept().await.unwrap();
+        for (viewer,host,marker) in [(&mut b_to_a,&mut at_a,1),(&mut a_to_b,&mut at_b,2)] {
+            assert_eq!(viewer.session,host.session);
+            viewer.transport.send(serde_json::json!({"from_viewer":marker})).await.unwrap();
+            assert_eq!(host.transport.receive().await.unwrap()["from_viewer"],marker);
+            host.transport.send(serde_json::json!({"from_host":marker})).await.unwrap();
+            assert_eq!(viewer.transport.receive().await.unwrap()["from_host"],marker);
+            viewer.transport.close().await;host.transport.close().await;
+        }
+        a.close().await;b.close().await;stop.send_replace(true);serving.await.unwrap().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn six_wss_routes_survive_a_full_pending_delivery_queue() {
@@ -373,7 +478,7 @@ mod tests {
             let (tcp,_)=tcp.accept().await.unwrap();
             let mut socket=tokio_tungstenite::accept_async(acceptor.accept(tcp).await.unwrap()).await.unwrap();
             let registration=socket.next().await.unwrap().unwrap();
-            assert!(matches!(serde_json::from_str::<Request>(registration.to_text().unwrap()).unwrap(),Request::Host{version:2,..}));
+            assert!(matches!(serde_json::from_str::<Request>(registration.to_text().unwrap()).unwrap(),Request::Host{version:3,..}));
             socket.send(Message::Text(serde_json::to_string(&Event::Ready).unwrap().into())).await.unwrap();
             loop {tokio::select! {
                 event=events.recv()=>{

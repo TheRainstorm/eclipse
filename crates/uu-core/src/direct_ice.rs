@@ -1,4 +1,5 @@
-//! Native internet ICE: direct by default, optional explicit development relay.
+//! Native internet ICE: direct candidates have priority; authorized connection
+//! services may supply per-session TURN credentials for automatic fallback.
 use anyhow::{ensure, Context, Result};
 use webrtc::{
     ice::url::{ProtoType, SchemeType, Url},
@@ -8,7 +9,7 @@ use webrtc::{
     },
 };
 
-/// Relay credentials exist only when the caller explicitly enables development relay.
+/// Relay credentials stay in memory and require an authorized provider policy.
 #[derive(Clone, Default)]
 pub struct InternetIce {
     urls: Vec<String>,
@@ -27,6 +28,12 @@ impl std::fmt::Debug for InternetIce {
 }
 
 impl InternetIce {
+    pub(crate) fn automatic(stun: Vec<String>, turn: Vec<RTCIceServer>) -> Result<Self> {
+        if turn.is_empty() { return Self::new(stun); }
+        let mut entries: Vec<_> = stun.into_iter().map(|url| RTCIceServer { urls: vec![url], ..Default::default() }).collect();
+        entries.extend(turn);
+        Self::from_servers(entries, true, false)
+    }
     pub fn new(urls: Vec<String>) -> Result<Self> {
         ensure!(urls.len() <= 16, "too many STUN services");
         for url in &urls {

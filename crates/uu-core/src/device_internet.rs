@@ -194,10 +194,10 @@ pub async fn listen(
 
 enum Listener { Plugin(Box<dyn crate::plugins::Listener>), SelfHosted(internet::self_hosted::Listener) }
 impl Listener {
-    async fn online(settings:&Settings,config:&Config)->Result<Self> {
+    async fn online(settings:&Settings,config:&Config,name:&str)->Result<Self> {
         match &settings.provider {
             Provider::Plugin(id)=>Ok(Self::Plugin(crate::plugins::registry().get(id)?.listen(config,settings.development_relay).await?)),
-            Provider::SelfHosted=>Ok(Self::SelfHosted(internet::self_hosted::Listener::online(&settings.self_hosted()?,&settings.device).await?)),
+            Provider::SelfHosted=>Ok(Self::SelfHosted(internet::self_hosted::Listener::online_named(&settings.self_hosted()?,&settings.device,name).await?)),
         }
     }
     async fn accept(&mut self)->Result<crate::plugins::Incoming>{match self{Self::Plugin(listener)=>listener.accept_session().await,Self::SelfHosted(listener)=>listener.accept().await.map(crate::plugins::Incoming::Native)}}
@@ -208,7 +208,7 @@ async fn listen_concurrent(settings: Settings, config: Config, sharing: SharingC
     status: watch::Sender<EndpointStatus>, stream_status: watch::Sender<HostStatus>, clipboard: Option<crate::native_lan::ClipboardFactory>) {
     while !*stop.borrow() {
         status.send_replace(EndpointStatus::Starting);
-        let opening=async { tokio::time::timeout(Duration::from_secs(20),Listener::online(&settings,&config)).await.context(uu_i18n::text("连接服务上线超时"))? };
+        let opening=async { tokio::time::timeout(Duration::from_secs(20),Listener::online(&settings,&config,&access.name)).await.context(uu_i18n::text("连接服务上线超时"))? };
         let opened=tokio::select! { result=opening=>result, _=cancelled(&mut stop)=>break };
         let mut listener=match opened {
             Ok(listener)=>listener,

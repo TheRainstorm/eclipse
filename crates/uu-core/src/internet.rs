@@ -15,6 +15,8 @@ use zeroize::Zeroize;
 pub mod self_hosted;
 pub mod server;
 pub mod stun;
+pub mod turn;
+pub mod enrollment;
 
 pub const MAX_MESSAGE: usize = 256 * 1024;
 
@@ -602,6 +604,7 @@ mod tests {
         let (stop, stop_rx) = watch::channel(false);
         let service = tokio::spawn(server::serve(
             server::Config {
+                turn: None,
                 bind: address,
                 certificate: cert.clone(),
                 private_key: key,

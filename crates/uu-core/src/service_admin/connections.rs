@@ -11,6 +11,7 @@ use zeroize::Zeroizing;
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Inspect,
+    Import { invitation: Zeroizing<String> },
     Save {
         revision: String,
         entry: Entry,
@@ -51,7 +52,12 @@ pub struct Snapshot {
     pub revision: String,
     pub entries: Vec<Entry>,
     pub restart_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported: Option<Imported>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Imported { pub service_id: String, pub device: String }
 fn revision(services: &[Service]) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(services)?)))
 }
@@ -59,6 +65,7 @@ fn snapshot(store: &Store, active: &[Service]) -> Result<Snapshot> {
     let book = store.read()?;
     let current = revision(&book.services)?;
     Ok(Snapshot {
+        imported: None,
         restart_required: current != revision(active)?,
         revision: current,
         entries: book
@@ -79,8 +86,17 @@ fn snapshot(store: &Store, active: &[Service]) -> Result<Snapshot> {
 pub fn execute(directory: &Path, active: &[Service], request: Request) -> Result<Snapshot> {
     let store = Store::open(directory)?;
     let mut created = Vec::<PathBuf>::new();
+    let mut imported = None;
     let result = match request {
         Request::Inspect => Ok(()),
+        Request::Import { invitation } => {
+            let invitation = crate::internet::enrollment::Enrollment::decode(&invitation)?;
+            let trust = crate::device_trust::TrustStore::open(directory)?;
+            let device = trust.card(&store.read()?.sharing.name).id();
+            let service = crate::internet::enrollment::import(directory, &invitation, &device, true)?;
+            imported = Some(Imported { service_id: service.id, device });
+            Ok(())
+        },
         Request::Save { revision: expected, entry, token, certificate } => store.edit(|book| {
             ensure!(revision(&book.services)? == expected, "{}", uu_i18n::text("服务器配置已被其他窗口修改，请刷新后重试"));
             let previous = if entry.id.is_empty() { None }
@@ -142,7 +158,9 @@ pub fn execute(directory: &Path, active: &[Service], request: Request) -> Result
     }
     result?;
     // Old credential versions stay alive for admitted streams until restart.
-    snapshot(&store, active)
+    let mut snapshot = snapshot(&store, active)?;
+    snapshot.imported = imported;
+    Ok(snapshot)
 }
 
 #[cfg(test)]
@@ -307,5 +325,25 @@ mod tests {
                 )
             )
             .is_err());
+    }
+    #[test]
+    fn enrollment_returns_the_host_identity_and_is_idempotent_without_changing_inspect_shape() {
+        let fixture = Fixture::new();
+        let invitation = crate::internet::enrollment::Enrollment::new("Fixture service".into(),
+            "wss://signal.example/v1/signal".into(), Zeroizing::new("ab".repeat(32)), None).unwrap().encode().unwrap();
+        let first = fixture.request(&[], Request::Import { invitation: invitation.clone() }).unwrap();
+        let published = first.imported.as_ref().unwrap();
+        let host = crate::device_trust::TrustStore::open(&fixture.0).unwrap().card("Fixture host").id();
+        assert_eq!(published.device, host);
+        assert_eq!(first.entries[0].published_name, host);
+        assert!(first.entries[0].host_enabled && first.restart_required);
+        let active = Store::open(&fixture.0).unwrap().read().unwrap().services;
+        let second = fixture.request(&active, Request::Import { invitation }).unwrap();
+        assert_eq!(second.entries.len(), 1);
+        assert_eq!(second.entries[0].id, published.service_id);
+        assert!(!second.restart_required);
+        let inspect = fixture.request(&active, Request::Inspect).unwrap();
+        let serialized = serde_json::to_string(&inspect).unwrap();
+        assert!(!serialized.contains("imported") && !serialized.contains(&"ab".repeat(32)));
     }
 }
