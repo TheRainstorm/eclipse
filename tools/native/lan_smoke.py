@@ -75,7 +75,8 @@ def main():
             for name in list(env):
                 if name.startswith(('UU_', 'WAYLAND', 'SWAY')) or name == 'DISPLAY':
                     env.pop(name, None)
-            env.update(XDG_DATA_HOME=str(root/role/'data'),
+            env.update(ECLIPSE_PROFILE_DIR=str(root/role),
+                       XDG_DATA_HOME=str(root/role/'xdg-data'),
                        XDG_STATE_HOME=str(root/role/'state'),
                        UU_DECODER='sw', UU_SIGNING_KEY_FILE=str(root/'absent-key'),
                        RUST_LOG='error')
@@ -119,7 +120,7 @@ def main():
         host.line('Pairing requested by')
         host.send('code ' + ('11111111' if code.replace(' ', '') == '00000000' else '00000000'))
         host.line('Pairing code does not match')
-        assert not (root/'client/data/uu-remote/native-lan/paired-devices.json').exists()
+        assert not (root/'client/data/native-lan/paired-devices.json').exists()
         host.send('code ' + code)
         paired_id = client.line(r'^paired ([a-f0-9-]{36})$').group(1); client.finish()
         del code
@@ -136,7 +137,7 @@ def main():
         report = out/'resumed-probe.json'
         run('probe', paired_id, '--frames', '30', '--report', str(report))
         assert json.loads(report.read_text())['completed']
-        book = json.loads((root/'client/data/uu-remote/native-lan/paired-devices.json').read_text())
+        book = json.loads((root/'client/data/native-lan/paired-devices.json').read_text())
         host.send('revoke ' + book['client_id']); del book
         host.line('Device authorization revoked')
         run('probe', paired_id, '--frames', '1', success=False)

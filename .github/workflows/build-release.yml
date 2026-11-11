@@ -134,6 +134,7 @@ jobs:
           # their original release tag, like the installer and Wayland probes.
           git fetch --no-tags --depth=1 origin "$WORKFLOW_SHA"
           git show "$WORKFLOW_SHA:tools/release/test_build_provenance.py" > tools/release/test_build_provenance.py
+          git show "$WORKFLOW_SHA:tools/native/lan_smoke.py" > "$RUNNER_TEMP/lan-smoke.py"
           python3 tools/security/scan_secrets.py --history
           python3 -m unittest discover -s tools/security -p 'test_*.py' -v
           python3 -m unittest discover -s tools/windows -p 'test_*.py' -v
@@ -212,7 +213,7 @@ jobs:
           cargo build --release -p uu-gui -p uu-cli --features vaapi --locked
           python3 tools/linux/package.py
           python3 tools/native/smoke.py --exe target/release/eclipse-cli --decoder sw --audio
-          python3 tools/native/lan_smoke.py --exe target/release/eclipse-cli --output artifacts/native-lan-cli
+          python3 "$RUNNER_TEMP/lan-smoke.py" --exe target/release/eclipse-cli --output artifacts/native-lan-cli
           for archive in artifacts/packages/*.tar.gz; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done
