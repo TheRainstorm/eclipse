@@ -128,7 +128,12 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
           REF_TYPE: ${{ inputs.release_tag && 'tag' || github.ref_type }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
+          # The validation harness follows the workflow; product sources keep
+          # their original release tag, like the installer and Wayland probes.
+          git fetch --no-tags --depth=1 origin "$WORKFLOW_SHA"
+          git show "$WORKFLOW_SHA:tools/release/test_build_provenance.py" > tools/release/test_build_provenance.py
           python3 tools/security/scan_secrets.py --history
           python3 -m unittest discover -s tools/security -p 'test_*.py' -v
           python3 -m unittest discover -s tools/windows -p 'test_*.py' -v
