@@ -2094,8 +2094,8 @@ impl Workspace {
                 ui.add_space(12.);
                 match editor.kind {
                     0 => {
-                        field(ui, uu_i18n::text("对方电脑 IP 地址"), &mut editor.address, uu_i18n::text("例如 192.168.1.100"));
-                        muted(ui, uu_i18n::text("同一局域网可在对方的“服务管理”查看地址。使用自定义端口时，在地址后加 :端口。"));
+                        field(ui, uu_i18n::text("对方电脑 IP 地址"), &mut editor.address, uu_i18n::text("IPv4 或 IPv6，例如 192.168.1.100、2001:db8::10"));
+                        muted(ui, uu_i18n::text("支持 IPv4、IPv6 和主机名。自定义端口使用 IP:端口，IPv6 使用 [地址]:端口，例如 [2001:db8::10]:48998。"));
                     },
                     1 => {field(ui,uu_i18n::text("目标设备编号"),&mut editor.device,uu_i18n::text("由连接插件提供的设备标识"));},
                     _ => {

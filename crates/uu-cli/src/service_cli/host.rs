@@ -328,7 +328,7 @@ async fn connection(
                 let installed = paths.manifest()?;
                 let executable = firewall_program(&paths, &installed)?;
                         let sharing = uu_core::device_book::Store::open(paths.runtime_config()?.at("device-trust"))?.read()?.sharing;
-                let report = if repair { uu_core::firewall::ensure(&executable, sharing.service_port, sharing.discovery_port)? }
+                let report = if repair { uu_core::firewall::repair(&executable, sharing.service_port, sharing.discovery_port)? }
                     else { uu_core::firewall::inspect(&executable, sharing.service_port, sharing.discovery_port)? };
                 Ok((Response::Firewall { message: report.message() }, false))
             },

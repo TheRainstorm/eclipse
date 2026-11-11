@@ -309,6 +309,7 @@ impl State {
 }
 pub struct Server {
     listener: TcpListener,
+    ipv6_listener: Option<TcpListener>,
     discovery: Option<UdpSocket>,
     state: Arc<State>,
 }
@@ -318,14 +319,23 @@ impl Server {
         stop: watch::Receiver<bool>,
         events: mpsc::UnboundedSender<Event>,
     ) -> Result<(Self, Handle)> {
-        Self::bind_inner(config,stop,events,None).await
+        Self::bind_inner(config,stop,events,None,false).await
     }
     pub async fn bind_with_access(config:Config,stop:watch::Receiver<bool>,events:mpsc::UnboundedSender<Event>,
         access:Arc<crate::shared_host::Access>)->Result<(Self,Handle)> {
-        Self::bind_inner(config,stop,events,Some(access)).await
+        Self::bind_inner(config,stop,events,Some(access),false).await
+    }
+    /// The unified host serves both address families with the same identity,
+    /// grants, admission limits and session owner. Explicit CLI binds stay local
+    /// to the requested interface and family.
+    pub(crate) async fn bind_dual_stack(config:Config,stop:watch::Receiver<bool>,events:mpsc::UnboundedSender<Event>,
+        access:Arc<crate::shared_host::Access>)->Result<(Self,Handle)> {
+        ensure!(config.bind.ip() == IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            "dual-stack host requires the IPv4 wildcard address");
+        Self::bind_inner(config,stop,events,Some(access),true).await
     }
     async fn bind_inner(config:Config,stop:watch::Receiver<bool>,events:mpsc::UnboundedSender<Event>,
-        access:Option<Arc<crate::shared_host::Access>>)->Result<(Self,Handle)> {
+        access:Option<Arc<crate::shared_host::Access>>,dual_stack:bool)->Result<(Self,Handle)> {
         ensure!(
             !config.bind.ip().is_multicast(),
             "invalid LAN listen address"
@@ -336,6 +346,11 @@ impl Server {
         let listener = crate::listen_socket::tcp(config.bind).with_context(|| {
             uu_i18n::format!("无法监听共享端口 TCP {}；端口可能已被占用或没有监听权限，请更换服务端口后重试", config.bind.port())
         })?;
+        let ipv6_listener = if dual_stack {
+            let port = listener.local_addr()?.port();
+            Some(crate::listen_socket::tcp((std::net::Ipv6Addr::UNSPECIFIED,port).into())
+                .with_context(|| uu_i18n::format!("无法监听 IPv6 共享端口 TCP {port}；请检查系统 IPv6 支持及端口占用"))?)
+        } else { None };
         let info = ServerInfo {
             id: identity.id.clone(),
             name: config.name.clone(),
@@ -381,6 +396,7 @@ impl Server {
         Ok((
             Self {
                 listener,
+                ipv6_listener,
                 discovery,
                 state,
             },
@@ -396,6 +412,15 @@ impl Server {
             id: self.state.info.id.clone(),
             fingerprint: self.state.info.fingerprint.clone(),
         })
+    }
+    async fn accept(&self) -> std::io::Result<(TcpStream,SocketAddr)> {
+        match &self.ipv6_listener {
+            Some(ipv6) => tokio::select! {
+                accepted=self.listener.accept()=>accepted,
+                accepted=ipv6.accept()=>accepted,
+            },
+            None => self.listener.accept().await,
+        }
     }
     pub async fn run(mut self) -> Result<()> {
         let mut stop = self.state.stop.clone();
@@ -417,7 +442,7 @@ impl Server {
             }
             tokio::select! {
              _=stop.changed()=>break,
-             accepted=self.listener.accept()=>{
+             accepted=self.accept()=>{
               let (socket,address)=accepted?;let Ok(permit)=permits.clone().try_acquire_owned() else{continue;};
               let now=Instant::now();attempts.retain(|_,(at,_)|now.duration_since(*at)<Duration::from_secs(60));if attempts.len()>=64&&!attempts.contains_key(&address.ip()){continue;}
               let entry=attempts.entry(address.ip()).or_insert((now,0));if entry.1>=24{continue;}entry.1+=1;

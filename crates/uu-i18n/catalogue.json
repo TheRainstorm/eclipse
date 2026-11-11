@@ -2056,5 +2056,13 @@
   "最多保存 {limit} 条虚拟显示器配置；请先启用或删除已有配置": "Up to {limit} virtual display configurations can be saved. Enable or delete an existing configuration first.",
   "加号只添加配置；启用时连接到 Windows，禁用时移除设备并保留配置。临时屏在最后一个串流断开后自动禁用，最多保存 16 条配置。": "The plus button adds a configuration. Enabling connects a display to Windows; disabling removes its device and keeps its configuration. Temporary displays disable after their last stream disconnects. Up to 16 configurations can be saved.",
   "上一次操作结果未知，请刷新确认后再操作。": "The previous operation’s result is unknown. Refresh to confirm its state before continuing.",
-  "重试删除": "Retry deletion"
+  "重试删除": "Retry deletion",
+  "无法监听 IPv6 共享端口 TCP {port}；请检查系统 IPv6 支持及端口占用": "Cannot listen on IPv6 sharing TCP port {port}; check system IPv6 support and port usage",
+  "IPv4 或 IPv6，例如 192.168.1.100、2001:db8::10": "IPv4 or IPv6, e.g. 192.168.1.100 or 2001:db8::10",
+  "支持 IPv4、IPv6 和主机名。自定义端口使用 IP:端口，IPv6 使用 [地址]:端口，例如 [2001:db8::10]:48998。": "IPv4, IPv6 and hostnames are supported. For a custom port use IP:port, or [address]:port for IPv6, e.g. [2001:db8::10]:48998.",
+  "完整覆盖": "fully covered",
+  "未完整覆盖": "incomplete coverage",
+  "{status}：专用/域网络规则 IPv4 {ipv4}，IPv6 {ipv6}；包含服务端口、发现端口和串流 TCP/UDP 49000–49009。未自动开放公用网络。规则覆盖不代表实际可达，仍需从另一台电脑验证连接。": "{status}: Private/Domain rules: IPv4 {ipv4}, IPv6 {ipv6}; includes service, discovery and streaming TCP/UDP 49000–49009 ports. Public networks were not opened automatically. Rule coverage does not prove reachability; verify the connection from another computer.",
+  "{scope} 端口规则缺失或受限，可点击修复补齐双栈规则": "{scope} port rules are missing or restricted; use Repair to add dual-stack rules",
+  "为当前程序补齐 IPv4 和 IPv6 入站规则，仅开放专用/域网络的服务、发现及串流端口。已有阻止规则和公用网络设置保持不变。": "Add missing IPv4 and IPv6 inbound rules for this program’s service, discovery and streaming ports on Private/Domain networks. Existing Block rules and Public network settings are preserved."
 }

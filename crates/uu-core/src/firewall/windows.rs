@@ -9,6 +9,12 @@ use std::{
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Coverage {
+    pub profile: String,
+    pub ipv4: bool,
+    pub ipv6: bool,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Report {
     pub program: String,
     pub warnings: Vec<String>,
@@ -17,6 +23,7 @@ pub struct Report {
     pub rules: serde_json::Value,
     pub profiles: serde_json::Value,
     pub networks: serde_json::Value,
+    pub coverage: Vec<Coverage>,
 }
 impl Report {
     pub fn message(&self) -> String {
@@ -25,7 +32,12 @@ impl Report {
         } else {
             uu_i18n::text("已检查防火墙")
         };
-        let mut text = uu_i18n::format!("{status}：TCP/UDP 49000–49009 用于串流；保留已有网络范围，未自动开放公用网络。仍需从另一台电脑验证连接。");
+        let complete = |ipv6| ["Domain", "Private"].iter().all(|profile| self.coverage.iter()
+            .any(|c| c.profile == *profile && if ipv6 { c.ipv6 } else { c.ipv4 }));
+        let label = |complete| uu_i18n::text(if complete { "完整覆盖" } else { "未完整覆盖" });
+        let ipv4 = label(complete(false));
+        let ipv6 = label(complete(true));
+        let mut text = uu_i18n::format!("{status}：专用/域网络规则 IPv4 {ipv4}，IPv6 {ipv6}；包含服务端口、发现端口和串流 TCP/UDP 49000–49009。未自动开放公用网络。规则覆盖不代表实际可达，仍需从另一台电脑验证连接。");
         for warning in &self.warnings {
             text.push_str("\n");
             text.push_str(&warning_message(warning));
@@ -39,7 +51,7 @@ fn warning_message(value: &str) -> String {
         "Explicit inbound Block rules may apply; they were preserved"=>uu_i18n::text("存在可能适用的入站阻止规则，已保留；请检查系统或组织策略").into(),
         "Existing address/interface/service/security restrictions were preserved; verify the remote connection"=>uu_i18n::text("已保留地址、网卡、服务或身份限制，请从目标电脑验证连接").into(),
         _ if value.ends_with(": policy prevents local inbound rules")=>uu_i18n::format!("网络 {profile} 的策略不允许本地入站规则",profile=value.split(':').next().unwrap_or("?")),
-        _ if value.ends_with(" ports are missing or restricted")=>uu_i18n::format!("{scope} 端口规则缺失或受限，已保留现有设置",scope=value.trim_end_matches(" ports are missing or restricted")),
+        _ if value.ends_with(": ports are missing or restricted")=>uu_i18n::format!("{scope} 端口规则缺失或受限，可点击修复补齐双栈规则",scope=value.trim_end_matches(": ports are missing or restricted")),
         _=>value.into(),
     }
 }
@@ -131,7 +143,7 @@ fn execute(input: serde_json::Value) -> Result<Reply> {
         .take()
         .unwrap()
         .write_all(&serde_json::to_vec(&input)?)?;
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let deadline = Instant::now() + super::OPERATION_TIMEOUT;
     let status = loop {
         if let Some(status) = child.0.try_wait()? {
             break status;
@@ -189,6 +201,12 @@ pub fn inspect(program: &Path, service_port: u16, discovery_port: u16) -> Result
 pub fn ensure(program: &Path, service_port: u16, discovery_port: u16) -> Result<Report> {
     crate::service_admin::windows::require_administrator()?;
     Ok(run("ensure", program, None, service_port, discovery_port)?.0)
+}
+/// Explicit user repair supplements program-scoped dual-stack rules. Automatic
+/// startup and migration keep using `ensure` and preserve existing scopes.
+pub fn repair(program: &Path, service_port: u16, discovery_port: u16) -> Result<Report> {
+    crate::service_admin::windows::require_administrator()?;
+    Ok(run("repair", program, None, service_port, discovery_port)?.0)
 }
 pub fn migrate(
     old: Option<&Path>,

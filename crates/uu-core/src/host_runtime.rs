@@ -235,7 +235,7 @@ impl Runner {
                 audio: sharing.audio_source(),
                 clipboard: factory.clone(),
             };
-            match lan::Server::bind_with_access(
+            match lan::Server::bind_dual_stack(
                 lan_config,
                 stop.clone(),
                 lan_events,

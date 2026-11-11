@@ -161,7 +161,7 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
             let paths=Paths::discover()?; let installed=paths.manifest()?;
             let sharing=uu_core::device_book::Store::open(paths.runtime_config()?.at("device-trust"))?.read()?.sharing;
             let exe=firewall_program(&paths,&installed)?;
-            let report=if repair {uu_core::firewall::ensure(&exe,sharing.service_port,sharing.discovery_port)?} else {uu_core::firewall::inspect(&exe,sharing.service_port,sharing.discovery_port)?};
+            let report=if repair {uu_core::firewall::repair(&exe,sharing.service_port,sharing.discovery_port)?} else {uu_core::firewall::inspect(&exe,sharing.service_port,sharing.discovery_port)?};
             println!("{}",serde_json::to_string_pretty(&report)?);Ok(())
         }
         Command::Start => { require_selected_profile()?; start() },

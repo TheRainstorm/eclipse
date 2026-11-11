@@ -816,6 +816,7 @@ impl Manager {
                                 enabled,
                                 crate::theme::secondary_button(uu_i18n::text("修复防火墙")),
                             )
+                            .on_hover_text(uu_i18n::text("为当前程序补齐 IPv4 和 IPv6 入站规则，仅开放专用/域网络的服务、发现及串流端口。已有阻止规则和公用网络设置保持不变。"))
                             .clicked()
                         {
                             self.submit(Job::Rpc(Request::Firewall { repair: true }));

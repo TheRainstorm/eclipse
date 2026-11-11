@@ -206,7 +206,10 @@ pub fn endpoint(input: &str) -> Result<String> {
             && !input.contains(['/', '@', '\\']),
         "enter an IP address or hostname, optionally with a port"
     );
-    if let Ok(ip) = input.parse::<IpAddr>() {
+    let ip = input.parse::<IpAddr>().ok().or_else(|| {
+        input.strip_prefix('[')?.strip_suffix(']')?.parse::<std::net::Ipv6Addr>().ok().map(IpAddr::V6)
+    });
+    if let Some(ip) = ip {
         ensure!(
             !ip.is_unspecified() && !ip.is_multicast(),
             "use a unicast host address"
@@ -313,6 +316,9 @@ mod tests {
             ("127.0.0.1:43210", "127.0.0.1:43210"),
             ("::1", "[::1]:48998"),
             ("[::1]:43210", "[::1]:43210"),
+            ("2001:db8::10", "[2001:db8::10]:48998"),
+            ("[2001:db8::10]", "[2001:db8::10]:48998"),
+            ("[fd00::10]:43210", "[fd00::10]:43210"),
             ("generated-host.local", "generated-host.local:48998"),
         ] {
             assert_eq!(endpoint(input).unwrap(), expected);

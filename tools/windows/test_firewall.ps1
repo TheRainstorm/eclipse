@@ -32,11 +32,14 @@ $passed=[Collections.Generic.List[string]]::new()
 try {
     $r=Invoke-Engine inspect; Assert ($r.report.rules.Count -eq 0) 'Inspection created rules'
     $r=Invoke-Engine ensure; Assert ($r.report.changed -eq 2) 'Fresh installation must create TCP and UDP rules';$created=$r.changes
+    Assert (@($r.report.coverage|Where-Object {$_.profile -in @('Domain','Private') -and $_.ipv4 -and $_.ipv6}).Count -eq 2) 'Fresh rules did not prove both profiles/families'
     foreach($rule in (Program-Rules $old)){
         Assert ([int]$rule.Profile -eq 3) 'Fresh rule opened Public'
         Assert ([string]$rule.Action -eq 'Allow') 'Fresh rule is not Allow'
         $ports=$rule|Get-NetFirewallPortFilter
         Assert ('49000-49009' -in $ports.LocalPort) 'Streaming range differs'
+        $addresses=$rule|Get-NetFirewallAddressFilter
+        Assert (($addresses.LocalAddress -join ',') -eq 'Any' -and ($addresses.RemoteAddress -join ',') -eq 'Any') 'Fresh rule must cover IPv4 and IPv6'
     }
     $r=Invoke-Engine ensure; Assert ($r.report.changed -eq 0) 'Repeated startup duplicated rules'
     $r=Invoke-Engine migrate $new $old;Assert ($r.report.changed -eq 2) 'Upgrade did not migrate both rules';$moved=$r.changes
@@ -45,6 +48,33 @@ try {
     Assert ((Program-Rules $old).Count -eq 0) 'Rollback left owned rules'
     $passed.Add('fresh, idempotent, upgrade, exact rollback')
 
+    # Report families per rule/protocol, and repair old IPv4-only authorizations.
+    foreach($protocol in @('TCP','UDP')){
+        $ports=if($protocol -eq 'TCP'){@('48998','49000-49009')}else{@('48999','49000-49009')}
+        $null=New-NetFirewallRule -Name ($prefix+'.family.'+$protocol) -DisplayName $prefix -Direction Inbound -Action Allow -Enabled True -Profile Domain,Private -Program $old -Protocol $protocol -LocalPort $ports -RemoteAddress '0.0.0.0/0'
+    }
+    $r=Invoke-Engine inspect
+    foreach($c in @($r.report.coverage|Where-Object {$_.profile -in @('Domain','Private')})){
+        Assert ($c.ipv4 -and !$c.ipv6) 'IPv4-only rules were reported as dual-stack'
+    }
+    Get-NetFirewallRule -PolicyStore PersistentStore -Name ($prefix+'.family.UDP')|Get-NetFirewallAddressFilter|Set-NetFirewallAddressFilter -RemoteAddress '::/0'|Out-Null
+    $r=Invoke-Engine inspect
+    foreach($c in @($r.report.coverage|Where-Object {$_.profile -in @('Domain','Private')})){
+        Assert (!$c.ipv4 -and !$c.ipv6) 'Unrelated TCP/UDP address scopes were merged'
+    }
+    $r=Invoke-Engine repair;Assert ($r.report.changed -eq 2) 'Repair did not supplement both protocols';$repaired=$r.changes
+    foreach($c in @($r.report.coverage|Where-Object {$_.profile -in @('Domain','Private')})){
+        Assert ($c.ipv4 -and $c.ipv6) 'Repair left incomplete family coverage'
+    }
+    foreach($rule in (Program-Rules $old)){Assert ([int]$rule.Profile -eq 3) 'Repair opened Public'}
+    $tcp=Get-NetFirewallRule -PolicyStore PersistentStore -Name ($prefix+'.family.TCP')|Get-NetFirewallAddressFilter
+    Assert (($tcp.RemoteAddress -join ',') -ne 'Any') 'Repair modified an old address scope'
+    $r=Invoke-Engine repair;Assert ($r.report.changed -eq 0) 'Repeated repair duplicated rules'
+    $null=Invoke-Engine rollback $old $null $repaired
+    Assert ((Program-Rules $old).Count -eq 2) 'Repair rollback removed original authorizations'
+    Program-Rules $old|Remove-NetFirewallRule
+    $passed.Add('IPv4-only, split protocol/family coverage, dual-stack repair, idempotence and exact rollback')
+
     # Preserve restrictions, disabled rules and explicit Block across old/new filenames.
     $null=New-NetFirewallRule -Name ($prefix+'.tcp') -DisplayName $prefix -Direction Inbound -Action Allow -Enabled True -Profile Private -Program $old -Protocol TCP -LocalPort 48998,49000-49003 -RemotePort 1024-65535 -RemoteAddress 192.0.2.0/24 -InterfaceType Wired
     $null=New-NetFirewallRule -Name ($prefix+'.udp') -DisplayName $prefix -Direction Inbound -Action Block -Enabled False -Profile Domain -Program $old -Protocol UDP -LocalPort 49000-49009 -Service Any
@@ -52,6 +82,10 @@ try {
     $disabled=Get-NetFirewallRule -PolicyStore PersistentStore -Name ($prefix+'.udp')
     Assert ([string]$disabled.Enabled -eq 'False' -and [string]$disabled.Action -eq 'Block') 'Disabled/Block rule broadened'
     $r=Invoke-Engine ensure $new;Assert ($r.report.changed -eq 0) 'Restricted authorization was broadened'
+    $r=Invoke-Engine repair $new;Assert ($r.report.changed -eq 2) 'Restricted rules prevented explicit repair';$repaired=$r.changes
+    $disabled=Get-NetFirewallRule -PolicyStore PersistentStore -Name ($prefix+'.udp')
+    Assert ([string]$disabled.Enabled -eq 'False' -and [string]$disabled.Action -eq 'Block') 'Repair changed a disabled Block rule'
+    $null=Invoke-Engine rollback $new $null $repaired
     $null=Invoke-Engine rollback $new $null $moved
     $passed.Add('restricted profile/address/port/interface, disabled Block, old filenames')
 
@@ -76,7 +110,7 @@ try {
 Import-Module NetSecurity
 $script:writes=0
 function New-NetFirewallRule {
- [CmdletBinding()]param($PolicyStore,$Name,$DisplayName,$Group,$Direction,$Action,$Enabled,$Profile,$Program,$Protocol,$LocalPort)
+ [CmdletBinding()]param($PolicyStore,$Name,$DisplayName,$Group,$Direction,$Action,$Enabled,$Profile,$Program,$Protocol,$LocalPort,$LocalAddress,$RemoteAddress)
  $script:writes++;if($script:writes -eq 2){throw 'injected second rule failure'}
  NetSecurity\New-NetFirewallRule @PSBoundParameters
 }

@@ -15,6 +15,72 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
+#[tokio::test]
+async fn dual_stack_bind_failure_releases_the_other_family() {
+    let root = std::env::temp_dir().join(format!("eclipse-dual-conflict-{}", uuid::Uuid::new_v4()));
+    let (access, _) = access(&root);
+    let occupied = crate::listen_socket::tcp((std::net::Ipv6Addr::UNSPECIFIED, 0).into()).unwrap();
+    let port = occupied.local_addr().unwrap().port();
+    let mut config = config(&root);
+    config.bind = (std::net::Ipv4Addr::UNSPECIFIED, port).into();
+    let (_, rx) = watch::channel(false);
+    let (events, _) = mpsc::unbounded_channel();
+    let error = lan::Server::bind_dual_stack(config, rx, events, access).await.err().unwrap();
+    assert!(format!("{error:#}").contains("IPv6"));
+    let _released = crate::listen_socket::tcp((std::net::Ipv4Addr::UNSPECIFIED, port).into()).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dual_stack_host_authenticates_and_streams_both_families_on_one_service_port() {
+    let root = std::env::temp_dir().join(format!("eclipse-dual-stack-{}", uuid::Uuid::new_v4()));
+    let (access, _) = access(&root);
+    let client = TrustStore::open(root.join("viewer")).unwrap();
+    access.store.authorize(client.card("Generated viewer"), Permissions::VIEW, None).unwrap();
+    client.authorize(access.store.card("Generated host"), Permissions::VIEW, None).unwrap();
+    let expected = access.store.card("Generated host").id();
+    let mut config = config(&root);
+    config.bind = "0.0.0.0:0".parse().unwrap();
+    let (stop, rx) = watch::channel(false);
+    let (events, _) = mpsc::unbounded_channel();
+    let (server, _) = lan::Server::bind_dual_stack(config, rx, events, access.clone()).await.unwrap();
+    let port = server.address().unwrap().port();
+    let serving = tokio::spawn(server.run());
+    for ip in ["127.0.0.1", "::1"] {
+        let address = std::net::SocketAddr::new(ip.parse().unwrap(), port);
+        let endpoint = crate::native_discovery::endpoint(&address.to_string()).unwrap();
+        let connection = lan::connect_device(&endpoint, &client, "Generated viewer", Some(&expected),
+            None, true, &PairingDisplay::default()).await.unwrap();
+        let invitation = connection.invitation.unwrap();
+        assert_eq!(invitation.address().ip(), address.ip(), "media must retain the signaling family");
+        let stats = Arc::new(crate::media::MediaStats::default());
+        let _ = stats.decoder_preference.set(crate::media::DecoderKind::Software);
+        let (frames, mut received) = crate::media::frame_channel();
+        let (viewer_stop, viewer_rx) = watch::channel(false);
+        let observed = stats.clone();
+        let viewing = tokio::spawn(async move { native::view(&invitation, frames, observed, viewer_rx).await });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while stats.decoded_total.load(Ordering::Acquire) < 12 {
+                while received.try_recv().is_ok() {}
+                assert!(!viewing.is_finished());
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        assert_eq!(stats.errors.load(Ordering::Relaxed), 0);
+        viewer_stop.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(5), viewing).await.unwrap().unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(6), async {
+            while !access.sessions.sessions().is_empty() { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.unwrap();
+    }
+    stop.send_replace(true);
+    tokio::time::timeout(Duration::from_secs(5), serving).await.unwrap().unwrap().unwrap();
+    // Both listeners are retired, including when one family had no last client.
+    let _v4 = crate::listen_socket::tcp((std::net::Ipv4Addr::UNSPECIFIED, port).into()).unwrap();
+    let _v6 = crate::listen_socket::tcp((std::net::Ipv6Addr::UNSPECIFIED, port).into()).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=4)]
 async fn password_public_key_and_temporary_code_authenticate_real_tls_and_generated_media() {
     use crate::device_auth::{PairingChoice,PairingMethod};

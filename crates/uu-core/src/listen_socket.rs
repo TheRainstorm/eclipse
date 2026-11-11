@@ -5,6 +5,11 @@ use std::{io, net::SocketAddr};
 
 fn socket(address: SocketAddr, kind: Type, protocol: Protocol) -> io::Result<Socket> {
     let socket = Socket::new(Domain::for_address(address), kind, Some(protocol))?;
+    // Keep the two families independent. In particular, IPv4 connections must
+    // retain IPv4 local/peer addresses when passed to the media socket owner.
+    if address.is_ipv6() {
+        socket.set_only_v6(true)?;
+    }
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawSocket;
