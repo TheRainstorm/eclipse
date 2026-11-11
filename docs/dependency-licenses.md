@@ -299,6 +299,7 @@
 | [num-traits](https://github.com/rust-num/num-traits) | 0.2.19 | `MIT OR Apache-2.0` |
 | [num_enum](https://github.com/illicitonion/num_enum) | 0.7.6 | `BSD-3-Clause OR MIT OR Apache-2.0` |
 | [num_enum_derive](https://github.com/illicitonion/num_enum) | 0.7.6 | `BSD-3-Clause OR MIT OR Apache-2.0` |
+| [num_threads](https://github.com/jhpratt/num_threads) | 0.1.8 | `MIT OR Apache-2.0` |
 | [objc](http://github.com/SSheldon/rust-objc) | 0.2.7 | `MIT` |
 | [objc-sys](https://github.com/madsmtm/objc2) | 0.3.5 | `MIT` |
 | [objc2](https://github.com/madsmtm/objc2) | 0.5.3 | `MIT` |

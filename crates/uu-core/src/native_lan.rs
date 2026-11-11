@@ -521,6 +521,7 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
                 let lease=match access.claim_authenticated(&mut authorized) {Ok(lease)=>lease,Err(error)=>{
                     write(&mut stream,&Reply::Error {message:uu_i18n::format!("无法开始串流：{error}").chars().take(256).collect()}).await?;return Err(error);
                 }};
+                lease.source(crate::connection_history::Source::Ip, Some(observed_client_ip));
                 Some(start_authorized_session(state.clone(),peer_id.clone(),local,authorized.permissions,Some(lease)).await?)
             }else{None};
             write(&mut stream,&Reply::Device {invitation,peer_id:access.store.card(&access.name).id(),observed_client_ip:Some(observed_client_ip)}).await?;
@@ -614,7 +615,7 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
                 )
                 .await;
             }
-            match start_session(state, client_id, local).await {
+            match start_session(state, client_id, local, observed_client_ip).await {
                 Ok(invitation) => {
                     write(
                         &mut stream,
@@ -655,14 +656,17 @@ impl Drop for SessionGuard {
         let _ = self.state.events.send(Event::SessionEnded(self.id.clone()));
     }
 }
-async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> Result<Invitation> {
+async fn start_session(state: Arc<State>, client: String, local: SocketAddr, observed_client_ip: IpAddr) -> Result<Invitation> {
     let mut permission=crate::device_trust::Permissions::CONTROL;
     let mut peer=client.clone();
+    let mut name=client.clone();
     let lease=if let Some(access)=&state.access {
         if let Some(record)=access.store.peers()?.into_iter().find(|p|p.legacy_ids.iter().any(|id|id==&client)) {
-            permission=record.inbound.context(uu_i18n::text("设备授权已经撤销"))?;peer=record.device.id();
+            permission=record.inbound.context(uu_i18n::text("设备授权已经撤销"))?;peer=record.device.id();name=record.device.name;
         }
-        Some(access.sessions.claim(&peer)?)
+        let lease = access.sessions.claim_named(&peer, &name)?;
+        lease.source(crate::connection_history::Source::Ip, Some(observed_client_ip));
+        Some(lease)
     }else{None};
     start_authorized_session(state,peer,local,permission,lease).await
 }
@@ -747,6 +751,7 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
                 }
             }
         };
+        if let Some(lease) = &_guard._lease { lease.finish(result.is_ok()); }
         if let Err(error) = &result {
             // Keep the cause in the host log even when there is no GUI event
             // consumer (the Windows service forwards only entrance notices).

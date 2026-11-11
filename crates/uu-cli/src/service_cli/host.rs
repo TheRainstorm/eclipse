@@ -107,8 +107,10 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
                 Err(_) => anyhow::bail!("后台服务正在退出"),
             },
             |event| {
-                if let uu_core::host_runtime::Event::Notice(message) = event {
-                    tracing::warn!(%message,"background host entrance");
+                match event {
+                    uu_core::host_runtime::Event::Notice(message) => tracing::warn!(%message,"background host entrance"),
+                    uu_core::host_runtime::Event::Connected(record) => uu_core::connection_notice::show(&record),
+                    _ => {},
                 }
             },
         )?;
@@ -299,6 +301,9 @@ async fn connection(
                 let restart = matches!(response, host_admin::Response::Saved { restart: true });
                 Ok((Response::Admin { response }, restart))
             }
+            Request::ConnectionHistory { revision } => Ok((Response::ConnectionHistory {
+                snapshot: access.sessions.history.changed_since(revision),
+            }, false)),
             Request::VirtualDisplay{request}=>{
                 let response=uu_core::native_virtual_display::execute_local_owner(request).unwrap_or_else(|error|uu_core::native_virtual_display::Response::Error{message:uu_core::native_virtual_display::error_message(&error)});
                 Ok((Response::VirtualDisplay{response},false))

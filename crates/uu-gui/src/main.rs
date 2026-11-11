@@ -12,6 +12,8 @@ use uu_core::controller::ControllerEvent;
 use uu_core::controller::ControllerHandle;
 
 mod connection;
+mod connection_notice;
+mod connection_history_ui;
 mod input;
 mod displays;
 mod display_layout;

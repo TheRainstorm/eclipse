@@ -19,6 +19,7 @@ pub enum Event {
     Listening(lan::Handle),
     Legacy(lan::Event),
     Notice(String),
+    Connected(crate::connection_history::Record),
 }
 pub struct Endpoint {
     pub name: String,
@@ -94,7 +95,7 @@ fn prepare_inner(
         store: trust,
         name: book.sharing.name.clone(),
         pairing: Arc::new(PairingControl::new(requests)),
-        sessions: Arc::new(SessionGate::default()),
+        sessions: Arc::new(SessionGate::with_history(config.at("device-trust/connection-history.json"))),
     });
     if let Err(error)=crate::virtual_display::Manager::shared().configure_saved_displays(config.at("device-trust")) {
         tracing::warn!(%error,"saved virtual display settings could not be loaded; sharing continues");
@@ -191,6 +192,7 @@ impl Runner {
             persistent,
         } = self;
         let sharing = book.sharing;
+        let mut connections = access.sessions.history.subscribe();
         let service=sharing.service_port; let discovery=sharing.discovery_port;
         match tokio::task::spawn_blocking(move||startup(service,discovery)).await {
             Ok(Ok(Some(message)))=>emit(Event::Notice(message)),
@@ -281,6 +283,7 @@ impl Runner {
         while !*stop.borrow() && (persistent || !tasks.is_empty()) {
             tokio::select! {
                 _=stop.changed()=>break,
+                Ok(record)=connections.recv()=>emit(Event::Connected(record)),
                 result=tasks.join_next(),if !tasks.is_empty()=>match result {
                     Some(Err(error))=>emit(Event::Notice(format!("共享线程异常：{error}"))),
                     Some(Ok(Err(error)))=>emit(Event::Notice(format!("共享服务异常：{error:#}"))),
@@ -304,6 +307,8 @@ impl Runner {
         // No timeout/abort here: an accepted driver change must settle or retain
         // its journal before the shared-host owner can finish shutting down.
         if let Err(error)=preparation.await {tracing::warn!(%error,"virtual display preparation worker failed");}
+        let history = access.sessions.history.clone();
+        let _ = tokio::task::spawn_blocking(move || history.close()).await;
         drop(_owner);
         Ok(())
     }

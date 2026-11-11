@@ -703,6 +703,9 @@ async fn send_video(
     if stream.lan_peer().is_none() {
         if let Err(error)=peer.direct_path().await {controls.stop().await;return Err(error);}
     }
+    if let Some(context) = &config.session {
+        if let Some(id) = &context.session_id { context.access.sessions.connected(id); }
+    }
     let mut producer = CaptureWorker::start(capture, encoder_settings, refresh, encoder,controls.timing());
     peer.diagnostics.capture_counter(&producer.captured,&producer.progress);
     peer.diagnostics.record(serde_json::json!({"event":"native_media_started","width":width,"height":height,"fps":config.fps,"codec":codec}));

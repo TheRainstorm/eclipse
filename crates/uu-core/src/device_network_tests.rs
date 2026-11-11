@@ -35,6 +35,7 @@ async fn dual_stack_bind_failure_releases_the_other_family() {
 async fn dual_stack_host_authenticates_and_streams_both_families_on_one_service_port() {
     let root = std::env::temp_dir().join(format!("eclipse-dual-stack-{}", uuid::Uuid::new_v4()));
     let (access, _) = access(&root);
+    let mut connected_notices = access.sessions.history.subscribe();
     let client = TrustStore::open(root.join("viewer")).unwrap();
     access.store.authorize(client.card("Generated viewer"), Permissions::VIEW, None).unwrap();
     client.authorize(access.store.card("Generated host"), Permissions::VIEW, None).unwrap();
@@ -67,11 +68,21 @@ async fn dual_stack_host_authenticates_and_streams_both_families_on_one_service_
             }
         }).await.unwrap();
         assert_eq!(stats.errors.load(Ordering::Relaxed), 0);
+        let notice = connected_notices.try_recv().expect("actual media connection must be announced");
+        assert_eq!(notice.name, "Generated viewer");
+        assert_eq!(notice.source, crate::connection_history::Source::Ip);
+        assert!(notice.address.unwrap().is_loopback());
+        assert_eq!(notice.address.unwrap().is_ipv6(), address.is_ipv6());
         viewer_stop.send_replace(true);
         tokio::time::timeout(Duration::from_secs(5), viewing).await.unwrap().unwrap().unwrap();
         tokio::time::timeout(Duration::from_secs(6), async {
             while !access.sessions.sessions().is_empty() { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.unwrap();
+        let history = access.sessions.history.snapshot();
+        let record = &history.records[0];
+        assert_eq!(record.id, notice.id);
+        assert_eq!(record.outcome, crate::connection_history::Outcome::Disconnected);
+        assert!(record.connected_at.is_some() && record.ended_at.is_some());
     }
     stop.send_replace(true);
     tokio::time::timeout(Duration::from_secs(5), serving).await.unwrap().unwrap().unwrap();

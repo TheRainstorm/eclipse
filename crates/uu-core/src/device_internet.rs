@@ -138,6 +138,7 @@ pub(crate) async fn serve_connection_with_permit(
         drop(pending_authentication);
         let peer = authorized.device.id();
         let lease=match access.claim_authenticated(&mut authorized) {Ok(lease)=>lease,Err(error)=>{bootstrap.reject_media().await;return Err(error);}};
+        lease.source(crate::connection_history::Source::Internet, None);
         let cancellation = access.cancellation(&lease, &peer, Some(authorized.permissions), stop);
         let defaults=access.sessions.administration.lock().unwrap().as_ref().map(|admin|admin.defaults());
         if let Some(defaults)=&defaults {sharing=defaults.native();}
@@ -166,6 +167,7 @@ pub(crate) async fn serve_connection_with_permit(
                 }
             }
         }};
+        lease.finish(result.is_ok());
         drop(cancellation);
         drop(lease);
         result

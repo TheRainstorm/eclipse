@@ -455,6 +455,10 @@ impl HostUi {
                     uu_core::host_runtime::Event::Listening(handle) => Event::Listening(handle),
                     uu_core::host_runtime::Event::Legacy(event) => Event::Legacy(event),
                     uu_core::host_runtime::Event::Notice(message) => Event::Notice(message),
+                    uu_core::host_runtime::Event::Connected(record) => {
+                        crate::connection_notice::show(&record);
+                        return;
+                    },
                 };
                 let _ = forward.send(event);
             },

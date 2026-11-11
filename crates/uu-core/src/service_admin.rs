@@ -25,6 +25,7 @@ pub enum Request {
         request: Box<Request>,
     },
     Status,
+    ConnectionHistory { revision: Option<u64> },
     ConfigurationSwitch { token: String, release: bool },
     Approve {
         id: String,
@@ -70,6 +71,7 @@ impl Request {
         !matches!(
             self,
             Self::Status
+                | Self::ConnectionHistory { .. }
                 | Self::Trust {
                     request: TrustRequest::Inspect
                 }
@@ -178,6 +180,9 @@ pub enum Response {
     },
     Admin {
         response: host_admin::Response,
+    },
+    ConnectionHistory {
+        snapshot: Option<crate::connection_history::Snapshot>,
     },
     VirtualDisplay {
         response: crate::native_virtual_display::Response,

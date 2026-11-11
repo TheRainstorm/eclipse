@@ -40,15 +40,28 @@ pub struct SessionContext {
     /// The authenticated session lease, independent of peer/device identity.
     pub session_id: Option<String>,
 }
-struct Active { peer: String, stop: watch::Sender<bool>, status: crate::native::HostStatus }
+struct Active { peer: String, record: crate::connection_history::Record, stop: watch::Sender<bool>, status: crate::native::HostStatus, completed: Option<bool> }
 #[derive(Default)]
 pub struct SessionGate {
     active: Mutex<HashMap<String, Active>>,
     configuration_switch: Mutex<Option<(String, std::time::Instant)>>,
     pub input: Arc<crate::input_ownership::Authority>,
     pub administration: Mutex<Option<Arc<crate::host_admin::Service>>>,
+    pub history: crate::connection_history::History,
 }
 impl SessionGate {
+    pub fn with_history(path: std::path::PathBuf) -> Self {
+        Self { history: crate::connection_history::History::open(path), ..Self::default() }
+    }
+    /// A device is announced once while any of its screens remain connected.
+    /// Each screen retains its own history record and lifetime.
+    pub fn connected(&self, id: &str) {
+        let mut active = self.active.lock().unwrap();
+        let Some(session) = active.get(id).filter(|s| s.record.connected_at.is_none() && !*s.stop.borrow()) else { return; };
+        let peer = session.peer.clone();
+        let notify = !active.values().any(|s| s.peer == peer && s.record.connected_at.is_some());
+        self.history.connected(&mut active.get_mut(id).unwrap().record, notify);
+    }
     /// Reserve an idle host while its verified replacement is activated. Both
     /// admission and this reservation hold `active`, so a new stream cannot
     /// slip between the idle check and stopping the service.
@@ -78,6 +91,9 @@ impl SessionGate {
     /// Authenticated sessions have no fixed application count limit. Capture,
     /// encoder and transport admission failures remain local to each session.
     pub fn claim(self: &Arc<Self>, peer: &str) -> Result<SessionLease> {
+        self.claim_named(peer, peer)
+    }
+    pub(crate) fn claim_named(self: &Arc<Self>, peer: &str, name: &str) -> Result<SessionLease> {
         let mut active = self.active.lock().unwrap();
         ensure!(!self.configuration_switching(), "服务正在切换配置，请稍后重新连接。");
         // This check shares the activity mutex with the preparation checkpoint:
@@ -87,7 +103,8 @@ impl SessionGate {
             "{}",uu_i18n::text("源机正在准备虚拟副屏，请在准备完成后连接。"));
         let session = uuid::Uuid::new_v4().to_string();
         let (stop, receiver) = watch::channel(false);
-        active.insert(session.clone(), Active { peer: peer.into(), stop, status: crate::native::HostStatus::Starting });
+        let record = self.history.begin(&session, peer, name);
+        active.insert(session.clone(), Active { peer: peer.into(), record, stop, status: crate::native::HostStatus::Starting, completed: None });
         Ok(SessionLease { gate: self.clone(), session, receiver,temporary:None })
     }
     pub fn disconnect(&self) {
@@ -114,11 +131,25 @@ impl SessionLease {
     pub fn id(&self)->&str {&self.session}
     pub fn cancel(&self) { self.gate.disconnect_session(&self.session); }
     pub fn stopped(&self) -> watch::Receiver<bool> { self.receiver.clone() }
+    pub fn source(&self, source: crate::connection_history::Source, address: Option<std::net::IpAddr>) {
+        if let Some(active) = self.gate.active.lock().unwrap().get_mut(&self.session) {
+            self.gate.history.source(&mut active.record, source, address);
+        }
+    }
+    pub fn finish(&self, successful: bool) {
+        if let Some(active) = self.gate.active.lock().unwrap().get_mut(&self.session) { active.completed = Some(successful); }
+    }
     pub fn progress(&self, status: crate::native::HostStatus) {
+        if matches!(status, crate::native::HostStatus::Streaming { .. }) { self.gate.connected(&self.session); }
         if let Some(active)=self.gate.active.lock().unwrap().get_mut(&self.session) {active.status=status;}
     }
 }
-impl Drop for SessionLease { fn drop(&mut self) { self.gate.active.lock().unwrap().remove(&self.session); } }
+impl Drop for SessionLease { fn drop(&mut self) {
+    if let Some(mut active) = self.gate.active.lock().unwrap().remove(&self.session) {
+        let successful = active.completed.unwrap_or(active.record.connected_at.is_some());
+        self.gate.history.end(&mut active.record, successful);
+    }
+} }
 #[derive(Clone)]
 pub struct Access {
     pub store: TrustStore,
@@ -155,12 +186,12 @@ impl Access {
         ensure!(
             !record.revoked && record.inbound.is_some(),
             "{}", uu_i18n::format!("控制端授权已经撤销"));
-        self.sessions.claim(peer)
+        self.sessions.claim_named(peer, &record.device.name)
     }
     pub(crate) fn claim_authenticated(&self,authorized:&mut crate::device_auth::AuthenticatedPeer)->Result<SessionLease> {
         if let Some(temporary)=authorized.temporary.take() {
             ensure!(self.pairing.valid_temporary(&temporary.probe()),"{}", uu_i18n::format!("临时授权已结束"));
-            let mut lease=self.sessions.claim(&authorized.device.id())?;
+            let mut lease=self.sessions.claim_named(&authorized.device.id(), &authorized.device.name)?;
             lease.temporary=Some(temporary);
             Ok(lease)
         }else{self.claim(&authorized.device.id())}

@@ -17,13 +17,14 @@ pub(super) enum Job {
     Refresh,
     Start,
     Stop,
+    HistoryRefresh,
     Rpc(Request),
 }
 impl Job {
     /// Background refresh has no completion event; locking the whole service
     /// form for it leaves stale busy state after a successful deployment.
     pub(super) fn foreground(&self) -> bool {
-        !matches!(self, Self::Refresh)
+        !matches!(self, Self::Refresh | Self::HistoryRefresh)
     }
 }
 pub(super) enum Event {
@@ -33,6 +34,7 @@ pub(super) enum Event {
         response: Result<Response, String>,
     },
     Done(Result<Response, String>),
+    History(Result<Response, String>),
     Trust {
         completed: bool,
         result: Result<Response, String>,
@@ -71,9 +73,12 @@ impl Worker {
             };
             let mut trust_at = Instant::now();
             let mut plugins_at = Instant::now();
+            let mut history_at = Instant::now();
+            let mut history_revision = None;
             while !stopped.load(Ordering::Acquire) {
                 match jobs.recv_timeout(Duration::from_millis(750)) {
                     Ok(Job::Refresh) => {}
+                    Ok(Job::HistoryRefresh) => { history_at = Instant::now(); history_revision = None; }
                     Ok(job @ (Job::Start | Job::Stop)) => {
                         let result = control_owner(matches!(job, Job::Start))
                             .map(|_| Response::Applied)
@@ -192,6 +197,23 @@ impl Worker {
                         break;
                     }
                     plugins_at = Instant::now() + Duration::from_secs(5);
+                }
+                if Instant::now() >= history_at {
+                    let result = if state == SERVICE_RUNNING {
+                        runtime.block_on(request_owner(Request::ConnectionHistory { revision: history_revision }))
+                            .map_err(|error| format!("{error:#}"))
+                    } else {
+                        history_revision = None;
+                        uu_core::Config::from_env().map_err(|error| error.to_string()).and_then(|config|
+                            uu_core::connection_history::History::read(&config.at("server/device-trust/connection-history.json"))
+                                .map(|snapshot| Response::ConnectionHistory { snapshot: Some(snapshot.inactive()) })
+                                .map_err(|error| format!("{error:#}")))
+                    };
+                    if let Ok(Response::ConnectionHistory { snapshot: Some(snapshot) }) = &result {
+                        history_revision = Some(snapshot.revision);
+                    }
+                    if send.send(Event::History(result)).is_err() { break; }
+                    history_at = Instant::now() + Duration::from_secs(5);
                 }
             }
         });

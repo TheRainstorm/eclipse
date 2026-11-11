@@ -117,6 +117,8 @@ pub(super) struct Workspace {
     pub route: HomeRoute,
     pub book: Book,
     pub host: super::sharing_ui::HostUi,
+    connection_history: super::connection_history_ui::State,
+    history_path: Option<std::path::PathBuf>,
     pub store: Option<Store>,
     pub trust: Option<TrustStore>,
     pub feedback: super::ui_feedback::Feedback,
@@ -935,6 +937,8 @@ impl Workspace {
             },
             book,
             host: Default::default(),
+            connection_history: Default::default(),
+            history_path: config.map(|config| config.at("device-trust/connection-history.json")),
             #[cfg(windows)]
             background_service:Default::default(),
             store,
@@ -1797,6 +1801,10 @@ impl Workspace {
                     });
             }
         });
+        if let Some(path) = &self.history_path {
+            self.connection_history.local(path.clone(), self.host.access.as_ref().map(|a| &a.sessions.history), ui.ctx());
+            card(ui, |ui| { self.connection_history.show(ui); });
+        }
     }
     pub(super) fn server_settings(&mut self, ui: &mut egui::Ui, info: &Info, _actions: &mut Vec<Action>) {
         if self.service_tab==4 {

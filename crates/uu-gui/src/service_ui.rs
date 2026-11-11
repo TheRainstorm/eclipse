@@ -419,6 +419,7 @@ struct Manager {
     connection_error: String,
     keep_displays: Option<bool>,
     snapshot: Option<host_admin::Snapshot>,
+    connection_history: super::connection_history_ui::State,
     trust: Option<TrustSnapshot>,
     plugins:Option<PluginSnapshot>,
     service_connections: connections::State,
@@ -465,6 +466,7 @@ impl Manager {
             connection_error: String::new(),
             keep_displays: None,
             snapshot: None,
+            connection_history: Default::default(),
             trust: None,
             plugins:None,
             service_connections: Default::default(),
@@ -533,6 +535,11 @@ impl Manager {
                 }
             };
             match event {
+                Event::History(result) => self.connection_history.update(match result {
+                    Ok(Response::ConnectionHistory { snapshot }) => Ok(snapshot),
+                    Ok(Response::Error { message }) | Err(message) => Err(message),
+                    _ => Err(uu_i18n::text("请更新并重启主机服务以读取连接历史。").into()),
+                }),
                 Event::State {
                     state,
                     build,
@@ -1000,6 +1007,11 @@ impl Manager {
         }
     }
     fn connections(&mut self, ui: &mut egui::Ui) {
+        self.current_connections(ui);
+        ui.separator();
+        if self.connection_history.show(ui) { self.submit(Job::HistoryRefresh); }
+    }
+    fn current_connections(&mut self, ui: &mut egui::Ui) {
         if let Some(snapshot) = self.snapshot.clone() {
             if snapshot.connections.is_empty() {
                 ui.weak(uu_i18n::text("当前没有连接的会话。设备连接后，可在这里查看和管理会话。"));
