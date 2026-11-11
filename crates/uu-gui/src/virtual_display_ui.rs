@@ -92,6 +92,9 @@ use uu_core::{
 
 fn driver_check_feedback(status:&Status)->(Kind,String) {
     use uu_core::virtual_display::preparation::Phase;
+    if driver_missing(status) {
+        return (Kind::Info, uu_i18n::text("驱动检测完成：未安装所需驱动，可选择安装驱动。").into());
+    }
     if let Some(preparation)=&status.preparation {
         if preparation.phase!=Phase::Ready || preparation.error.is_some() {
             let kind=if preparation.error.is_some() || matches!(preparation.phase,Phase::Failed|Phase::RecoveryPending|Phase::Unsupported) {Kind::Error}
@@ -104,6 +107,15 @@ fn driver_check_feedback(status:&Status)->(Kind,String) {
     }else{
         (Kind::Error,uu_i18n::text(if status.supported {"驱动检查完成：尚未检测到可用驱动，请完成驱动准备。"}else{"驱动检查完成：当前系统不支持虚拟显示器。"}).into())
     }
+}
+fn driver_missing(status: &Status) -> bool {
+    use uu_core::virtual_display::preparation::Phase;
+    status.supported && !status.driver_present && status.preparation.as_ref().is_none_or(|s|
+        matches!(s.phase, Phase::NeedsDriver | Phase::NeedsElevation))
+}
+fn driver_ready(status: &Status) -> bool {
+    status.supported && status.driver_present && status.preparation.as_ref().is_none_or(|s|
+        s.phase == uu_core::virtual_display::preparation::Phase::Ready && s.error.is_none())
 }
 
 #[derive(Clone, Copy)]
@@ -139,6 +151,8 @@ pub struct State {
     worker_timed_out: bool,
     worker_preparation: bool,
     driver_check_pending: bool,
+    driver_install_prompt: bool,
+    enable_after_install: Option<uu_core::virtual_display::LeaseId>,
     inspect_inflight: bool,
     deferred_request: Option<LocalRequest>,
     uncertain_owners: BTreeSet<LocalOwner>,
@@ -259,6 +273,8 @@ impl State {
         self.slots.clear();
         self.preparation = None;
         self.driver_check_pending=false;
+        self.driver_install_prompt=false;
+        self.enable_after_install=None;
         self.details.clear();
         self.background_setup_requested = false;
         self.next_preparation_check = None;
@@ -365,7 +381,7 @@ impl State {
             return;
         }
         if administrator_required(owner)
-            || (owner == LocalOwner::Foreground
+            || (!cfg!(windows) && owner == LocalOwner::Foreground
                 && matches!(&request, LocalRequest::Prepare | LocalRequest::Recover))
         {
             self.request_background_setup();
@@ -385,6 +401,38 @@ impl State {
             );
         }
         self.start_worker(ctx, owner, preparing, move || local_request(request, owner));
+    }
+    fn check_driver(&mut self, ctx: &egui::Context) {
+        self.driver_check_pending = true;
+        self.message(Kind::Progress, uu_i18n::text("正在检测虚拟显示器驱动…").into());
+        self.local(ctx, Request::Inspect.into());
+    }
+    fn show_driver_install(&mut self, ctx: &egui::Context) {
+        if !self.driver_install_prompt { return; }
+        let mut open = true;
+        let mut install = false;
+        let mut cancel = false;
+        egui::Window::new(uu_i18n::text("安装虚拟显示器驱动？"))
+            .id(egui::Id::new("vdd-install-confirmation"))
+            .open(&mut open).collapsible(false).resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(uu_i18n::text("尚未检测到虚拟显示器所需的驱动，是否安装并准备？"));
+                ui.weak(uu_i18n::text(if self.enable_after_install.is_some() {
+                    "安装完成后继续启用所选显示器。"
+                } else { "本次只准备驱动，不会创建或启用显示器。" }));
+                ui.horizontal(|ui| {
+                    install = ui.add(crate::theme::primary_button(uu_i18n::text("安装驱动"))).clicked();
+                    cancel = ui.add(crate::theme::secondary_button(uu_i18n::text("稍后"))).clicked();
+                });
+            });
+        if install {
+            self.driver_install_prompt = false;
+            self.local(ctx, LocalRequest::Prepare);
+        } else if cancel || !open {
+            self.driver_install_prompt = false;
+            self.enable_after_install = None;
+        }
     }
     fn start_worker(
         &mut self,
@@ -490,6 +538,13 @@ impl State {
                     .map(|_| Instant::now() + Duration::from_secs(1));
                 if self.limit_draft==Some(status.limit) {self.limit_draft=None;}
                 self.status = Some(status);
+                if !self.driver_install_prompt && self.status.as_ref().is_some_and(driver_ready) {
+                    if let Some(id) = self.enable_after_install.take() {
+                        self.deferred_request = Some(Request::SetEnabled { id, enabled: true }.into());
+                    }
+                } else if !self.driver_install_prompt && self.preparation.as_ref().is_none_or(|s| !preparation_ui::active(s)) {
+                    self.enable_after_install = None;
+                }
                 if !self.inspect_inflight {
                     if let Some(id)=self.submitted_editor.take() {
                         if self.editors.get(&id).is_some_and(|draft|displays.iter().any(|display|display.id==draft.id && display.spec==draft.spec && (draft.name.trim().is_empty() || display.name==draft.name.trim()))) {
@@ -509,6 +564,7 @@ impl State {
                 }
                 if self.driver_check_pending {
                     let status=self.status.as_ref().unwrap();
+                    if driver_missing(status) { self.driver_install_prompt = true; }
                     let (kind,message)=driver_check_feedback(status);
                     self.driver_check_pending=status.preparation.as_ref().is_some_and(preparation_ui::active);
                     self.message(kind,message);
@@ -545,6 +601,7 @@ impl State {
                 self.next_inventory_check=Some(Instant::now());
             }
             Response::Error { message } => {
+                self.enable_after_install = None;
                 self.driver_check_pending=false;
                 self.submitted_editor=None;
                 if self.startup.is_some() {
@@ -576,6 +633,7 @@ impl State {
                     match result {
                         Ok(response) => self.receive(response, owner),
                         Err(error) => {
+                            self.enable_after_install = None;
                             self.driver_check_pending=false;
                             if owner == Some(LocalOwner::Foreground) {
                                 if let Some(id) = error.retained_lease {
@@ -604,6 +662,7 @@ impl State {
                     self.inspect_inflight=false;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    self.enable_after_install = None;
                     self.worker = None;
                     self.inspect_inflight=false;
                     self.worker_started = None;
@@ -737,6 +796,10 @@ impl State {
             .default_width(760.)
             .show(ctx, |ui| self.contents(ui, ctx, client, false));
         self.open = open;
+        if !open && self.driver_install_prompt {
+            self.driver_install_prompt = false;
+            self.enable_after_install = None;
+        }
     }
     fn contents(
         &mut self,
@@ -747,7 +810,7 @@ impl State {
     ) {
         let busy = (self.busy() && !self.inspect_inflight) || self.deferred_request.is_some();
         let can_edit=!busy;
-        let mutations_blocked = if client.is_some() {
+        let mutations_blocked = self.driver_install_prompt || if client.is_some() {
             self.remote_inventory_uncertain
         } else {
             self.local_mutations_blocked()
@@ -782,7 +845,7 @@ impl State {
             ui.strong(uu_i18n::text("选择管理对象"));
             ui.horizontal_wrapped(|ui| {
                 for owner in [LocalOwner::Foreground, LocalOwner::Background] {
-                    if ui.add_enabled(!busy, egui::SelectableLabel::new(self.local_owner == Some(owner), owner.label())).clicked() {
+                    if ui.add_enabled(!busy&&!self.driver_install_prompt, egui::SelectableLabel::new(self.local_owner == Some(owner), owner.label())).clicked() {
                         selected_owner = Some(owner);
                     }
                 }
@@ -874,7 +937,7 @@ impl State {
         if client.is_none() {
             egui::CollapsingHeader::new(uu_i18n::text("驱动与诊断")).id_salt("vdd-driver-actions").show(ui,|ui| {
                 if let Some(status)=&self.preparation {ui.weak(uu_core::native_virtual_display::preparation_message(status));}
-                if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("检查驱动准备"))).on_hover_text(uu_i18n::text("检查签名驱动文件，缺失时准备；不新建显示器。")).clicked() {preparation_action=Some(if embedded {preparation_ui::Action::Prepare}else{preparation_ui::Action::BackgroundSetup});}
+                if ui.add_enabled(!busy&&!self.driver_install_prompt,crate::theme::secondary_button(uu_i18n::text("检测驱动"))).on_hover_text(uu_i18n::text("检测驱动是否就绪；缺失时询问是否安装。")).clicked() {self.check_driver(ctx);}
                 if self.preparation.as_ref().is_some_and(|s|s.phase==uu_core::virtual_display::preparation::Phase::RecoveryPending) && ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("修复未完成的驱动操作"))).clicked() {preparation_action=Some(preparation_ui::Action::Recover);}
             });
         }
@@ -912,6 +975,14 @@ impl State {
                     self.remote(client, command);
                 }
             } else {
+                if let Request::SetEnabled { id, enabled: true } = command {
+                    if self.status.as_ref().is_some_and(driver_missing) {
+                        self.enable_after_install = Some(id);
+                        self.driver_install_prompt = true;
+                        self.show_driver_install(ctx);
+                        return;
+                    }
+                }
                 let command=match command {
                     Request::Create{spec}=>LocalRequest::CreateManual{spec,persistent:self.persistent_new.unwrap_or(true)},
                     Request::SetLimit{limit}=>LocalRequest::SetLimit{limit},
@@ -928,6 +999,7 @@ impl State {
                 preparation_ui::Action::BackgroundSetup => self.request_background_setup(),
             }
         }
+        self.show_driver_install(ctx);
     }
 }
 
@@ -948,7 +1020,55 @@ mod tests {
         let notice=state.feedback.clone();state.receive(Response::Snapshot{status,displays:vec![],slots:vec![]},Some(LocalOwner::Background));
         assert!(state.feedback==notice);
         let mut status=state.status.clone().unwrap();status.driver_present=false;status.preparation=None;
-        assert_eq!(driver_check_feedback(&status).0,Kind::Error);
+        assert_eq!(driver_check_feedback(&status).0,Kind::Info);
+    }
+    #[test]
+    fn explicit_check_offers_install_but_passive_refresh_and_recovery_do_not() {
+        use uu_core::virtual_display::preparation::Phase;
+        let mut state=State::generated_preview();
+        let mut status=state.status.clone().unwrap();
+        status.driver_present=false;
+        status.preparation=Some(preparation(Phase::NeedsDriver,false));
+        let snapshot=|status|Response::Snapshot{status,displays:vec![],slots:vec![]};
+        state.inspect_inflight=true;
+        state.receive(snapshot(status.clone()),Some(LocalOwner::Background));
+        assert!(!state.driver_install_prompt, "opening the page never offers installation");
+        state.driver_check_pending=true;
+        state.receive(snapshot(status.clone()),Some(LocalOwner::Background));
+        assert!(state.driver_install_prompt && !state.driver_check_pending);
+        state.driver_install_prompt=false;
+        state.receive(snapshot(status.clone()),Some(LocalOwner::Background));
+        assert!(!state.driver_install_prompt, "passive polls do not reopen a dismissed offer");
+        status.preparation=Some(preparation(Phase::RecoveryPending,false));
+        state.driver_check_pending=true;
+        state.receive(snapshot(status),Some(LocalOwner::Background));
+        assert!(!state.driver_install_prompt, "unfinished operations require recovery, not another install");
+    }
+    #[test]
+    fn only_confirmed_successful_installation_resumes_the_selected_enable_once() {
+        use uu_core::virtual_display::preparation::Phase;
+        let mut state=State::generated_preview();
+        let id=uu_core::virtual_display::LeaseId(uuid::Uuid::new_v4());
+        state.enable_after_install=Some(id);
+        state.driver_install_prompt=true;
+        let mut status=state.status.clone().unwrap();
+        status.preparation=Some(preparation(Phase::Ready,false));
+        let snapshot=|status|Response::Snapshot{status,displays:vec![],slots:vec![]};
+        state.receive(snapshot(status.clone()),Some(LocalOwner::Background));
+        assert!(state.deferred_request.is_none(), "external installation is not confirmation");
+        state.driver_install_prompt=false;
+        status.preparation=Some(preparation(Phase::Preparing,true));
+        state.receive(snapshot(status.clone()),Some(LocalOwner::Background));
+        assert!(state.deferred_request.is_none());
+        status.preparation=Some(preparation(Phase::Ready,false));
+        state.receive(snapshot(status.clone()),Some(LocalOwner::Background));
+        assert!(matches!(state.deferred_request.take(),Some(LocalRequest::Manage{request:Request::SetEnabled{id:got,enabled:true}})if got==id));
+        state.receive(snapshot(status.clone()),Some(LocalOwner::Background));
+        assert!(state.deferred_request.is_none());
+        state.enable_after_install=Some(id);
+        status.preparation=Some(preparation(Phase::Failed,false));
+        state.receive(snapshot(status),Some(LocalOwner::Background));
+        assert!(state.enable_after_install.is_none() && state.deferred_request.is_none());
     }
     fn preparation(
         phase: uu_core::virtual_display::preparation::Phase,
