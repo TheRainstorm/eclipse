@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(wallpaper.original.extension(),"png");
         assert_eq!(wallpaper.encoded,bytes);
         let favorite=decode_favorite(request("favorite:owned".into()),bytes.clone()).unwrap();
-        assert_eq!((favorite.width,favorite.height),MAX_PREVIEW);
+        assert_eq!((favorite.width,favorite.height),(256,144));
         assert_eq!(favorite.original,wallpaper.original);
         assert_eq!(favorite.encoded,bytes);
     }
