@@ -344,7 +344,7 @@ impl SoftwareSection {
         let defaults=Settings::default();
         match self {
             Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;s.close_to_tray=defaults.close_to_tray;}
-            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.color_theme=defaults.color_theme;s.device_icon_size=defaults.device_icon_size;s.device_text_size=defaults.device_text_size;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
+            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.color_theme=defaults.color_theme;s.device_icon_size=defaults.device_icon_size;s.device_text_size=defaults.device_text_size;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_refresh=defaults.wallpaper_refresh;s.wallpaper_refresh_hours=defaults.wallpaper_refresh_hours;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
             Self::VirtualDisplays=>s.virtual_display_presets=defaults.virtual_display_presets,
@@ -417,11 +417,20 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
                 for source in WallpaperSource::ALL {crate::theme::selectable_value(ui,&mut s.wallpaper_source,source,source.label());}
             });
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(uu_i18n::text("壁纸刷新策略"));
+            crate::theme::Select::from_id_salt("wallpaper-refresh").selected_text(s.wallpaper_refresh.label()).show_ui(ui,|ui| {
+                for policy in super::settings::WallpaperRefresh::ALL {crate::theme::selectable_value(ui,&mut s.wallpaper_refresh,policy,policy.label());}
+            });
+            if s.wallpaper_refresh==super::settings::WallpaperRefresh::EveryHours {
+                ui.add(egui::DragValue::new(&mut s.wallpaper_refresh_hours).range(1..=8760).suffix(uu_i18n::text(" 小时")));
+            }
+        });
         if s.wallpaper_source == WallpaperSource::CustomApi {
             ui.label(uu_i18n::text("壁纸图片接口"));
             ui.add(crate::theme::Input::new(&mut s.wallpaper_api).desired_width(f32::INFINITY).hint_text("https://example.com/image"));
         }
-        note(ui,uu_i18n::text("摄影使用 Lorem Picsum，二次元使用 Pipw；自定义 API 可填返回 JPEG / PNG / WebP 的图片地址。缓存每日更新，获取失败继续使用已有壁纸。"));
+        note(ui,uu_i18n::text("摄影使用 Lorem Picsum，二次元使用 Pipw；自定义 API 可填 JPEG / PNG / WebP 图片地址。首次无缓存时会加载一张，之后遵循刷新策略，失败保留已有壁纸；收藏按顺序轮换。"));
         if ui.add(crate::theme::secondary_button(uu_i18n::text("刷新壁纸"))).clicked(){actions.refresh_wallpaper=true;}
     });
         group(ui,uu_i18n::text("串流界面"),|ui| {

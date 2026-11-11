@@ -16,7 +16,7 @@ enum Rendition { Preview, Wallpaper(u32), Favorite }
 impl Rendition {
     fn bytes(self) -> usize { match self { Self::Preview => MAX_DOWNLOAD, _ => MAX_WALLPAPER_BYTES } }
     fn allocation(self) -> u64 { match self { Self::Preview => MAX_DECODE_ALLOC, _ => 256 * 1024 * 1024 } }
-    fn size(self) -> (u32,u32) { match self { Self::Wallpaper(side) => (side,side), _ => MAX_PREVIEW } }
+    fn size(self) -> (u32,u32) { match self { Self::Wallpaper(side) => (side,side), Self::Favorite => (256,144), Self::Preview => MAX_PREVIEW } }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Original { pub width:u32, pub height:u32, pub format:image::ImageFormat }

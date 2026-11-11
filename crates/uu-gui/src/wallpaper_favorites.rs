@@ -1,389 +1,314 @@
-//! An executable-local, bounded wallpaper collection. IO and decode run off UI.
-use super::ui_feedback::{Feedback,Scope,Kind};
-use super::wallpapers;
-use anyhow::Context as _;
-use eframe::egui;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    io::{Read, Write},
-    path::{Path, PathBuf},
-    sync::{mpsc, Arc},
-    time::Duration,
+//! Background catalog discovery and a bounded page of gallery textures.
+use super::{
+    ui_feedback::{Feedback, Kind, Scope},
+    wallpapers,
 };
-
-const CAPACITY: usize = 10;
-const MAX_BYTES: usize = wallpapers::MAX_WALLPAPER_BYTES;
-#[derive(Clone, Default, Serialize, Deserialize)]
-struct Manifest {
-    version: u32,
-    images: Vec<String>,
-}
-impl Manifest {
-    fn empty() -> Self {
-        Self {
-            version: 1,
-            images: vec![],
-        }
-    }
-    fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.version == 1 && self.images.len() <= CAPACITY,
-            "invalid favorites manifest version or count"
-        );
-        let mut ids = std::collections::HashSet::new();
-        for id in &self.images {
-            anyhow::ensure!(
-                valid_id(id) && ids.insert(id),
-                "invalid or duplicate favorite identity"
-            );
-        }
-        Ok(())
-    }
-}
-fn valid_id(id: &str) -> bool {
-    id.len() == 64
-        && id
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-}
-fn regular(path: &Path, directory: bool) -> anyhow::Result<()> {
-    let meta = fs::symlink_metadata(path)?;
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        anyhow::ensure!(
-            meta.file_attributes() & 0x400 == 0,
-            "favorite path is a reparse point"
-        );
-    }
-    anyhow::ensure!(
-        !meta.file_type().is_symlink()
-            && if directory {
-                meta.is_dir()
-            } else {
-                meta.is_file()
-            },
-        "favorite path is not a regular {}",
-        if directory { "directory" } else { "file" }
-    );
-    Ok(())
-}
-fn regular_if_present(path: &Path) -> anyhow::Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => {
-            regular(path, false)?;
-            Ok(true)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e.into()),
-    }
-}
-fn open(path: &Path, write: bool, create: bool) -> anyhow::Result<fs::File> {
-    regular_if_present(path)?;
-    let mut options = fs::OpenOptions::new();
-    options.read(true).write(write).create(create);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = options.open(path)?;
-    let meta = file.metadata()?;
-    anyhow::ensure!(
-        meta.is_file() && !meta.file_type().is_symlink(),
-        "favorite handle is not a regular file"
-    );
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        anyhow::ensure!(
-            meta.file_attributes() & 0x400 == 0,
-            "favorite handle is a reparse point"
-        );
-    }
-    Ok(file)
-}
-fn read(path: &Path, limit: usize) -> anyhow::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    open(path, false, false)?
-        .take(limit as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    anyhow::ensure!(bytes.len() <= limit, "favorite file exceeds size limit");
-    Ok(bytes)
-}
-#[derive(Clone)]
-struct Store {
-    root: PathBuf,
-}
-impl Store {
-    fn application() -> anyhow::Result<Self> {
-        let exe = std::env::current_exe().context("cannot locate application folder")?;
-        Ok(Self {
-            root: exe
-                .parent()
-                .context("application folder unavailable")?
-                .join("wallpapers/favorites"),
-        })
-    }
-    fn prepare(&self, create: bool) -> anyhow::Result<bool> {
-        // Check existing parents before create_dir_all, including Windows
-        // junctions. Never use a redirected favorites folder as a write target.
-        for path in self.root.ancestors() {
-            match fs::symlink_metadata(path) {
-                Ok(_) => regular(path, true)?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        if !self.root.exists() {
-            if !create {
-                return Ok(false);
-            }
-            fs::create_dir_all(&self.root)?;
-        }
-        regular(&self.root, true)?;
-        Ok(true)
-    }
-    fn lock(&self, write: bool) -> anyhow::Result<fs::File> {
-        let file = open(&self.root.join("favorites.lock"), write, write)?;
-        let started = std::time::Instant::now();
-        loop {
-            let result = if write {
-                fs2::FileExt::try_lock_exclusive(&file)
-            } else {
-                fs2::FileExt::try_lock_shared(&file)
-            };
-            match result {
-                Ok(()) => return Ok(file),
-                Err(e)
-                    if e.raw_os_error() == fs2::lock_contended_error().raw_os_error()
-                        && started.elapsed() < Duration::from_secs(3) =>
-                {
-                    std::thread::sleep(Duration::from_millis(20))
-                }
-                Err(e) => return Err(e).context("favorites collection is busy or inaccessible"),
-            }
-        }
-    }
-    fn manifest(&self) -> anyhow::Result<Manifest> {
-        let path = self.root.join("favorites.json");
-        let manifest = match read(&path, 64 * 1024) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .context("favorites manifest is invalid; original preserved")?,
-            Err(e)
-                if e.downcast_ref::<std::io::Error>()
-                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                Manifest::empty()
-            }
-            Err(e) => return Err(e),
-        };
-        manifest.validate()?;
-        Ok(manifest)
-    }
-    fn load(&self) -> anyhow::Result<Vec<(String, wallpapers::Thumbnail)>> {
-        if !self.prepare(false)? {
-            return Ok(vec![]);
-        }
-        if !regular_if_present(&self.root.join("favorites.json"))? {
-            return Ok(vec![]);
-        }
-        let lock = self.lock(false)?;
-        let manifest = self.manifest()?;
-        let images = self.read_images(&manifest)?;
-        drop(lock);
-        decode_images(images)
-    }
-    fn read_images(&self, manifest: &Manifest) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
-        let mut images = Vec::new();
-        for id in &manifest.images {
-            let bytes = read(&self.root.join(format!("{id}.image")), MAX_BYTES)?;
-            anyhow::ensure!(
-                format!("{:x}", Sha256::digest(&bytes)) == *id,
-                "favorite image hash mismatch"
-            );
-            images.push((id.clone(), bytes));
-        }
-        Ok(images)
-    }
-    fn save(
-        &self,
-        bytes: &[u8],
-    ) -> anyhow::Result<(String, bool, Vec<(String, wallpapers::Thumbnail)>)> {
-        anyhow::ensure!(
-            !bytes.is_empty() && bytes.len() <= MAX_BYTES,
-            "favorite image exceeds size limit"
-        );
-        // Validate before claiming an identity or changing the collection.
-        wallpapers::decode_favorite(
-            wallpapers::Request {
-                device_id: "favorite".into(),
-                url: String::new(),
-            },
-            bytes.to_vec(),
-        )?;
-        self.prepare(true)?;
-        let lock = self.lock(true)?;
-        let mut manifest = self.manifest()?;
-        let id = format!("{:x}", Sha256::digest(bytes));
-        if manifest.images.contains(&id) {
-            let images = self.read_images(&manifest)?;
-            drop(lock);
-            return Ok((id, false, decode_images(images)?));
-        }
-        let path = self.root.join(format!("{id}.image"));
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                let result = file.write_all(bytes).and_then(|_| file.sync_all());
-                drop(file);
-                if let Err(error) = result {
-                    let _ = fs::remove_file(&path);
-                    return Err(error.into());
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                anyhow::ensure!(
-                    read(&path, MAX_BYTES)? == bytes,
-                    "existing favorite file does not match its identity"
-                );
-            }
-            Err(e) => return Err(e.into()),
-        }
-        manifest.images.push(id.clone());
-        let retired = if manifest.images.len() > CAPACITY {
-            Some(manifest.images.remove(0))
-        } else {
-            None
-        };
-        let manifest_path = self.root.join("favorites.json");
-        regular_if_present(&manifest_path)?;
-        let temporary = self
-            .root
-            .join(format!(".favorites-{}.tmp", uuid::Uuid::new_v4()));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        // This path is owned only after create_new succeeds; a collision can
-        // never cause cleanup to delete a pre-existing unrelated file.
-        let written = file
-            .write_all(&serde_json::to_vec_pretty(&manifest)?)
-            .and_then(|_| file.sync_all());
-        drop(file);
-        let result = written.and_then(|_| fs::rename(&temporary, &manifest_path));
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result?;
-        // Only the oldest file explicitly owned by the preimage manifest can
-        // be retired. Ignore unrelated files and preserve externally changed data.
-        if let Some(retired) = retired {
-            let path = self.root.join(format!("{retired}.image"));
-            if read(&path, MAX_BYTES)
-                .is_ok_and(|data| format!("{:x}", Sha256::digest(data)) == retired)
-            {
-                fs::remove_file(path)?;
-            }
-        }
-        let images = self.read_images(&manifest)?;
-        drop(lock);
-        Ok((id, true, decode_images(images)?))
-    }
-}
-fn decode_images(
-    images: Vec<(String, Vec<u8>)>,
-) -> anyhow::Result<Vec<(String, wallpapers::Thumbnail)>> {
-    images
-        .into_iter()
-        .map(|(id, bytes)| {
-            let image = wallpapers::decode_favorite(
-                wallpapers::Request {
-                    device_id: "favorite".into(),
-                    url: format!("favorite:{id}"),
-                },
-                bytes,
-            )?;
-            Ok((id, image))
-        })
-        .collect()
-}
+use eframe::egui;
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    sync::{mpsc, Arc},
+    time::{Duration, Instant},
+};
+mod files;
+mod store;
+use store::{Entry, Store, PAGE_SIZE};
+const SCAN_INTERVAL: Duration = Duration::from_secs(10);
 
 pub(super) struct Item {
     pub id: String,
-    pub texture: egui::TextureHandle,
-    pub encoded: Arc<Vec<u8>>,
+    pub filename: String,
+    pub texture: Option<egui::TextureHandle>,
+    pub error: Option<String>,
+}
+pub(super) struct Selection {
+    pub id: String,
+    store: Store,
+    item: Entry,
+}
+impl Selection {
+    pub fn load(self, side: usize) -> anyhow::Result<wallpapers::Thumbnail> {
+        wallpapers::decode_wallpaper_with_limit(
+            wallpapers::Request {
+                device_id: "background".into(),
+                url: format!("favorite:{}", self.id),
+            },
+            self.store.bytes(&self.item)?,
+            side,
+        )
+    }
+}
+enum Job {
+    Load(Option<usize>),
+    Save(Arc<Vec<u8>>),
+    Delete(String),
+}
+enum Notice {
+    Saved(bool),
+    Deleted,
 }
 struct Loaded {
-    images: Vec<(String, wallpapers::Thumbnail)>,
-    saved: Option<(String, bool)>,
+    catalog: Vec<Entry>,
+    page: usize,
+    follow_latest: bool,
+    images: Option<Vec<(Entry, Result<wallpapers::Thumbnail, String>)>>,
+    notice: Option<Notice>,
 }
 pub(super) struct Favorites {
     store: Result<Store, String>,
+    catalog: Vec<Entry>,
     pub items: Vec<Item>,
     worker: Option<mpsc::Receiver<Result<Loaded, String>>>,
     pub loaded: bool,
     pub notice: Feedback,
-    pending_save: std::collections::VecDeque<Arc<Vec<u8>>>,
+    pending: VecDeque<Job>,
+    page: usize,
+    follow_latest: bool,
+    scanned_at: Option<Instant>,
 }
 impl Default for Favorites {
     fn default() -> Self {
         Self {
             store: Store::application().map_err(|e| format!("{e:#}")),
+            catalog: vec![],
             items: vec![],
             worker: None,
             loaded: false,
-            notice: Feedback::default(),
-            pending_save: Default::default(),
+            notice: Default::default(),
+            pending: Default::default(),
+            page: 0,
+            follow_latest: true,
+            scanned_at: None,
         }
     }
 }
 impl Favorites {
     pub fn ensure_loaded(&mut self, ctx: &egui::Context) {
-        if !self.loaded && self.worker.is_none() {
+        if self.worker.is_none()
+            && (!self.loaded
+                || self
+                    .scanned_at
+                    .is_some_and(|t| t.elapsed() >= SCAN_INTERVAL))
+        {
             self.reload(ctx);
+        }
+        if self.worker.is_none() {
+            if let Some(time) = self.scanned_at {
+                ctx.request_repaint_after(SCAN_INTERVAL.saturating_sub(time.elapsed()));
+            }
         }
     }
     pub fn reload(&mut self, ctx: &egui::Context) {
-        if self.worker.is_none() {
-            self.start(None, ctx);
-        }
+        self.enqueue(Job::Load((!self.follow_latest).then_some(self.page)), ctx);
     }
     pub fn save(&mut self, bytes: Arc<Vec<u8>>, ctx: &egui::Context) {
-        if self.worker.is_some() {
-            if self.pending_save.len() < CAPACITY {
-                self.pending_save.push_back(bytes);
-            } else {
-                self.notice.error(Scope::Wallpaper,uu_i18n::text("收藏队列已满，请稍后重试"));
+        self.enqueue(Job::Save(bytes), ctx);
+    }
+    pub fn delete(&mut self, id: String, ctx: &egui::Context) {
+        self.enqueue(Job::Delete(id), ctx);
+    }
+    pub fn page(&self) -> usize {
+        self.page
+    }
+    pub fn pages(&self) -> usize {
+        self.catalog.len().div_ceil(PAGE_SIZE).max(1)
+    }
+    pub fn count(&self) -> usize {
+        self.catalog.len()
+    }
+    pub fn busy(&self) -> bool {
+        self.worker.is_some() || !self.pending.is_empty()
+    }
+    pub fn set_page(&mut self, page: usize, ctx: &egui::Context) {
+        self.enqueue(Job::Load(Some(page)), ctx);
+    }
+    pub fn selected(&self, id: Option<&str>) -> Option<Selection> {
+        let item = id
+            .and_then(|id| self.catalog.iter().find(|e| e.id == id))
+            .or_else(|| self.catalog.first())?;
+        Some(Selection {
+            id: item.id.clone(),
+            store: self.store.as_ref().ok()?.clone(),
+            item: item.clone(),
+        })
+    }
+    pub fn next(&self, current: Option<&str>) -> Option<String> {
+        if self.catalog.is_empty() {
+            return None;
+        }
+        let index = current
+            .and_then(|id| self.catalog.iter().position(|e| e.id == id))
+            .map_or(0, |i| (i + 1) % self.catalog.len());
+        Some(self.catalog[index].id.clone())
+    }
+    pub fn editor(&mut self, ui: &mut egui::Ui, selected: &mut Option<String>) -> bool {
+        self.ensure_loaded(ui.ctx());
+        self.poll(ui.ctx());
+        ui.weak(uu_i18n::text("按收藏时间从新到旧显示，每页20张。也可直接将图片放入收藏目录，首次扫描时间作为收藏时间。"));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(uu_i18n::format!(
+                "共 {} 张 · 第 {} / {} 页",
+                self.count(),
+                self.page() + 1,
+                self.pages()
+            ));
+            if ui
+                .add_enabled(
+                    !self.busy(),
+                    crate::theme::secondary_button(uu_i18n::text("扫描收藏目录")),
+                )
+                .clicked()
+            {
+                self.reload(ui.ctx());
             }
+            if let Ok(store) = &self.store {
+                if ui
+                    .add(crate::theme::secondary_button(uu_i18n::text(
+                        "复制收藏目录",
+                    )))
+                    .on_hover_text(store.root.display().to_string())
+                    .clicked()
+                {
+                    ui.ctx().copy_text(store.root.display().to_string());
+                }
+            }
+        });
+        let mut target = None;
+        let last = self.pages() - 1;
+        ui.add_enabled_ui(!self.busy(), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        self.page < last,
+                        crate::theme::secondary_button(uu_i18n::text("较新一页")),
+                    )
+                    .clicked()
+                {
+                    target = Some(self.page + 1);
+                }
+                let mut pages = std::collections::BTreeSet::from([0, last]);
+                pages.extend(self.page.saturating_sub(2)..=self.page.saturating_add(2).min(last));
+                let mut previous = None;
+                for page in pages.into_iter().rev() {
+                    if previous.is_some_and(|p| p > page + 1) {
+                        ui.label("…");
+                    }
+                    if ui
+                        .selectable_label(page == self.page, (page + 1).to_string())
+                        .clicked()
+                    {
+                        target = Some(page);
+                    }
+                    previous = Some(page);
+                }
+                if ui
+                    .add_enabled(
+                        self.page > 0,
+                        crate::theme::secondary_button(uu_i18n::text("较旧一页")),
+                    )
+                    .clicked()
+                {
+                    target = Some(self.page - 1);
+                }
+            })
+        });
+        if let Some(page) = target {
+            self.set_page(page, ui.ctx());
+        }
+        if self.loaded && self.catalog.is_empty() {
+            ui.label(uu_i18n::text(
+                "还没有收藏壁纸；可从其它来源收藏，或将照片放入收藏目录。",
+            ));
+        }
+        let current = self.selected(selected.as_deref()).map(|s| s.id);
+        let mut changed = false;
+        let mut delete = None;
+        ui.horizontal_wrapped(|ui| {
+            for item in &self.items {
+                let response = if let Some(texture) = &item.texture {
+                    ui.add(
+                        egui::ImageButton::new(
+                            egui::Image::from_texture(texture).max_size(egui::vec2(128., 72.)),
+                        )
+                        .selected(current.as_ref() == Some(&item.id)),
+                    )
+                } else {
+                    ui.add_sized(
+                        [128., 72.],
+                        egui::Button::new(uu_i18n::text("图片无法解码")),
+                    )
+                };
+                let response =
+                    response.on_hover_text(item.error.as_deref().unwrap_or(&item.filename));
+                if response.clicked() && item.texture.is_some() {
+                    *selected = Some(item.id.clone());
+                    changed = true;
+                }
+                response.context_menu(|ui| {
+                    if crate::theme::menu_action(ui, !self.busy(), uu_i18n::text("删除收藏图片"))
+                        .clicked()
+                    {
+                        delete = Some(item.id.clone());
+                        ui.close_menu();
+                    }
+                });
+            }
+        });
+        if let Some(id) = delete {
+            self.delete(id, ui.ctx());
+        }
+        self.notice.show(ui, Scope::Wallpaper);
+        changed
+    }
+    fn enqueue(&mut self, job: Job, ctx: &egui::Context) {
+        if self.worker.is_none() {
+            self.start(job, ctx);
             return;
         }
-        self.start(Some(bytes), ctx);
+        if matches!(&job, Job::Load(_)) {
+            self.pending.retain(|j| !matches!(j, Job::Load(_)));
+        }
+        if self.pending.len() < 8 {
+            self.pending.push_back(job);
+        } else {
+            self.notice
+                .error(Scope::Wallpaper, uu_i18n::text("收藏队列已满，请稍后重试"));
+        }
     }
-    fn start(&mut self, bytes: Option<Arc<Vec<u8>>>, ctx: &egui::Context) {
+    fn start(&mut self, job: Job, ctx: &egui::Context) {
         let store = match &self.store {
             Ok(store) => store.clone(),
             Err(error) => {
-                self.notice.error(Scope::Wallpaper,uu_i18n::format!("无法读取壁纸收藏：{error}"));
+                self.notice.error(
+                    Scope::Wallpaper,
+                    uu_i18n::format!("无法读取壁纸收藏：{error}"),
+                );
                 self.loaded = true;
+                self.scanned_at = Some(Instant::now());
                 return;
             }
         };
-        self.notice.report(Scope::Wallpaper,Kind::Progress,uu_i18n::text(if bytes.is_some() {
-            "正在收藏当前壁纸…"
-        } else {
-            "正在读取收藏壁纸…"
-        }));
+        match &job {
+            Job::Save(_) => self.notice.report(
+                Scope::Wallpaper,
+                Kind::Progress,
+                uu_i18n::text("正在收藏当前壁纸…"),
+            ),
+            Job::Delete(_) => self.notice.report(
+                Scope::Wallpaper,
+                Kind::Progress,
+                uu_i18n::text("正在删除收藏壁纸…"),
+            ),
+            Job::Load(_) if !self.loaded => self.notice.report(
+                Scope::Wallpaper,
+                Kind::Progress,
+                uu_i18n::text("正在读取收藏壁纸…"),
+            ),
+            _ => {}
+        }
+        let previous = page_entries(&self.catalog, self.page).to_vec();
+        let previous_page = self.page;
+        let follow_latest = self.follow_latest;
         let (tx, rx) = mpsc::channel();
         self.worker = Some(rx);
         let context = ctx.clone();
@@ -391,18 +316,52 @@ impl Favorites {
             .name("eclipse-favorites".into())
             .spawn(move || {
                 let result = (|| -> anyhow::Result<Loaded> {
-                    if let Some(bytes) = bytes {
-                        let (id, added, images) = store.save(&bytes)?;
-                        Ok(Loaded {
-                            images,
-                            saved: Some((id, added)),
-                        })
+                    let (catalog, page, notice) = match job {
+                        Job::Load(page) => (store.scan()?, page, None),
+                        Job::Save(bytes) => {
+                            let (_, added, catalog) = store.save(&bytes)?;
+                            (catalog, None, Some(Notice::Saved(added)))
+                        }
+                        Job::Delete(id) => (
+                            store.delete(&id)?,
+                            (!follow_latest).then_some(previous_page),
+                            Some(Notice::Deleted),
+                        ),
+                    };
+                    let last = catalog.len().div_ceil(PAGE_SIZE).saturating_sub(1);
+                    let page = page.unwrap_or(last).min(last);
+                    let entries = page_entries(&catalog, page).to_vec();
+                    let images = if entries == previous && page == previous_page {
+                        None
                     } else {
-                        Ok(Loaded {
-                            images: store.load()?,
-                            saved: None,
-                        })
-                    }
+                        Some(
+                            entries
+                                .into_iter()
+                                .map(|item| {
+                                    let image = (|| -> anyhow::Result<_> {
+                                        let mut image = wallpapers::decode_favorite(
+                                            wallpapers::Request {
+                                                device_id: "favorite".into(),
+                                                url: format!("favorite:{}", item.id),
+                                            },
+                                            store.bytes(&item)?,
+                                        )?;
+                                        image.encoded = Vec::new();
+                                        Ok(image)
+                                    })()
+                                    .map_err(|e| format!("{e:#}"));
+                                    (item, image)
+                                })
+                                .collect(),
+                        )
+                    };
+                    Ok(Loaded {
+                        catalog,
+                        page,
+                        follow_latest: page == last,
+                        images,
+                        notice,
+                    })
                 })()
                 .map_err(|e| format!("{e:#}"));
                 let _ = tx.send(result);
@@ -411,49 +370,90 @@ impl Favorites {
         if let Err(error) = spawned {
             self.worker = None;
             self.loaded = true;
-            self.notice.error(Scope::Wallpaper,uu_i18n::format!("壁纸收藏操作失败：{error}"));
+            self.scanned_at = Some(Instant::now());
+            self.notice.error(
+                Scope::Wallpaper,
+                uu_i18n::format!("壁纸收藏操作失败：{error}"),
+            );
         }
     }
     pub fn poll(&mut self, ctx: &egui::Context) {
-        if let Some(result) = self.worker.as_ref().and_then(|rx| match rx.try_recv() {
+        let result = self.worker.as_ref().and_then(|rx| match rx.try_recv() {
             Ok(result) => Some(result),
             Err(mpsc::TryRecvError::Empty) => None,
             Err(mpsc::TryRecvError::Disconnected) => {
                 Some(Err("wallpaper favorites worker stopped".into()))
             }
-        }) {
+        });
+        if let Some(result) = result {
             self.worker = None;
             self.loaded = true;
+            self.scanned_at = Some(Instant::now());
             match result {
                 Ok(loaded) => {
-                    self.items = loaded
-                        .images
-                        .into_iter()
-                        .map(|(id, image)| Item {
-                            id: id.clone(),
-                            texture: ctx.load_texture(
-                                format!("favorite-{id}"),
-                                egui::ColorImage::from_rgba_unmultiplied(
-                                    [image.width as usize, image.height as usize],
-                                    &image.rgba,
-                                ),
-                                egui::TextureOptions::LINEAR,
-                            ),
-                            encoded: Arc::new(image.encoded),
-                        })
-                        .collect();
-                    match loaded.saved {
-                        Some((_, true)) => self.notice.success(Scope::Wallpaper,uu_i18n::text("已收藏当前壁纸")),
-                        Some((_, false)) => self.notice.report(Scope::Wallpaper,Kind::Info,uu_i18n::text("这张壁纸已在收藏中")),
-                        None => self.notice.clear(),
+                    self.catalog = loaded.catalog;
+                    self.page = loaded.page;
+                    self.follow_latest = loaded.follow_latest;
+                    if let Some(images) = loaded.images {
+                        self.items = images
+                            .into_iter()
+                            .map(|(entry, image)| {
+                                let (texture, error) = match image {
+                                    Ok(image) => (
+                                        Some(ctx.load_texture(
+                                            format!("favorite-{}", entry.id),
+                                            egui::ColorImage::from_rgba_unmultiplied(
+                                                [image.width as usize, image.height as usize],
+                                                &image.rgba,
+                                            ),
+                                            egui::TextureOptions::LINEAR,
+                                        )),
+                                        None,
+                                    ),
+                                    Err(error) => (None, Some(error)),
+                                };
+                                Item {
+                                    id: entry.id,
+                                    filename: entry.file,
+                                    texture,
+                                    error,
+                                }
+                            })
+                            .collect();
+                    }
+                    match loaded.notice {
+                        Some(Notice::Saved(true)) => self
+                            .notice
+                            .success(Scope::Wallpaper, uu_i18n::text("已收藏当前壁纸")),
+                        Some(Notice::Saved(false)) => self.notice.report(
+                            Scope::Wallpaper,
+                            Kind::Info,
+                            uu_i18n::text("这张壁纸已在收藏中"),
+                        ),
+                        Some(Notice::Deleted) => self
+                            .notice
+                            .success(Scope::Wallpaper, uu_i18n::text("已删除收藏壁纸")),
+                        None if self
+                            .notice
+                            .current(&Scope::Wallpaper)
+                            .is_some_and(|m| m.kind == Kind::Progress) =>
+                        {
+                            self.notice.clear()
+                        }
+                        None => {}
                     }
                 }
-                Err(error) => self.notice.error(Scope::Wallpaper,uu_i18n::format!("壁纸收藏操作失败：{error}")),
+                Err(error) => self.notice.error(
+                    Scope::Wallpaper,
+                    uu_i18n::format!("壁纸收藏操作失败：{error}"),
+                ),
             }
-            if let Some(bytes) = self.pending_save.pop_front() {
-                self.start(Some(bytes), ctx);
+            if let Some(job) = self.pending.pop_front() {
+                self.start(job, ctx);
             }
         }
+        self.notice.expire(Instant::now());
+        self.notice.tick(ctx);
         if self.worker.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -462,114 +462,17 @@ impl Favorites {
     pub fn at(root: PathBuf) -> Self {
         Self {
             store: Ok(Store { root }),
-            ..Self::default()
+            ..Default::default()
         }
-    }
-    #[cfg(test)]
-    pub fn busy(&self) -> bool {
-        self.worker.is_some() || !self.pending_save.is_empty()
-    }
-    pub fn selected(&self, id: Option<&str>) -> Option<&Item> {
-        id.and_then(|id| self.items.iter().find(|item| item.id == id))
-            .or_else(|| self.items.first())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn png(color: u8) -> Vec<u8> {
-        let image = image::RgbImage::from_pixel(16, 9, image::Rgb([color, 100, 180]));
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-        bytes.into_inner()
-    }
-    fn new_store() -> Store {
-        Store {
-            root: std::env::temp_dir().join(format!("eclipse-favorites-{}", uuid::Uuid::new_v4())),
-        }
-    }
-    #[test]
-    fn favorites_keep_ten_in_order_deduplicate_and_never_delete_unrelated_files() {
-        let store = new_store();
-        store.prepare(true).unwrap();
-        fs::write(store.root.join("unrelated.txt"), b"keep").unwrap();
-        let mut ids = vec![];
-        for color in 0..11 {
-            ids.push(store.save(&png(color)).unwrap().0);
-        }
-        let images = store.load().unwrap();
-        assert_eq!(
-            images.iter().map(|(id, _)| id).collect::<Vec<_>>(),
-            ids[1..].iter().collect::<Vec<_>>()
-        );
-        assert!(!store.root.join(format!("{}.image", ids[0])).exists());
-        let (_, added, images) = store.save(&png(5)).unwrap();
-        assert!(!added);
-        assert_eq!(images.len(), 10);
-        assert_eq!(images[0].0, ids[1]);
-        assert_eq!(fs::read(store.root.join("unrelated.txt")).unwrap(), b"keep");
-        fs::remove_dir_all(store.root).unwrap();
-    }
-    #[test]
-    fn concurrent_saves_do_not_lose_ordered_entries() {
-        let store = new_store();
-        let threads = (0..8)
-            .map(|color| {
-                let store = store.clone();
-                std::thread::spawn(move || store.save(&png(color)).unwrap().0)
-            })
-            .collect::<Vec<_>>();
-        let ids = threads
-            .into_iter()
-            .map(|t| t.join().unwrap())
-            .collect::<std::collections::HashSet<_>>();
-        let actual = store
-            .load()
-            .unwrap()
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect::<std::collections::HashSet<_>>();
-        assert_eq!(actual, ids);
-        fs::remove_dir_all(store.root).unwrap();
-    }
-    #[cfg(unix)]
-    #[test]
-    fn readonly_collection_can_be_viewed_and_symbolic_lock_cannot_redirect_writes() {
-        use std::os::unix::fs::PermissionsExt;
-        let store = new_store();
-        store.save(&png(1)).unwrap();
-        let lock = store.root.join("favorites.lock");
-        fs::set_permissions(&lock, fs::Permissions::from_mode(0o400)).unwrap();
-        fs::set_permissions(&store.root, fs::Permissions::from_mode(0o500)).unwrap();
-        assert_eq!(store.load().unwrap().len(), 1);
-        fs::set_permissions(&store.root, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::remove_file(&lock).unwrap();
-        let destination = store.root.with_extension("must-not-create");
-        std::os::unix::fs::symlink(&destination, &lock).unwrap();
-        assert!(store.save(&png(2)).is_err());
-        assert!(!destination.exists());
-        fs::remove_dir_all(store.root).unwrap();
-    }
-    #[test]
-    fn invalid_manifest_is_preserved_and_linked_images_are_rejected() {
-        let store = new_store();
-        store.prepare(true).unwrap();
-        let path = store.root.join("favorites.json");
-        fs::write(&path, b"broken").unwrap();
-        assert!(store.save(&png(1)).is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"broken");
-        fs::remove_dir_all(store.root).unwrap();
-        #[cfg(unix)]
-        {
-            let store = new_store();
-            let data = png(2);
-            let (id, _, _) = store.save(&data).unwrap();
-            let file = store.root.join(format!("{id}.image"));
-            fs::remove_file(&file).unwrap();
-            std::os::unix::fs::symlink("unrelated", &file).unwrap();
-            assert!(store.load().is_err());
-            fs::remove_dir_all(store.root).unwrap();
-        }
-    }
+// Number from oldest to newest, present each page newest first. Appending a
+// favorite cannot move older photos into another numbered page.
+fn page_entries(catalog: &[Entry], page: usize) -> &[Entry] {
+    let end = catalog.len().saturating_sub(page.saturating_mul(PAGE_SIZE));
+    &catalog[end.saturating_sub(PAGE_SIZE)..end]
 }
+
+#[cfg(test)]
+mod tests;

@@ -58,6 +58,13 @@ pub(super) const ANIME_WALLPAPER: &str = "https://img-api.pipw.top";
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WallpaperSource { #[default] Photography, Anime, CustomApi, Favorites }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all="snake_case")]
+pub enum WallpaperRefresh { Never, OnOpen, #[default] EveryHours }
+impl WallpaperRefresh {
+    pub const ALL:[Self;3]=[Self::Never,Self::OnOpen,Self::EveryHours];
+    pub fn label(self)->&'static str {uu_i18n::text(match self {Self::Never=>"不刷新",Self::OnOpen=>"每次打开",Self::EveryHours=>"每 X 小时"})}
+}
 impl WallpaperSource {
     pub const ALL: [Self; 4] = [Self::Photography, Self::Anime, Self::CustomApi, Self::Favorites];
     pub fn label(self) -> &'static str {
@@ -98,6 +105,8 @@ pub struct Settings {
     pub device_icon_size: f32,
     pub device_text_size: f32,
     pub wallpaper_enabled: bool,
+    pub wallpaper_refresh: WallpaperRefresh,
+    pub wallpaper_refresh_hours: u32,
     #[serde(default)]
     pub app_autostart:bool,
     #[serde(default)]
@@ -120,7 +129,7 @@ impl Default for Settings {
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
             device_view:DeviceView::Cards, devices_hidden:false, device_icon_size:230.0, device_text_size:17.0, wallpaper_enabled:true, app_autostart:true,close_to_tray:true,show_input_status:false,virtual_display_presets:Default::default(),
-            wallpaper_source:WallpaperSource::Anime, wallpaper_favorite:None, wallpaper_api:ANIME_WALLPAPER.into() }
+            wallpaper_source:WallpaperSource::Anime, wallpaper_refresh:WallpaperRefresh::EveryHours,wallpaper_refresh_hours:24,wallpaper_favorite:None, wallpaper_api:ANIME_WALLPAPER.into() }
     }
 }
 impl std::ops::Deref for Settings {
@@ -157,6 +166,7 @@ impl Settings {
     fn validate(&self)->anyhow::Result<()> {
         self.client.validate()?;
         anyhow::ensure!(DEVICE_ICON_RANGE.contains(&self.device_icon_size) && DEVICE_TEXT_RANGE.contains(&self.device_text_size), "invalid device appearance size");
+        anyhow::ensure!((1..=8760).contains(&self.wallpaper_refresh_hours),"invalid wallpaper refresh interval");
         self.virtual_display_presets.validate()?;
         anyhow::ensure!(self.application_hotkeys().issues().is_empty(),"{}", uu_i18n::format!("客户端快捷键存在冲突，请在应用设置中修正"));
         anyhow::ensure!(self.lan_service_port>0&&self.lan_discovery_port>0,"{}", uu_i18n::format!("局域网端口必须在 1–65535 之间"));
