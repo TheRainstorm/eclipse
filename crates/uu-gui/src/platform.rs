@@ -195,6 +195,12 @@ impl Platform {
         #[cfg(not(windows))] {None}
     }
     pub fn show(&self, ctx: &egui::Context) {
+        #[cfg(target_os = "linux")]
+        if !crate::boss_key::hidden() {
+            if let Some(token) = crate::boss_key::take_activation_token(ctx) {
+                if let Some(capture) = self.wayland.borrow_mut().as_mut() { capture.activate(&token); }
+            }
+        }
         #[cfg(windows)]
         {
             let appearance = ctx.input(|i| crate::window::Appearance::new(i.viewport().fullscreen.unwrap_or(false), i.viewport().maximized.unwrap_or(false), i.focused));
@@ -220,7 +226,11 @@ impl Platform {
         }
     }
     pub fn focus_events(&self) -> Vec<serde_json::Value> {
-        #[cfg(windows)] { self.focus_events.borrow_mut().drain(..).collect() }
+        #[cfg(windows)] {
+            let mut events: Vec<_> = self.focus_events.borrow_mut().drain(..).collect();
+            if let Some(event) = crate::boss_key::windows::take_focus_result(self.window) { events.push(event); }
+            events
+        }
         #[cfg(not(windows))] { Vec::new() }
     }
     pub fn focus_window(&self) {
@@ -514,7 +524,7 @@ mod windows {
     unsafe extern "system" fn window_keyboard(window:HWND,message:u32,wparam:usize,lparam:isize)->isize {
         let Some(state)=route(window) else{return DefWindowProcW(window,message,wparam,lparam)};
         if message==WM_NULL { state.context.request_repaint_of(state.viewport); }
-        if message!=0 && message==crate::boss_key::windows::message() {crate::boss_key::windows::receive(wparam!=0);return 0;}
+        if message!=0 && message==crate::boss_key::windows::message() {crate::boss_key::windows::receive(window,wparam!=0);return 0;}
         let down=message==WM_KEYDOWN||message==WM_SYSKEYDOWN;
         let up=message==WM_KEYUP||message==WM_SYSKEYUP;
         if down||up {

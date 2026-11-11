@@ -39,7 +39,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GWLP_HINSTANCE, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTLEFT, HTRIGHT, HTTOP,
     HTTOPLEFT, HTTOPRIGHT, MENU_ITEM_STATE, MFS_DISABLED, MFS_ENABLED, MF_BYCOMMAND, NID_READY,
     PM_NOREMOVE, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SM_DIGITIZER,
-    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, TPM_LEFTALIGN, TPM_RETURNCMD,
+    SWP_ASYNCWINDOWPOS, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SWP_SHOWWINDOW, TPM_LEFTALIGN, TPM_RETURNCMD,
     WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_NCLBUTTONDOWN, WM_SYSCOMMAND, WNDCLASSEXW,
 };
 
@@ -139,6 +140,27 @@ impl Window {
             WindowState::set_window_flags(window_state.lock().unwrap(), window, |f| {
                 f.set(WindowFlags::VISIBLE, visible)
             });
+        });
+    }
+
+    pub fn set_visible_no_activate(&self, visible: bool) {
+        let window = self.window;
+        let window_state = Arc::clone(&self.window_state);
+        self.thread_executor.execute_in_thread(move || {
+            window_state.lock().unwrap().set_window_flags_in_place(|flags| {
+                flags.set(WindowFlags::VISIBLE, visible);
+            });
+            // Keep the toolkit flag synchronized without apply_diff's SW_SHOW
+            // (and SW_MAXIMIZE for an already-maximized window) activation.
+            unsafe {
+                SetWindowPos(
+                    window,
+                    0,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+                        | if visible { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW },
+                );
+            }
         });
     }
 

@@ -24,10 +24,11 @@ enum Command {
     Toggle,
     Configure(Vec<Chord>),
     Recording(Option<String>, bool),
+    Focused,
 }
 enum Event {
     Ready,
-    Activated,
+    Activated(String),
     Failed,
 }
 fn keys() -> &'static Mutex<Vec<Chord>> {
@@ -77,6 +78,7 @@ pub fn toggle() -> bool {
             .is_some_and(|worker| worker.send(Command::Toggle).is_ok())
 }
 struct Service {
+    last_active: std::sync::Arc<Mutex<Option<String>>>,
     commands: mpsc::UnboundedSender<Command>,
 }
 #[zbus::interface(name = "io.github.TheRainstorm.Eclipse.BossKey")]
@@ -93,9 +95,14 @@ impl Service {
                 "desktop shortcut is unavailable".into(),
             ));
         }
-        publish(connection, !super::hidden(), true)
+        toggle_visibility(connection, &self.last_active, String::new())
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+    fn focused(&self, #[zbus(header)] header: zbus::message::Header<'_>) -> zbus::fdo::Result<()> {
+        let sender = header.sender().ok_or_else(|| zbus::fdo::Error::InvalidArgs("missing sender".into()))?;
+        *self.last_active.lock().unwrap() = Some(sender.to_string());
+        Ok(())
     }
     fn recording(&self, active: bool, #[zbus(header)] header: zbus::message::Header<'_>) -> zbus::fdo::Result<()> {
         let sender = header.sender().ok_or_else(|| zbus::fdo::Error::InvalidArgs("missing sender".into()))?;
@@ -113,7 +120,30 @@ impl Service {
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 }
+pub fn focused() {
+    if let Some(worker) = WORKER.get() { let _ = worker.send(Command::Focused); }
+}
+fn activation_request() -> &'static Mutex<Option<String>> {
+    static REQUEST: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    REQUEST.get_or_init(Default::default)
+}
+pub fn take_activation() -> Option<String> { activation_request().lock().unwrap().take() }
+fn request_activation(token: String) {
+    *activation_request().lock().unwrap() = Some(token);
+    observe(super::hidden());
+}
+async fn toggle_visibility(connection: &zbus::Connection, last_active: &Mutex<Option<String>>, token: String) -> anyhow::Result<()> {
+    let hidden = !super::hidden();
+    if !hidden {
+        let own = connection.unique_name().unwrap().as_str();
+        let target = last_active.lock().unwrap().clone().unwrap_or_else(|| own.to_owned());
+        if target == own { request_activation(token.clone()); }
+        connection.emit_signal(None::<&str>, PATH, INTERFACE, "Activate", &(target, token)).await?;
+    }
+    publish(connection, hidden, true).await
+}
 async fn publish(connection: &zbus::Connection, hidden: bool, ready: bool) -> anyhow::Result<()> {
+    if hidden || !ready { activation_request().lock().unwrap().take(); }
     READY.store(ready, Ordering::Release);
     observe(hidden);
     connection
@@ -123,10 +153,12 @@ async fn publish(connection: &zbus::Connection, hidden: bool, ready: bool) -> an
 }
 async fn run(mut commands: mpsc::UnboundedReceiver<Command>) -> anyhow::Result<()> {
     let (owner_send, mut owner_commands) = mpsc::unbounded_channel();
+    let last_active = std::sync::Arc::new(Mutex::new(None));
     let connection = zbus::connection::Builder::session()?
         .serve_at(
             PATH,
             Service {
+                last_active: last_active.clone(),
                 commands: owner_send,
             },
         )?
@@ -146,10 +178,11 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>) -> anyhow::Result<(
             Err(error) => return Err(error.into()),
         };
         if leader {
-            return owner(&connection, &mut commands, &mut owner_commands).await;
+            return owner(&connection, &mut commands, &mut owner_commands, &last_active).await;
         }
         let proxy = zbus::Proxy::new(&connection, NAME, PATH, INTERFACE).await?;
-        let mut changes = proxy.receive_signal("Changed").await?;
+        // A single stream preserves ordering between visibility and activation.
+        let mut signals = proxy.receive_all_signals().await?;
         if let Ok((hidden, ready)) = proxy.call::<_, _, (bool, bool)>("Status", &()).await {
             READY.store(ready, Ordering::Release);
             observe(hidden);
@@ -162,13 +195,23 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>) -> anyhow::Result<(
             tokio::select! {
                 command=commands.recv()=>match command {
                     Some(Command::Toggle)=>{let _:Result<(),_>=proxy.call("Toggle",&()).await;},
+                    Some(Command::Focused)=>{let _:Result<(),_>=proxy.call("Focused",&()).await;},
                     Some(Command::Configure(value))=>{let _:Result<(),_>=proxy.call("Configure",&(serde_json::to_string(&value)?,)).await;},
                     Some(Command::Recording(_, active))=>{let _:Result<(),_>=proxy.call("Recording",&(active,)).await;},
                     None=>return Ok(()),
                 },
-                signal=changes.next()=>{
+                signal=signals.next()=>{
                     if let Some(signal)=signal {
-                        if let Ok((hidden,ready))=signal.body().deserialize::<(bool,bool)>() {READY.store(ready,Ordering::Release);observe(hidden);}
+                        match signal.header().member().map(|name|name.as_str()) {
+                            Some("Activate")=>if let Ok((target,token))=signal.body().deserialize::<(String,String)>() {
+                                if connection.unique_name().is_some_and(|name|name.as_str()==target) { request_activation(token); }
+                            },
+                            Some("Changed")=>if let Ok((hidden,ready))=signal.body().deserialize::<(bool,bool)>() {
+                                if hidden || !ready { activation_request().lock().unwrap().take(); }
+                                READY.store(ready,Ordering::Release); observe(hidden);
+                            },
+                            _=>{},
+                        }
                     }else{break;}
                 },
                 _=check.tick()=>match proxy.call::<_,_,(bool,bool)>("Status",&()).await {
@@ -208,6 +251,7 @@ async fn owner(
     connection: &zbus::Connection,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     remote: &mut mpsc::UnboundedReceiver<Command>,
+    last_active: &Mutex<Option<String>>,
 ) -> anyhow::Result<()> {
     let (send, mut events) = mpsc::unbounded_channel();
     let mut current = keys().lock().unwrap().clone();
@@ -225,12 +269,16 @@ async fn owner(
                 let Some(change)=change else { continue; };
                 let args=change.args()?;
                 if args.new_owner().is_some() { continue; }
+                {
+                    let mut active = last_active.lock().unwrap();
+                    if active.as_deref() == Some(args.name().as_str()) { *active = None; }
+                }
                 Some(Command::Recording(Some(args.name().to_string()),false))
             },
             event=events.recv()=>{
                 match event {
                     Some(Event::Ready) if hotkey.is_some()=>publish(connection,super::hidden(),true).await?,
-                    Some(Event::Activated) if READY.load(Ordering::Acquire)=>publish(connection,!super::hidden(),true).await?,
+                    Some(Event::Activated(token)) if READY.load(Ordering::Acquire)=>toggle_visibility(connection,last_active,token).await?,
                     Some(Event::Failed)=>publish(connection,false,false).await?,
                     _=>{},
                 }continue;
@@ -238,8 +286,9 @@ async fn owner(
         };
         let rebind = match command {
             Some(Command::Toggle) if READY.load(Ordering::Acquire) => {
-                publish(connection, !super::hidden(), true).await?; false
+                toggle_visibility(connection, last_active, String::new()).await?; false
             }
+            Some(Command::Focused) => { *last_active.lock().unwrap()=Some(own_name.clone()); false },
             Some(Command::Configure(value)) if current != value => {
                 current = value;
                 *keys().lock().unwrap() = current.clone(); true
@@ -305,7 +354,7 @@ async fn portal(
         loop {
             tokio::select! {
                 event=activated.next()=>if let Some(event)=event {
-                    if Some(event.session_handle().as_str())==session_path.as_str() && event.shortcut_id().starts_with("boss-") && held.insert(event.shortcut_id().to_owned()){let _=events.send(Event::Activated);}
+                    if Some(event.session_handle().as_str())==session_path.as_str() && event.shortcut_id().starts_with("boss-") && held.insert(event.shortcut_id().to_owned()){let token=event.options().get("activation_token").and_then(|v|<&str>::try_from(v).ok()).unwrap_or_default().to_owned();let _=events.send(Event::Activated(token));}
                 }else{break;},
                 event=deactivated.next()=>if let Some(event)=event {
                     if Some(event.session_handle().as_str())==session_path.as_str(){held.remove(event.shortcut_id());}

@@ -231,7 +231,7 @@ pub(super) async fn listen(
             match event {
                 XEvent::KeyPress(key) if grabbed.contains(&key.detail) => {
                     if held.insert(key.detail) {
-                        let _ = events.send(Event::Activated);
+                        let _ = events.send(Event::Activated(String::new()));
                     }
                 }
                 XEvent::KeyRelease(key) => {

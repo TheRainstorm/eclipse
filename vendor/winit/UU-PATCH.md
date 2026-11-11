@@ -11,6 +11,11 @@ This vendored winit retains its upstream license. Local platform changes:
   launched stream processes with `AllowSetForegroundWindow` and records native
   activation results. Windows can still refuse activation; no input is injected
   to bypass that decision.
+- Windows: `WindowExtWindows::set_visible_no_activate` updates the toolkit's
+  visibility flag and uses `SetWindowPos` with `SWP_NOACTIVATE`, preserving
+  placement and Z order. Boss-key restoration uses this to show every saved
+  window while only its explicitly selected window requests foreground. The
+  normal `set_visible` API keeps its upstream behavior.
 - Windows: coalesce application redraw requests into one posted notification per
   window, including hidden coordinators. Drawing runs through `RedrawRequested`
   instead of a repaint producer or low-priority `WM_PAINT`; OS exposure and
@@ -22,5 +27,6 @@ This vendored winit retains its upstream license. Local platform changes:
 Windows API contracts:
 [SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow),
 [AllowSetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-allowsetforegroundwindow).
+[SetWindowPos](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos).
 [PostMessage](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postmessagew),
 [PeekMessage](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-peekmessagew).

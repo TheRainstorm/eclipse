@@ -252,6 +252,11 @@ impl<T> EventLoopBuilderExtWindows for EventLoopBuilder<T> {
 
 /// Additional methods on `Window` that are specific to Windows.
 pub trait WindowExtWindows {
+    /// Shows or hides the window without activating it or changing its Z order,
+    /// position, size, or minimized/maximized state. Focus remains an explicit
+    /// operation, subject to Windows foreground activation rules.
+    fn set_visible_no_activate(&self, visible: bool);
+
     /// Enables or disables mouse and keyboard input to the specified window.
     ///
     /// A window must be enabled before it can be activated.
@@ -359,6 +364,11 @@ pub trait WindowExtWindows {
 }
 
 impl WindowExtWindows for Window {
+    #[inline]
+    fn set_visible_no_activate(&self, visible: bool) {
+        self.window.set_visible_no_activate(visible)
+    }
+
     #[inline]
     fn set_enable(&self, enabled: bool) {
         self.window.set_enable(enabled)

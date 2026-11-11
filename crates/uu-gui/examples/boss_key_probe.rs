@@ -1,5 +1,5 @@
 //! Generated native windows on an owned Xvfb and private session bus only.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[path = "../src/boss_key.rs"]
 mod boss_key;
 #[cfg(target_os = "linux")]
@@ -10,6 +10,7 @@ mod owned_display;
 mod probe {
     use super::*;
     use eframe::egui;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use std::{
         io::BufRead,
         path::PathBuf,
@@ -40,9 +41,12 @@ mod probe {
         control: u8,
         alt: u8,
         key: u8,
+        external: u32,
+        active_atom: u32,
     }
     impl Keys {
-        fn new() -> anyhow::Result<Self> {
+        fn new(child: bool) -> anyhow::Result<Self> {
+            use x11rb::protocol::xproto::*;
             let (connection, screen) = RustConnection::connect(None)?;
             let root = connection.setup().roots[screen].root;
             let min = connection.setup().min_keycode;
@@ -57,13 +61,44 @@ mod probe {
                     .unwrap()
             };
             let (control, alt, key) = (code(0xffe3), code(0xffe9), code(0x42));
+            let active_atom = connection.intern_atom(false, b"_NET_ACTIVE_WINDOW")?.reply()?.atom;
+            let external = if child { 0 } else {
+                // A tiny owned window manager accepts EWMH activation requests.
+                // It changes focus only for this fixture's verified window IDs.
+                connection.change_window_attributes(root, &ChangeWindowAttributesAux::new()
+                    .event_mask(EventMask::SUBSTRUCTURE_NOTIFY))?.check()?;
+                let id = connection.generate_id()?;
+                connection.create_window(x11rb::COPY_DEPTH_FROM_PARENT, id, root,
+                    800, 400, 160, 80, 0, WindowClass::INPUT_OUTPUT, 0,
+                    &CreateWindowAux::new())?.check()?;
+                connection.map_window(id)?.check()?;
+                id
+            };
             Ok(Self {
                 connection,
                 root,
                 control,
                 alt,
                 key,
+                external,
+                active_atom,
             })
+        }
+        fn focus(&self, window: u32) {
+            self.connection.set_input_focus(x11rb::protocol::xproto::InputFocus::PARENT,
+                window, x11rb::CURRENT_TIME).unwrap().check().unwrap();
+            self.connection.flush().unwrap();
+        }
+        fn focused(&self) -> u32 { self.connection.get_input_focus().unwrap().reply().unwrap().focus }
+        fn activations(&self, owned: &[u32]) {
+            while let Some(event) = self.connection.poll_for_event().unwrap() {
+                if let x11rb::protocol::Event::ClientMessage(event) = event {
+                    if event.type_ == self.active_atom {
+                        assert!(owned.contains(&event.window), "activation must target a fixture window");
+                        self.focus(event.window);
+                    }
+                }
+            }
         }
         fn press(&self, down: bool) {
             let codes = if down {
@@ -79,6 +114,13 @@ mod probe {
                     .unwrap();
             }
             self.connection.flush().unwrap();
+        }
+    }
+    fn xid(window: &winit::window::Window) -> u32 {
+        match window.window_handle().unwrap().as_raw() {
+            RawWindowHandle::Xlib(handle) => handle.window as u32,
+            RawWindowHandle::Xcb(handle) => handle.window.get(),
+            _ => panic!("owned X11 window expected"),
         }
     }
     struct App {
@@ -169,7 +211,7 @@ mod probe {
                 return;
             };
             if self.child {
-                let state = serde_json::json!({"ready":boss_key::available(),"hidden":boss_key::hidden(),"visible":visible[0]});
+                let state = serde_json::json!({"ready":boss_key::available(),"hidden":boss_key::hidden(),"visible":visible[0],"xid":xid(&eframe::viewport_window(ctx).unwrap())});
                 let encoded = state.to_string();
                 if self.last != encoded {
                     std::fs::write(&self.report, &encoded).unwrap();
@@ -179,6 +221,11 @@ mod probe {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             } else {
+                let mut owned: Vec<_> = [egui::ViewportId::ROOT, normal(), hidden()].iter()
+                    .map(|id| xid(&eframe::viewport_window_for(ctx, *id).unwrap())).collect();
+                let child_xid = self.child_state()["xid"].as_u64().unwrap_or(0) as u32;
+                if child_xid != 0 { owned.push(child_xid); }
+                self.keys.activations(&owned);
                 match self.phase {
                     0 if boss_key::available()
                         && self.child_state()["ready"] == true
@@ -192,15 +239,18 @@ mod probe {
                         }
                         self.identity = identity;
                         self.geometry = geometry;
-                        self.keys.press(true);
+                        // The last Eclipse foreground window belongs to the
+                        // other process. Local work then takes foreground.
+                        self.keys.focus(child_xid);
                         self.at = Instant::now();
-                        self.phase = 1;
+                        self.phase = 11;
                     }
                     1 if visible == [false, false, false]
                         && self.child_state()["visible"] == false =>
                     {
                         self.hide_ms = self.at.elapsed().as_millis();
                         assert!(boss_key::hidden());
+                        assert_eq!(self.keys.focused(), self.keys.external);
                         self.phase = 2;
                     }
                     2 if self.at.elapsed() > Duration::from_millis(850) => {
@@ -217,7 +267,8 @@ mod probe {
                     }
                     4 if !boss_key::hidden()
                         && visible == [true, true, false]
-                        && self.child_state()["visible"] == true =>
+                        && self.child_state()["visible"] == true
+                        && self.keys.focused() == child_xid =>
                     {
                         self.restore_ms = self.at.elapsed().as_millis();
                         assert_eq!(identity, self.identity);
@@ -239,12 +290,13 @@ mod probe {
                         self.keys.press(false);
                         self.phase = 7;
                     }
-                    7 if !boss_key::hidden() && visible == [true, true, false] => {
+                    7 if !boss_key::hidden() && visible == [true, true, false]
+                        && owned[..3].contains(&self.keys.focused()) => {
                         assert_eq!(identity, self.identity);
                         assert_eq!(geometry, self.geometry);
                         println!(
                             "{}",
-                            serde_json::json!({"window":"passed","processes":2,"windows":4,"hide_ms":self.hide_ms,"restore_ms":self.restore_ms,"repeat_suppressed":true,"prior_hidden_preserved":true,"geometry_and_identity_preserved":true,"owner_exit_takeover":true,"recording_suspension":true})
+                            serde_json::json!({"window":"passed","processes":2,"windows":4,"hide_ms":self.hide_ms,"restore_ms":self.restore_ms,"repeat_suppressed":true,"prior_hidden_preserved":true,"geometry_and_identity_preserved":true,"owner_exit_takeover":true,"recording_suspension":true,"external_focus_preserved_while_hidden":true,"last_active_process_restored":true,"owned_ewmh_window_manager":true})
                         );
                         self.phase = 8;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -259,6 +311,16 @@ mod probe {
                         assert_eq!(self.child_state()["visible"], true);
                         boss_key::recording(egui::ViewportId::ROOT, false);
                         self.recording_checked = true; self.phase = 0;
+                    }
+                    11 if self.at.elapsed() > Duration::from_millis(200) => {
+                        assert_eq!(self.keys.focused(), child_xid);
+                        self.keys.focus(self.keys.external);
+                        self.at = Instant::now(); self.phase = 12;
+                    }
+                    12 if self.at.elapsed() > Duration::from_millis(150) => {
+                        assert_eq!(self.keys.focused(), self.keys.external);
+                        self.keys.press(true);
+                        self.at = Instant::now(); self.phase = 1;
                     }
                     _ => {}
                 }
@@ -334,7 +396,7 @@ mod probe {
                     started: Instant::now(),
                     phase: 0,
                     at: Instant::now(),
-                    keys: Keys::new().unwrap(),
+                    keys: Keys::new(child).unwrap(),
                     identity: vec![],
                     geometry: vec![],
                     last: String::new(),
@@ -357,7 +419,12 @@ mod probe {
 fn main() -> anyhow::Result<()> {
     probe::run()
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+#[path = "boss_key_probe/windows.rs"]
+mod windows_probe;
+#[cfg(windows)]
+fn main() -> anyhow::Result<()> { windows_probe::run() }
+#[cfg(not(any(target_os = "linux", windows)))]
 fn main() {
     eprintln!("This probe requires an owned Xvfb and private session bus.");
 }

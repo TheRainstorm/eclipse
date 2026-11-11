@@ -9,9 +9,11 @@ use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
     zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1 as Manager,
     zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1 as Inhibitor},
 };
+use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
 #[derive(Default)]
 struct State {
     manager: Option<Manager>,
+    activation: Option<XdgActivationV1>,
     seats: Vec<wl_seat::WlSeat>,
 }
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
@@ -31,6 +33,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         {
             if interface == Manager::interface().name && state.manager.is_none() {
                 state.manager = Some(registry.bind(name, 1, qh, ()));
+            } else if interface == XdgActivationV1::interface().name && state.activation.is_none() {
+                state.activation = Some(registry.bind(name, 1, qh, ()));
             } else if interface == "wl_seat" {
                 state
                     .seats
@@ -41,6 +45,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
 }
 wayland_client::delegate_noop!(State: ignore wl_seat::WlSeat);
 wayland_client::delegate_noop!(State: ignore Manager);
+wayland_client::delegate_noop!(State: ignore XdgActivationV1);
 impl Dispatch<Inhibitor, ()> for State {
     fn event(
         _: &mut Self,
@@ -101,7 +106,7 @@ impl Capture {
                 state.seats.len()
             );
         }
-        state.manager.as_ref()?;
+        if state.manager.is_none() && state.activation.is_none() { return None; }
         Some(Self {
             connection,
             queue,
@@ -109,6 +114,12 @@ impl Capture {
             surface,
             inhibitors: Vec::new(),
         })
+    }
+    pub fn activate(&self, token: &str) {
+        if let Some(manager) = &self.state.activation {
+            manager.activate(token.to_owned(), &self.surface);
+            let _ = self.connection.flush();
+        }
     }
     pub fn update(&mut self, active: bool) {
         let _ = self.queue.dispatch_pending(&mut self.state);
@@ -142,6 +153,7 @@ impl Drop for Capture {
         if let Some(manager) = self.state.manager.take() {
             manager.destroy();
         }
+        if let Some(manager) = self.state.activation.take() { manager.destroy(); }
         for seat in self.state.seats.drain(..) {
             if seat.version() >= 5 {
                 seat.release();
