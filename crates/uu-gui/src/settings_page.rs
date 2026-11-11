@@ -334,28 +334,24 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
     });
 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Hash)]
-pub(super) enum SoftwareSection { #[default] General, Appearance, Shortcuts, Discovery, VirtualDisplays }
+pub(super) enum SoftwareSection { #[default] General, Appearance, Shortcuts, Discovery }
 impl SoftwareSection {
-    pub const ALL:[Self;5]=[Self::General,Self::Appearance,Self::Shortcuts,Self::Discovery,Self::VirtualDisplays];
+    pub const ALL:[Self;4]=[Self::General,Self::Appearance,Self::Shortcuts,Self::Discovery];
     pub fn label(self)->&'static str {uu_i18n::text(match self {
-        Self::General=>"常规",Self::Appearance=>"外观",Self::Shortcuts=>"快捷键",Self::Discovery=>"设备发现",Self::VirtualDisplays=>"虚拟显示器规格",
+        Self::General=>"常规",Self::Appearance=>"外观",Self::Shortcuts=>"快捷键",Self::Discovery=>"设备发现",
     })}
     pub fn reset(self,s:&mut Settings) {
         let defaults=Settings::default();
         match self {
             Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;s.close_to_tray=defaults.close_to_tray;}
-            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.color_theme=defaults.color_theme;s.device_icon_size=defaults.device_icon_size;s.device_text_size=defaults.device_text_size;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_refresh=defaults.wallpaper_refresh;s.wallpaper_refresh_hours=defaults.wallpaper_refresh_hours;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
+            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.color_theme=defaults.color_theme;s.device_icon_size=defaults.device_icon_size;s.device_text_size=defaults.device_text_size;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_refresh=defaults.wallpaper_refresh;s.wallpaper_refresh_hours=defaults.wallpaper_refresh_hours;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
-            Self::VirtualDisplays=>s.virtual_display_presets=defaults.virtual_display_presets,
         }
     }
 }
 pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions,section:SoftwareSection) {
     match section {
-    SoftwareSection::VirtualDisplays=>group(ui,uu_i18n::text("虚拟显示器规格"),|ui| {
-        super::virtual_display_presets::editor(ui,&mut s.virtual_display_presets);
-    }),
     SoftwareSection::Shortcuts=>group(ui,uu_i18n::text("客户端快捷键"),|ui|{
         let mut bindings=s.application_hotkeys().clone();
         super::shortcuts_ui::editor(ui,&mut bindings);
@@ -364,7 +360,7 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
     }),
     SoftwareSection::General=>group(ui,uu_i18n::text("常规"),|ui| {
         if ui.add(theme::secondary_button(uu_i18n::text("打开新手教程"))).clicked() {actions.tutorial=true;}
-        note(ui,uu_i18n::text("随时重看连接说明；只有一台电脑时也可以进行本机串流测试。"));
+        note(ui,uu_i18n::text("随时重看连接与配对说明。"));
         ui.add_space(8.);
         ui.horizontal(|ui| {ui.label(uu_i18n::text("界面语言"));
             crate::theme::Select::from_id_salt("application-language").selected_text(s.language.label()).show_ui(ui,|ui|{
@@ -433,10 +429,6 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
         note(ui,uu_i18n::text("摄影使用 Lorem Picsum，二次元使用 Pipw；自定义 API 可填 JPEG / PNG / WebP 图片地址。首次无缓存时会加载一张，之后遵循刷新策略，失败保留已有壁纸；收藏按顺序轮换。"));
         if ui.add(crate::theme::secondary_button(uu_i18n::text("刷新壁纸"))).clicked(){actions.refresh_wallpaper=true;}
     });
-        group(ui,uu_i18n::text("串流界面"),|ui| {
-            crate::theme::switch(ui,&mut s.show_input_status,uu_i18n::text("输入状态显示"));
-            note(ui,uu_i18n::text("全屏串流失去焦点时，显示“点击画面以获取键盘控制”提示。"));
-        });
     },
     SoftwareSection::Discovery=>group(ui,uu_i18n::text("设备发现"),|ui| {
         crate::theme::switch(ui,&mut s.lan_discovery,uu_i18n::text("自动查找局域网设备"));

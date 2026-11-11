@@ -111,8 +111,6 @@ pub struct Settings {
     pub app_autostart:bool,
     #[serde(default)]
     pub close_to_tray:bool,
-    /// Last acknowledged host value for the tray; the host owns the policy.
-    pub show_input_status:bool,
     pub virtual_display_presets: super::virtual_display_presets::Presets,
     #[serde(default)]
     pub wallpaper_source: WallpaperSource,
@@ -128,7 +126,7 @@ impl Default for Settings {
         Self { client: ClientSettings::default(), application_hotkeys:None, theme_preference:super::theme::DEFAULT_PREFERENCE, color_theme:Default::default(), language:uu_i18n::Language::default(), onboarding_dismissed:false,lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
-            device_view:DeviceView::Cards, devices_hidden:false, device_icon_size:230.0, device_text_size:17.0, wallpaper_enabled:true, app_autostart:true,close_to_tray:true,show_input_status:false,virtual_display_presets:Default::default(),
+            device_view:DeviceView::Cards, devices_hidden:false, device_icon_size:230.0, device_text_size:17.0, wallpaper_enabled:true, app_autostart:true,close_to_tray:true,virtual_display_presets:Default::default(),
             wallpaper_source:WallpaperSource::Anime, wallpaper_refresh:WallpaperRefresh::EveryHours,wallpaper_refresh_hours:24,wallpaper_favorite:None, wallpaper_api:ANIME_WALLPAPER.into() }
     }
 }
@@ -398,11 +396,6 @@ impl super::App {
             if self.preferences.virtual_display_presets!=value.virtual_display_presets {
                 self.preferences.virtual_display_presets=value.virtual_display_presets.clone();
                 self.settings_draft.virtual_display_presets=value.virtual_display_presets;
-                self.context.request_repaint();
-            }
-            if self.preferences.show_input_status!=value.show_input_status {
-                self.preferences.show_input_status=value.show_input_status;
-                self.settings_draft.show_input_status=value.show_input_status;
                 self.context.request_repaint();
             }
             if self.preferences.language!=value.language {
@@ -710,7 +703,10 @@ impl super::App {
                 self.settings_draft.lan_discovery=defaults.lan_discovery;
                 self.settings_draft.app_autostart=defaults.app_autostart;
                 self.settings_draft.close_to_tray=defaults.close_to_tray;
-                self.settings_draft.show_input_status=defaults.show_input_status;
+                self.settings_draft.device_icon_size=defaults.device_icon_size;
+                self.settings_draft.device_text_size=defaults.device_text_size;
+                self.settings_draft.wallpaper_refresh=defaults.wallpaper_refresh;
+                self.settings_draft.wallpaper_refresh_hours=defaults.wallpaper_refresh_hours;
                 self.settings_draft.theme_preference=defaults.theme_preference;
                 self.settings_draft.color_theme=defaults.color_theme;
                 self.settings_draft.application_hotkeys=Some(Default::default());
@@ -1035,11 +1031,12 @@ mod tests {
         let root=std::env::temp_dir().join(format!("eclipse-client-settings-{}",uuid::Uuid::new_v4()));
         let path=root.join("gui-settings.json");
         let mut stream=Settings::default();
-        assert!(!stream.show_input_status);
+        assert_eq!(serde_json::from_str::<Settings>(r#"{"show_input_status":true}"#).unwrap().device_icon_size,230.);
         assert!(!serde_json::from_str::<Settings>("{}").unwrap().close_to_tray);
         stream.save(&path).unwrap();
         let mut launcher=Settings::load(&path).unwrap();
-        launcher.show_input_status=true;
+        launcher.device_icon_size=160.;launcher.device_text_size=22.;
+        launcher.wallpaper_refresh=WallpaperRefresh::Never;launcher.wallpaper_refresh_hours=12;
         launcher.close_to_tray=true;
         launcher.wallpaper_enabled=false;
         launcher.wallpaper_source=WallpaperSource::Favorites;
@@ -1058,7 +1055,8 @@ mod tests {
         assert_eq!(reopened.wallpaper_favorite,Some("f".repeat(64)));
         assert_eq!(reopened.wallpaper_api,"https://custom.example.invalid/wallpaper");
         assert!(!reopened.lan_discovery);
-        assert!(reopened.show_input_status);
+        assert_eq!(reopened.device_icon_size,160.);assert_eq!(reopened.device_text_size,22.);
+        assert_eq!(reopened.wallpaper_refresh,WallpaperRefresh::Never);assert_eq!(reopened.wallpaper_refresh_hours,12);
         assert!(reopened.close_to_tray);
         std::fs::write(&path,b"broken").unwrap();
         assert!(stream.save_client(&path).is_err());

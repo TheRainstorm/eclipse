@@ -229,54 +229,6 @@ fn spec_controls(ui:&mut egui::Ui,spec:&mut Spec,inline:bool) {
     }
     ui.ctx().data_mut(|d|{d.insert_temp(size_id,size_custom);d.insert_temp(rate_id,rate_custom);});
 }
-pub fn editor(ui: &mut egui::Ui, presets: &mut Presets) {
-    ui.label(uu_i18n::text(
-        "左键 + 使用默认规格；右键 + 可选择其它规格。修改规格只影响之后新建的虚拟显示器。",
-    ));
-    let mut remove = None;
-    let removable = presets.items.len() > 1;
-    for preset in &mut presets.items {
-        ui.push_id(preset.id, |ui| {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    crate::theme::radio_value(ui,&mut presets.default, preset.id, uu_i18n::text("默认"));
-                    ui.label(uu_i18n::text("规格名称"));
-                    ui.add(
-                        crate::theme::Input::new(&mut preset.name)
-                            .desired_width(160.)
-                            .char_limit(NAME_LIMIT),
-                    );
-                    if ui
-                        .add_enabled(removable, crate::theme::secondary_button(uu_i18n::text("删除")))
-                        .clicked()
-                    {
-                        remove = Some(preset.id);
-                    }
-                });
-                spec_editor(ui,&mut preset.spec);
-            });
-        });
-    }
-    if let Some(id) = remove {
-        presets.remove(id);
-    }
-    if ui
-        .add_enabled(
-            presets.items.len() < MAX_PRESETS,
-            crate::theme::secondary_button(uu_i18n::text("添加规格")),
-        )
-        .clicked()
-    {
-        presets.add();
-    }
-    ui.weak(uu_i18n::text(
-        "规格在创建时交给远端驱动验证；HDR 还需要远端驱动、显示与串流编码支持。",
-    ));
-    if let Err(error) = presets.validate() {
-        ui.colored_label(super::theme::palette(ui.visuals()).danger, error.to_string());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

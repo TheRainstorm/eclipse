@@ -263,11 +263,6 @@ impl App {
                 let text=if !self.displays.notice.is_empty(){self.displays.notice.as_str()}else{self.native_ui.feedback.text()};
                 ui.put(notice,egui::Label::new(RichText::new(text).color(C::WHITE)).wrap());
             }
-            if self.preferences.show_input_status && chosen.is_some() && self.fullscreen && !ctx.input(|i|i.focused) {
-                let hint=Rect::from_center_size(rect.center_bottom()-egui::vec2(0.0,54.0),egui::vec2((rect.width()-40.0).clamp(1.0,360.0),40.0));
-                ui.painter().rect_filled(hint,6.0,C::from_black_alpha(170));
-                ui.put(hint,egui::Label::new(RichText::new(uu_i18n::text("点击画面以获取键盘控制")).color(C::WHITE)).wrap());
-            }
             if chosen.is_none() { self.paint_hud(ui, rect); }
 
         });
