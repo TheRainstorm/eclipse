@@ -656,6 +656,42 @@ impl Manager {
             }
         }
     }
+    fn configuration_actions(&mut self, ui:&mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    self.dirty,
+                    crate::theme::primary_button(uu_i18n::text("保存设置")),
+                )
+                .clicked()
+            {
+                self.save(false);
+            }
+            if ui
+                .add_enabled(
+                    self.dirty,
+                    crate::theme::secondary_button(uu_i18n::text("还原修改")),
+                )
+                .clicked()
+            {
+                self.dirty = false;
+                if let Some(server) =
+                    self.snapshot.as_ref().and_then(|s| s.server.as_ref())
+                {
+                    self.draft = server.saved.clone();
+                    self.revision = server.revision.clone();
+                }
+            }
+            if ui
+                .add(crate::theme::secondary_button(uu_i18n::text(
+                    "保存并重启服务",
+                )))
+                .clicked()
+            {
+                self.request_action(Confirmation::Restart);
+            }
+        });
+    }
     fn save(&mut self, restart: bool) {
         if self.snapshot.is_none() || self.busy {
             return;
@@ -870,122 +906,36 @@ impl Manager {
                             _ => unreachable!(),
                         }
                         self.dirty |= self.draft != before;
-                        ui.horizontal_wrapped(|ui| {
-                            if ui
-                                .add_enabled(
-                                    self.dirty,
-                                    crate::theme::primary_button(uu_i18n::text("保存设置")),
-                                )
-                                .clicked()
-                            {
-                                self.save(false);
-                            }
-                            if ui
-                                .add_enabled(
-                                    self.dirty,
-                                    crate::theme::secondary_button(uu_i18n::text("还原修改")),
-                                )
-                                .clicked()
-                            {
-                                self.dirty = false;
-                                if let Some(server) =
-                                    self.snapshot.as_ref().and_then(|s| s.server.as_ref())
-                                {
-                                    self.draft = server.saved.clone();
-                                    self.revision = server.revision.clone();
-                                }
-                            }
-                            if ui
-                                .add(crate::theme::secondary_button(uu_i18n::text(
-                                    "保存并重启服务",
-                                )))
-                                .clicked()
-                            {
-                                self.request_action(Confirmation::Restart);
-                            }
-                        });
+                        self.configuration_actions(ui);
                     });
                 });
             }
             Section::Connections => {
-                section_card(ui, uu_i18n::text("连接服务"), |ui| {
+                section_card(ui, uu_i18n::text("IP 直连"), |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
-                        let before = self.draft.clone();
-                        crate::theme::switch(
-                            ui,
-                            &mut self.draft.ip_enabled,
-                            uu_i18n::text("IP 直连"),
-                        );
-                        ui.add_enabled_ui(self.draft.ip_enabled, |ui| {
-                            crate::theme::switch(ui, &mut self.draft.ipv6_enabled, uu_i18n::text("启用 IPv6"))
-                        }).inner.on_hover_text(uu_i18n::text("允许通过 IPv6 地址直连，默认开启。关闭后仅监听 IPv4；保存并重启服务后生效。"));
+                        let before=self.draft.clone();
+                        self.draft.ip_enabled=true;
+                        crate::theme::switch(ui,&mut self.draft.ipv6_enabled,uu_i18n::text("启用 IPv6"))
+                            .on_hover_text(uu_i18n::text("允许通过 IPv6 地址直连，默认开启。关闭后仅监听 IPv4；保存并重启服务后生效。"));
                         ui.horizontal_wrapped(|ui| {
                             ui.label(uu_i18n::text("服务端口"));
-                            crate::theme::number_input(
-                                ui,
-                                egui::DragValue::new(&mut self.draft.service_port).range(1..=65535),
-                            );
+                            crate::theme::number_input(ui,egui::DragValue::new(&mut self.draft.service_port).range(1..=65535));
                             ui.label(uu_i18n::text("发现端口"));
-                            crate::theme::number_input(
-                                ui,
-                                egui::DragValue::new(&mut self.draft.discovery_port)
-                                    .range(1..=65535),
-                            );
+                            crate::theme::number_input(ui,egui::DragValue::new(&mut self.draft.discovery_port).range(1..=65535));
                         });
-                        self.dirty |= self.draft != before;
-                        ui.horizontal_wrapped(|ui| {
-                            if ui
-                                .add_enabled(
-                                    self.dirty,
-                                    crate::theme::primary_button(uu_i18n::text("保存设置")),
-                                )
-                                .clicked()
-                            {
-                                self.save(false);
-                            }
-                            if ui
-                                .add_enabled(
-                                    self.dirty,
-                                    crate::theme::secondary_button(uu_i18n::text("还原修改")),
-                                )
-                                .clicked()
-                            {
-                                self.dirty = false;
-                                if let Some(server) =
-                                    self.snapshot.as_ref().and_then(|s| s.server.as_ref())
-                                {
-                                    self.draft = server.saved.clone();
-                                    self.revision = server.revision.clone();
-                                }
-                            }
-                            if ui
-                                .add(crate::theme::secondary_button(uu_i18n::text(
-                                    "保存并重启服务",
-                                )))
-                                .clicked()
-                            {
-                                self.request_action(Confirmation::Restart);
-                            }
-                        });
-                        if self.dirty
-                            || self.draft
-                                != self
-                                    .snapshot
-                                    .as_ref()
-                                    .and_then(|s| s.server.as_ref())
-                                    .map(|s| s.active.clone())
-                                    .unwrap_or_default()
-                        {
-                            ui.weak(uu_i18n::text(
-                                "名称、端口和连接入口变更需要重启服务；重启会断开当前串流。",
-                            ));
-                        }
+                        self.dirty |= self.draft!=before;
                     });
                 });
-                if let Some(request) = self.service_connections.show(ui, enabled) {
-                    self.submit(Job::Rpc(Request::Connections { request }));
+                if let Some(request)=self.service_connections.show(ui,enabled) {
+                    self.submit(Job::Rpc(Request::Connections{request}));
                 }
-                self.plugins_ui(ui, enabled);
+                self.plugins_ui(ui,enabled);
+                ui.add_enabled_ui(enabled,|ui| {
+                    self.configuration_actions(ui);
+                    if self.dirty || self.snapshot.as_ref().and_then(|s|s.server.as_ref()).is_some_and(|s|s.saved!=s.active) {
+                        ui.weak(uu_i18n::text("名称、端口和连接入口变更需要重启服务；重启会断开当前串流。"));
+                    }
+                });
             }
             Section::VirtualDisplays => {
                 section_frame(ui, |ui| {
@@ -1945,7 +1895,8 @@ mod tests {
         assert!(!h.has("IP 直连"));
         h.click("连接服务");
         assert!(h.has("IP 直连"));
-        assert!(h.has("＋ 添加服务器"));
+        assert!(h.has("自建服务器"));
+        assert!(h.has("＋"));
         h.click("配对设置");
         assert!(h.has("设备名称"));
         assert!(h.has("密码配对"));
@@ -1965,7 +1916,7 @@ mod tests {
         assert!(!h.has("设备名称"));
         h.click("输入");
         assert!(!h.has("密码配对"));
-        assert!(!h.has("＋ 添加服务器"));
+        assert!(!h.has("自建服务器"));
         h.click("虚拟显示器");
         assert!(!h.has("虚拟显示器上限"));
         assert!(h.has("＋"));
@@ -1984,7 +1935,7 @@ mod tests {
     fn service_connection_form_queues_only_owner_rpc_and_keeps_failed_fields() {
         let mut h = Harness::new();
         h.click("连接服务");
-        h.click("＋ 添加服务器");
+        h.click("＋");
         h.click("保存服务器");
         assert!(h.has("请填写服务器访问令牌"));
         assert!(matches!(h.jobs.try_recv(), Err(mpsc::TryRecvError::Empty)));

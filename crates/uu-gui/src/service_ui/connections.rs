@@ -46,13 +46,20 @@ impl Editor {
     }
 }
 impl State {
-    pub fn apply(&mut self, completed: bool, result: Result<Response, String>) -> Option<Result<String, String>> {
+    pub fn apply(
+        &mut self,
+        completed: bool,
+        result: Result<Response, String>,
+    ) -> Option<Result<String, String>> {
         match result {
             Ok(Response::Connections { snapshot }) => {
                 self.snapshot = Some(snapshot);
                 if completed {
                     self.editor = None;
-                    Some(Ok(uu_i18n::text("服务器配置已保存；重启服务后使用新入口。").into()))
+                    Some(Ok(uu_i18n::text(
+                        "服务器配置已保存；重启服务后使用新入口。",
+                    )
+                    .into()))
                 } else {
                     None
                 }
@@ -69,12 +76,36 @@ impl State {
     pub fn show(&mut self, ui: &mut egui::Ui, enabled: bool) -> Option<Command> {
         let mut command = None;
         ui.add_space(12.);
-        ui.strong(uu_i18n::text("自建服务器"));
-        let snapshot = self.snapshot.clone();
-        ui.add_enabled_ui(enabled && snapshot.is_some(), |ui| {
-            if let Some(snapshot) = snapshot {
-                for value in snapshot.entries {
-                    crate::theme::card(ui.visuals()).show(ui, |ui| {
+        crate::theme::card(ui.visuals()).show(ui, |ui| {
+            let snapshot = self.snapshot.clone();
+            ui.horizontal(|ui| {
+                ui.strong(uu_i18n::text("自建服务器"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(
+                            enabled && snapshot.is_some(),
+                            crate::theme::primary_button("＋"),
+                        )
+                        .on_hover_text(uu_i18n::text("添加服务器"))
+                        .clicked()
+                    {
+                        self.editor = Some(Editor::new(
+                            snapshot.as_ref().unwrap().revision.clone(),
+                            Entry {
+                                published_name: "eclipse-desktop".into(),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                });
+            });
+            ui.add_enabled_ui(enabled && snapshot.is_some(), |ui| {
+                if let Some(snapshot) = snapshot {
+                    if snapshot.entries.is_empty() {
+                        ui.weak(uu_i18n::text("还没有服务器，可点击右上角加号添加。"));
+                    }
+                    for value in snapshot.entries {
+                        ui.separator();
                         ui.horizontal_wrapped(|ui| {
                             ui.strong(&value.name);
                             ui.weak(if value.host_enabled {
@@ -82,44 +113,39 @@ impl State {
                             } else {
                                 uu_i18n::text("未启用")
                             });
-                            if ui
-                                .add(crate::theme::secondary_button(uu_i18n::text("编辑")))
-                                .clicked()
-                            {
-                                self.editor =
-                                    Some(Editor::new(snapshot.revision.clone(), value.clone()));
-                            }
-                            if ui
-                                .add(crate::theme::secondary_button(uu_i18n::text("删除")))
-                                .clicked()
-                            {
-                                command = Some(Command::Remove {
-                                    revision: snapshot.revision.clone(),
-                                    id: value.id.clone(),
-                                });
-                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(crate::theme::secondary_button(uu_i18n::text("删除")))
+                                        .clicked()
+                                    {
+                                        command = Some(Command::Remove {
+                                            revision: snapshot.revision.clone(),
+                                            id: value.id.clone(),
+                                        });
+                                    }
+                                    if ui
+                                        .add(crate::theme::secondary_button(uu_i18n::text("编辑")))
+                                        .clicked()
+                                    {
+                                        self.editor = Some(Editor::new(
+                                            snapshot.revision.clone(),
+                                            value.clone(),
+                                        ));
+                                    }
+                                },
+                            );
                         });
-                        ui.label(&value.address);
-                    });
+                        ui.weak(&value.address);
+                    }
+                    if snapshot.restart_required {
+                        ui.weak(uu_i18n::text("服务器配置已保存；重启服务后使用新入口。"));
+                    }
+                } else {
+                    ui.weak(uu_i18n::text("正在读取服务器列表…"));
                 }
-                if snapshot.restart_required {
-                    ui.weak(uu_i18n::text("服务器配置已保存；重启服务后使用新入口。"));
-                }
-                if ui
-                    .add(crate::theme::secondary_button(uu_i18n::text(
-                        "＋ 添加服务器",
-                    )))
-                    .clicked()
-                {
-                    self.editor = Some(Editor::new(
-                        snapshot.revision,
-                        Entry {
-                            published_name: "eclipse-desktop".into(),
-                            ..Default::default()
-                        },
-                    ));
-                }
-            }
+            });
         });
         if let Some(editor) = &mut self.editor {
             let mut open = true;

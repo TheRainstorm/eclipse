@@ -2,6 +2,7 @@
 //! have their own pages and never ask for a per-device shared key file.
 use super::theme;
 mod device_management;
+mod connection_settings;
 use eframe::egui::{self, RichText};
 use std::{
     path::PathBuf,
@@ -134,6 +135,7 @@ pub(super) struct Workspace {
     device_icon_size:f32,
     device_text_size:f32,
     management:device_management::State,
+    connection_draft:Option<connection_settings::Draft>,
     last_read: Instant,
     pub pairing_visible: bool,
     pairing_settings:super::pairing_ui::HostUi,
@@ -435,10 +437,10 @@ mod tests {
         assert!(h.texts.iter().any(|(s,_)|s=="IP 直连"));
         h.click("服务管理");
         assert!(h.texts.iter().any(|(s,_)|s=="本机服务已停止"));
-        assert!(!h.texts.iter().any(|(s,_)|s=="＋ 添加服务器"));
+        assert!(!h.texts.iter().any(|(s,_)|s=="自建服务器"));
         h.click("连接服务");
         assert!(!h.texts.iter().any(|(s,_)|s=="本机服务已停止"));
-        assert!(h.texts.iter().any(|(s,_)|s=="＋ 添加服务器"));
+        assert!(h.texts.iter().any(|(s,_)|s=="自建服务器"));
     }
 
     #[test]
@@ -556,10 +558,27 @@ mod tests {
     }
     #[test]
     #[cfg(not(windows))]
+    fn connection_cards_save_at_the_bottom_and_keep_concurrent_media_settings() {
+        let mut h=Harness::new();h.workspace.route.page=Page::Services;
+        h.frame(vec![]);h.frame(vec![]);
+        assert_eq!(h.texts.iter().filter(|(s,_)|s=="IP 直连").count(),1);
+        h.click("启用 IPv6");
+        assert!(h.workspace.store.as_ref().unwrap().read().unwrap().sharing.ipv6_enabled,"editing is a draft until save");
+        h.workspace.store.as_ref().unwrap().edit(|book|{book.sharing.audio=false;Ok(())}).unwrap();
+        h.click("保存设置");
+        let book=h.workspace.store.as_ref().unwrap().read().unwrap();
+        assert!(!book.sharing.ipv6_enabled && !book.sharing.audio && book.sharing.ip_enabled);
+        let y=|label:&str|h.texts.iter().find(|(s,_)|s==label).unwrap().1.y;
+        assert!(y("保存设置")>y("自建服务器"));
+        h.click("启用 IPv6");h.click("还原修改");
+        assert!(!h.workspace.store.as_ref().unwrap().read().unwrap().sharing.ipv6_enabled);
+    }
+    #[test]
+    #[cfg(not(windows))]
     fn server_form_reports_missing_credentials_without_discarding_fields() {
         let mut h = Harness::new();
         h.workspace.route.page = Page::Services;
-        h.click("＋ 添加服务器");
+        h.click("＋");
         let editor = h.workspace.service_editor.as_mut().unwrap();
         editor.value.name = "Home".into();
         editor.value.address = "signal.example.invalid:8443".into();
@@ -936,6 +955,7 @@ impl Workspace {
             device_icon_size:230.0,
             device_text_size:17.0,
             management:Default::default(),
+            connection_draft:None,
             last_read: Instant::now(),
             pairing_visible: false,
             pairing_settings:Default::default(),
@@ -1013,6 +1033,9 @@ impl Workspace {
                         == serde_json::to_vec(&self.book.sharing).ok()
                     {
                         self.draft = book.sharing.clone();
+                    }
+                    if self.connection_draft.as_ref().is_some_and(|draft|*draft==connection_settings::Draft::from(&self.book.sharing)) {
+                        self.connection_draft=None;
                     }
                     self.book = book;
                 }
@@ -1888,134 +1911,6 @@ impl Workspace {
                 });
             }
         });
-    }
-    fn services(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
-        let locked = self.host.stopping();
-        if self.host.running() { muted(ui,uu_i18n::text("连接入口修改后保存，下次启动服务生效。可保存并重启服务立即应用。")); }
-        card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.strong(uu_i18n::text("IP 直连"));
-                let mut enabled = self.book.sharing.ip_enabled;
-                if ui.add_enabled_ui(!locked,|ui|crate::theme::switch(ui,&mut enabled,uu_i18n::text("启用"))).inner.changed() {
-                    self.update_connections(|s| s.ip_enabled=enabled);
-                }
-            });
-            muted(ui,uu_i18n::text("同一网络或已有路由时直接连接，默认开启。"));
-            let mut ipv6 = self.book.sharing.ipv6_enabled;
-            if ui.add_enabled_ui(!locked && self.book.sharing.ip_enabled, |ui| {
-                crate::theme::switch(ui, &mut ipv6, uu_i18n::text("启用 IPv6"))
-            }).inner.on_hover_text(uu_i18n::text("允许通过 IPv6 地址直连，默认开启。关闭后仅监听 IPv4；保存并重启服务后生效。")).changed() {
-                self.update_connections(|s| s.ipv6_enabled = ipv6);
-            }
-            let mut tcp=self.book.sharing.service_port;
-            let mut udp=self.book.sharing.discovery_port;
-            ui.add_enabled_ui(!locked, |ui| {
-                egui::Grid::new("connection-ip-ports").spacing([20.,10.]).show(ui,|ui| {
-                    ui.label(uu_i18n::text("服务端口 · TCP")); crate::theme::number_input(ui,egui::DragValue::new(&mut tcp).range(1..=65535)); ui.end_row();
-                    ui.label(uu_i18n::text("发现端口 · UDP")); crate::theme::number_input(ui,egui::DragValue::new(&mut udp).range(1..=65535)); ui.end_row();
-                });
-            });
-            if tcp!=self.book.sharing.service_port || udp!=self.book.sharing.discovery_port {
-                self.update_connections(|s| {s.service_port=tcp; s.discovery_port=udp;});
-            }
-            self.endpoint_state(ui,uu_i18n::text("IP 直连"));
-            ui.collapsing(uu_i18n::text("本机地址"),|ui| {
-                if let Ok(addresses)=super::native_interfaces::enumerate() {
-                    for address in addresses.into_iter().filter(|a| a.ip.is_ipv4() || self.book.sharing.ipv6_enabled) {
-                        let endpoint=std::net::SocketAddr::new(address.ip,self.book.sharing.service_port).to_string();
-                        ui.horizontal(|ui| {ui.monospace(&endpoint); if ui.add(crate::theme::secondary_button(uu_i18n::text("复制")).small()).clicked(){ui.ctx().copy_text(endpoint);}});
-                    }
-                }
-                muted(ui,uu_i18n::text("手动输入可达地址支持跨网段；自动发现通常不跨路由。"));
-            });
-        });
-        for provider in &info.providers {
-            card(ui,|ui| {
-                ui.horizontal(|ui| {
-                    ui.strong(provider.name);
-                    let mut enabled=self.book.sharing.plugin_services.iter().any(|id|id==provider.id);
-                    if ui.add_enabled_ui(!locked,|ui|crate::theme::switch(ui,&mut enabled,uu_i18n::text("启用"))).inner.changed(){self.update_connections(|sharing|{sharing.plugin_services.retain(|id|id!=provider.id);if enabled{sharing.plugin_services.push(provider.id.into());}});}
-                });
-                self.endpoint_state(ui,provider.name);
-                connection(ui,Some(provider.id));
-            });
-        }
-        connection(ui,None);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(uu_i18n::text("自建服务器")).strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                if ui.add_enabled(!locked,crate::theme::secondary_button(RichText::new(uu_i18n::text("＋ 添加服务器")).color(theme::palette(ui.visuals()).accent))).clicked(){self.edit_service(None);}
-            });
-        });
-        ui.add_space(10.);
-        if self.book.services.is_empty() {
-            card(ui, |ui| {
-                ui.label(uu_i18n::text("还没有服务器。你可以使用自己的 VPS 运行连接服务，再添加地址和访问凭据。"));
-            });
-        }
-        for service in self.book.services.clone() {
-            ui.push_id(&service.id, |ui| {
-                card(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(&service.name).size(17.).strong());
-                            muted(ui,&service.address);
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add_enabled(!locked, crate::theme::secondary_button(uu_i18n::text("编辑")))
-                                .clicked()
-                            {
-                                self.edit_service(Some(service.clone()));
-                            }
-                            if ui
-                                .add_enabled(!locked, crate::theme::secondary_button(uu_i18n::text("移除")))
-                                .clicked()
-                            {
-                                if let Some(store) = &self.store {
-                                    match store.remove_service(&service.id) {
-                                        Ok(()) => self.refresh(),
-                                        Err(e) => self.feedback.error(self.device_scope(), uu_i18n::format!("无法移除：{e}")),
-                                    }
-                                }
-                            }
-                        });
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(uu_i18n::text("本机在此服务的设备名称"));
-                        ui.monospace(&service.published_name);
-                        if ui.add(crate::theme::secondary_button(uu_i18n::text("复制")).small()).clicked() {
-                            ui.ctx().copy_text(service.published_name.clone());
-                        }
-                    });
-                    let mut enabled=service.host_enabled;
-                    if ui.add_enabled_ui(!locked,|ui|crate::theme::switch(ui,&mut enabled,uu_i18n::text("启用此连接服务"))).inner.changed() {
-                        if let Some(store)=&self.store {
-                            let result=store.edit(|book| {
-                                let item=book.services.iter_mut().find(|s|s.id==service.id).ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("服务器已移除")))?;
-                                item.host_enabled=enabled; Ok(())
-                            });
-                            if let Err(e)=result {
-                                self.feedback.error(
-                                    super::ui_feedback::Scope::Services(0),
-                                    uu_i18n::format!("无法保存：{e:#}"),
-                                );
-                            }
-                        }
-                        self.refresh();
-                    }
-                    self.endpoint_state(ui,&service.name);
-                    muted(ui,if service.host_enabled {
-                        uu_i18n::text("共享开启时，会在此服务器发布本机")
-                    } else {
-                        uu_i18n::text("仅用于连接其它设备")
-                    });
-                });
-            });
-        }
-        if self.host.running() {
-            muted(ui,uu_i18n::text("已运行的服务继续使用启动时配置；服务器配置更改在下次启动生效。"));
-        }
     }
     fn edit_service(&mut self, service: Option<Service>) {
         let value = service.unwrap_or_else(|| Service {

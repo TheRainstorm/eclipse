@@ -2104,5 +2104,8 @@
   "构建时间": "Build time",
   "\n构建时间：{}": "\nBuilt at: {}",
   "复制版本信息": "Copy version information",
-  "随时重看连接与配对说明。": "Reopen the connection and pairing guide at any time."
+  "随时重看连接与配对说明。": "Reopen the connection and pairing guide at any time.",
+  "添加服务器": "Add server",
+  "还没有服务器，可点击右上角加号添加。": "No servers yet. Use the plus button at the top right to add one.",
+  "正在读取服务器列表…": "Loading servers…"
 }
