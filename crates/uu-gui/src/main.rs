@@ -30,6 +30,7 @@ mod sessions;
 mod single_instance;
 mod storage_ui;
 mod platform;
+mod boss_key;
 mod shortcuts;
 mod shortcuts_ui;
 mod hud;
@@ -261,6 +262,7 @@ struct App {
     tray_background:virtual_display_ui::BackgroundHost,
     tray_displays:tray_displays::State,
     launcher_hidden: bool,
+    boss_hidden:bool,
     exit_requested: bool,
     window_edge_active: bool,
 }
@@ -550,6 +552,7 @@ impl App {
             tray_background:Default::default(),
             tray_displays:Default::default(),
             launcher_hidden: false,
+            boss_hidden:false,
             exit_requested: false,
             window_edge_active: false,
         };
@@ -803,6 +806,9 @@ impl App {
                     self.status=uu_i18n::text("无法注册全局返回本机快捷键；请检查按键是否被其它程序占用").into();
                 } else if let Some(tabs)=&self.workspace_tabs {tabs.actions.borrow_mut().push(stream_workspace::Action::ToggleLocal);}
             },
+            shortcuts::Action::BossKey=>{
+                if !boss_key::toggle(){self.status=uu_i18n::text("无法启用全局老板键，请检查系统快捷键是否可用或被占用").into();}
+            },
             shortcuts::Action::Capture=>{
                 self.input_capture.toggle();
                 if let Some(h)=self.controller.as_ref() { h.stats.diagnostics.record(serde_json::json!({"event":"input_focus","active":self.input_capture.requested()})); }
@@ -812,7 +818,7 @@ impl App {
     }
     fn input_conditions(&self,ctx:&egui::Context)->input_capture::Conditions {
         input_capture::Conditions {
-            ready:self.input_ready(), focused:self.active_session && ctx.input(|i|i.focused), view_only:self.view_only,
+            ready:self.input_ready(), focused:self.active_session && !boss_key::hidden() && ctx.input(|i|i.focused), view_only:self.view_only,
             local_ui:(self.hud && self.hud_cache.keyboard_owned()) || self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open || self.local_dialog_open()
                 || self.workspace_tabs.as_ref().is_some_and(|tabs|tabs.owns_input(ctx)),
         }
@@ -821,6 +827,7 @@ impl App {
         self.input_capture.active(self.input_conditions(ctx))
     }
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
+        boss_key::recording(ctx.viewport_id(), shortcuts_ui::recording(ctx));
         let conditions=self.input_conditions(ctx);
         let remote=self.input_capture.active(conditions);
         if self.uses_engine_controls() {
@@ -1314,6 +1321,9 @@ impl App {
         hide_requested
     }
     fn update_frame(&mut self,ctx:&egui::Context,cpu_usage:Option<f32>) {
+        if self.boss_hidden!=boss_key::hidden(){self.boss_hidden=boss_key::hidden();if self.boss_hidden{self.release_session_input();}}
+        if self.stream_target.is_none(){boss_key::normal_visibility(ctx.viewport_id(),!self.launcher_hidden);}
+        if self.workspace_tabs.is_none(){boss_key::apply();}
         let close_to_tray=self.launcher_close(ctx);
         if let Some(result)=eframe::vsync_result(ctx) {
             match result {
@@ -1576,6 +1586,8 @@ impl App {
         self.update_pointer_capture(ctx);
         self.update_clipboard(ctx);
         self.platform.show(ctx);
+        if self.stream_target.is_none(){boss_key::normal_visibility(ctx.viewport_id(),!self.launcher_hidden);}
+        if self.workspace_tabs.is_none(){boss_key::apply();}
         for event in self.platform.focus_events() {
             if let Some(h) = self.controller.as_ref() { h.stats.diagnostics.record(event); }
         }

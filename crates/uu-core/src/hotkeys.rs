@@ -20,9 +20,10 @@ pub enum Action {
     PreviousComputer,
     NextComputer,
     Vsync,
+    BossKey,
 }
 impl Action {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Stats,
         Self::Menu,
         Self::Mute,
@@ -38,11 +39,13 @@ impl Action {
         Self::PreviousComputer,
         Self::NextComputer,
         Self::Vsync,
+        Self::BossKey,
     ];
     pub fn label(self) -> &'static str {
         match self {
             Self::Stats => "HUD",
             Self::Vsync => uu_i18n::text("垂直同步"),
+            Self::BossKey => uu_i18n::text("老板键：隐藏 / 恢复所有窗口"),
             Self::Menu => uu_i18n::text("悬浮菜单"),
             Self::Mute => uu_i18n::text("静音"),
             Self::Fullscreen => uu_i18n::text("全屏"),
@@ -59,7 +62,7 @@ impl Action {
         }
     }
     fn defaults(self) -> &'static [Chord] {
-        const DEFAULTS: [&[Chord]; 15] = [
+        const DEFAULTS: [&[Chord]; 16] = [
             &[Chord::ctrl_alt(0x53)],
             &[Chord::ctrl_alt(0x48)],
             &[Chord::ctrl_alt(0x4d)],
@@ -75,6 +78,7 @@ impl Action {
             &[Chord::ctrl_alt(0x26)],
             &[Chord::ctrl_alt(0x28)],
             &[Chord::ctrl_alt(0x56)],
+            &[Chord::ctrl_alt(0x42)],
         ];
         DEFAULTS[self as usize]
     }
@@ -243,8 +247,8 @@ impl Bindings {
         Action::ALL.into_iter().find(|a| {
             // Returning to the local desktop is an escape command and remains
             // local even while an explicit nested-passthrough mode is active.
-            (!nested || matches!(*a, Action::ToggleNested | Action::ToggleLocal))
-                && (streaming || *a == Action::Fullscreen)
+            (!nested || matches!(*a, Action::ToggleNested | Action::ToggleLocal | Action::BossKey))
+                && (streaming || matches!(*a, Action::Fullscreen | Action::BossKey))
                 && (fullscreen || !a.fullscreen_only())
                 && self.chords(*a).contains(&chord)
         })
@@ -303,6 +307,16 @@ impl Bindings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn boss_key_is_local_in_launcher_stream_and_nested_mode_and_preserves_existing_bindings() {
+        let bindings=Bindings::default();let modifiers=Chord::ctrl_alt(0).modifiers;
+        for streaming in [false,true] {for nested in [false,true] {
+            assert_eq!(bindings.find(0x42,modifiers,nested,streaming,false),Some(Action::BossKey));
+            assert_eq!(bindings.find(0x42,modifiers,nested,streaming,true),None);
+        }}
+        let legacy:Bindings=serde_json::from_str(r#"{"stats":[{"key":66,"modifiers":{"ctrl":true,"alt":true}}]}"#).unwrap();
+        assert!(legacy.chords(Action::BossKey).is_empty());assert_eq!(legacy.find(0x42,modifiers,false,true,false),Some(Action::Stats));
+    }
     #[test]
     fn evolving_navigation_defaults_keep_explicit_ownership_and_free_alternatives() {
         let loaded:Bindings=serde_json::from_str(r#"{"next_display":[{"key":40,"modifiers":{"ctrl":true,"alt":true}}],"previous_display":[]}"#).unwrap();
@@ -383,7 +397,7 @@ mod tests {
     #[test]
     fn all_defaults_use_ctrl_alt_and_saved_overrides_remain_exact() {
         let b:Bindings=serde_json::from_str("{}").unwrap();
-        for (action,keys) in Action::ALL.into_iter().zip([&[0x53][..],&[0x48],&[0x4d],&[0x46,0x58],&[0x51],&[0x5a],&[0x50],&[0x43],&[0x7b],&[0x44],&[0x25],&[0x27],&[0x26],&[0x28],&[0x56]]) {
+        for (action,keys) in Action::ALL.into_iter().zip([&[0x53][..],&[0x48],&[0x4d],&[0x46,0x58],&[0x51],&[0x5a],&[0x50],&[0x43],&[0x7b],&[0x44],&[0x25],&[0x27],&[0x26],&[0x28],&[0x56],&[0x42]]) {
             assert_eq!(b.chords(action),keys.iter().map(|key|Chord::ctrl_alt(*key)).collect::<Vec<_>>());
             for key in keys {
                 assert_eq!(b.find_in_view(*key,Chord::ctrl_alt(0).modifiers,false,true,true,false),Some(action));

@@ -5476,9 +5476,11 @@ version = "0.24.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "ashpd",
  "eframe",
  "egui-winit",
  "fs2",
+ "futures-util",
  "if-addrs",
  "image",
  "libc",
@@ -5508,6 +5510,7 @@ dependencies = [
  "winit",
  "x11rb",
  "xkbcommon-dl",
+ "zbus",
  "zeroize",
 ]
 

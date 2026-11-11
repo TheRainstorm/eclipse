@@ -1124,6 +1124,16 @@ impl eframe::App for Workspace {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             let state = state.as_mut().expect("workspace UI thread");
+            let hidden=crate::boss_key::hidden();
+            for session in state.windows.iter_mut().flat_map(|w|w.sessions.iter_mut()) {
+                if session.app.boss_hidden!=hidden {
+                    session.app.boss_hidden=hidden;
+                    if hidden{session.app.release_session_input();}
+                }
+            }
+            if hidden{state.input_owner=None;}
+            for window in &state.windows {crate::boss_key::normal_visibility(window.viewport(),!window.closing&&!state.local_desktop);}
+            crate::boss_key::apply();
             if crate::platform::take_global_toggle(){state.toggle_local_desktop(ctx);}
             state.sync_owned_views();
             let force_budget=state.has_deferred_connect();
@@ -1152,7 +1162,7 @@ impl eframe::App for Workspace {
                     .with_title(title)
                     .with_inner_size([1100., 760.])
                     .with_min_inner_size([320., 200.])
-                    .with_visible(!window.closing&&!state.local_desktop)
+                    .with_visible(!window.closing&&!state.local_desktop&&!crate::boss_key::hidden())
                     .with_decorations(false)
                     .with_icon(crate::brand::window_icon());
                 if let Some(position) = window.position.take() {
@@ -1162,7 +1172,7 @@ impl eframe::App for Workspace {
                     STATE.with(|state| {
                         let mut state = state.borrow_mut();
                         let state = state.as_mut().expect("workspace UI thread");
-                        let focused = !state.local_desktop&&ctx.input(|i| i.focused);
+                        let focused = !state.local_desktop&&!crate::boss_key::hidden()&&ctx.input(|i| i.focused);
                         let current = state.windows.iter().find(|w| w.id == id).and_then(|w|(w.active!=0).then_some(w.active));
                         let old_here = state.windows.iter().find(|w| w.id == id).is_some_and(|w| {
                             w.sessions.iter().any(|s| Some(s.id) == state.input_owner)
@@ -1190,7 +1200,7 @@ impl eframe::App for Workspace {
                             ..
                         } = state;
                         if let Some(window) = windows.iter_mut().find(|w| w.id == id) {
-                            window.show(ctx, gl, *vsync, *local_desktop, next, actions.clone(), gamepad);
+                            window.show(ctx, gl, *vsync, *local_desktop||crate::boss_key::hidden(), next, actions.clone(), gamepad);
                             if focused {
                                 *input_owner = (window.active!=0).then_some(window.active);
                             }

@@ -89,6 +89,7 @@ impl Platform {
         Self::for_window(_cc,&_cc.egui_ctx,_origin)
     }
     pub fn for_window(_handles:&(impl raw_window_handle::HasWindowHandle+raw_window_handle::HasDisplayHandle),_ctx:&egui::Context,_origin:Option<(i32,i32)>)->Self {
+        crate::boss_key::register(_ctx);
         #[cfg(windows)]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -102,7 +103,7 @@ impl Platform {
                 }
             }
             let route=unsafe{windows::install_window_keyboard(window,_ctx.clone())};
-            let hook = unsafe { windows::shared_keyboard_hook(window) };
+            let hook = if window.is_null(){None}else{unsafe { windows::shared_keyboard_hook(window) }};
             Self {
                 window,
                 hook,
@@ -151,6 +152,7 @@ impl Platform {
         #[cfg(not(windows))] let _=session;
     }
     pub fn window_keyboard(&self,active:bool,shortcuts:bool,nested_passthrough:bool,fullscreen:bool,bindings:&uu_core::hotkeys::Bindings)->bool {
+        crate::boss_key::configure(bindings);
         #[cfg(windows)] {
             let active=active&&self.route.old_proc!=0;
             if *self.bindings.borrow()!=*bindings {
@@ -211,7 +213,7 @@ impl Platform {
                 }
             }
         }
-        if self.show_pending.replace(false) {
+        if !crate::boss_key::hidden() && self.show_pending.replace(false) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.focus_window();
@@ -222,6 +224,7 @@ impl Platform {
         #[cfg(not(windows))] { Vec::new() }
     }
     pub fn focus_window(&self) {
+        if crate::boss_key::hidden(){return;}
         #[cfg(windows)]
         if !self.window.is_null() {
             let event = unsafe {windows::show_and_focus(self.window)};
@@ -419,32 +422,44 @@ mod windows {
     pub(super) static GLOBAL_TOGGLE:AtomicBool=AtomicBool::new(false);
     pub(super) static GLOBAL_TOGGLE_REGISTERED:AtomicBool=AtomicBool::new(false);
     static HOTKEY_COUNT:AtomicI32=AtomicI32::new(0);
-    fn global_hotkeys()->&'static std::sync::Mutex<Vec<uu_core::hotkeys::Chord>> {
-        static KEYS:std::sync::OnceLock<std::sync::Mutex<Vec<uu_core::hotkeys::Chord>>>=std::sync::OnceLock::new();
-        KEYS.get_or_init(||std::sync::Mutex::new(uu_core::hotkeys::Bindings::default().chords(uu_core::hotkeys::Action::ToggleLocal).to_vec()))
+    fn desktop_keys(bindings:&uu_core::hotkeys::Bindings)->Vec<(uu_core::hotkeys::Action,uu_core::hotkeys::Chord)> {
+        [uu_core::hotkeys::Action::ToggleLocal,uu_core::hotkeys::Action::BossKey].into_iter()
+            .flat_map(|action|bindings.chords(action).iter().map(move|chord|(action,*chord))).collect()
+    }
+    fn global_hotkeys()->&'static std::sync::Mutex<Vec<(uu_core::hotkeys::Action,uu_core::hotkeys::Chord)>> {
+        static KEYS:std::sync::OnceLock<std::sync::Mutex<Vec<(uu_core::hotkeys::Action,uu_core::hotkeys::Chord)>>>=std::sync::OnceLock::new();
+        KEYS.get_or_init(||std::sync::Mutex::new(desktop_keys(&uu_core::hotkeys::Bindings::default())))
+    }
+    fn registered_actions()->&'static std::sync::Mutex<Vec<uu_core::hotkeys::Action>> {
+        static ACTIONS:std::sync::OnceLock<std::sync::Mutex<Vec<uu_core::hotkeys::Action>>>=std::sync::OnceLock::new();
+        ACTIONS.get_or_init(Default::default)
     }
     fn set_global_hotkeys(bindings:&uu_core::hotkeys::Bindings) {
-        if let Ok(mut keys)=global_hotkeys().lock() {*keys=bindings.chords(uu_core::hotkeys::Action::ToggleLocal).to_vec();}
+        if let Ok(mut keys)=global_hotkeys().lock() {*keys=desktop_keys(bindings);}
     }
     unsafe fn unregister_global_hotkeys() {
         let count=HOTKEY_COUNT.swap(0,Relaxed);
         GLOBAL_TOGGLE_REGISTERED.store(false,std::sync::atomic::Ordering::Release);
+        crate::boss_key::windows::registered(false);
+        registered_actions().lock().unwrap().clear();
         for index in 0..count {UnregisterHotKey(std::ptr::null_mut(),HOTKEY_BASE+index);}
     }
     unsafe fn refresh_global_hotkeys() {
         unregister_global_hotkeys();
+        if crate::boss_key::windows::recording_active() { return; }
         let keys=global_hotkeys().lock().map(|keys|keys.clone()).unwrap_or_default();
-        let mut count=0i32;
-        for chord in keys.into_iter().filter(|chord|chord.modifiers.ctrl||chord.modifiers.alt||chord.modifiers.shift||chord.modifiers.meta).take(3) {
-            let mut modifiers=0x4000u32; // MOD_NOREPEAT
-            if chord.modifiers.alt{modifiers|=0x0001;}
-            if chord.modifiers.ctrl{modifiers|=0x0002;}
-            if chord.modifiers.shift{modifiers|=0x0004;}
-            if chord.modifiers.meta{modifiers|=0x0008;}
-            if RegisterHotKey(std::ptr::null_mut(),HOTKEY_BASE+count,modifiers,chord.key)!=0 {count+=1;}
+        let mut actions=vec![];
+        for (action,chord) in keys.into_iter().filter(|(_,chord)|chord.modifiers.ctrl||chord.modifiers.alt||chord.modifiers.shift||chord.modifiers.meta).take(6) {
+            let mut modifiers=0x4000u32;
+            if chord.modifiers.alt{modifiers|=0x0001;}if chord.modifiers.ctrl{modifiers|=0x0002;}
+            if chord.modifiers.shift{modifiers|=0x0004;}if chord.modifiers.meta{modifiers|=0x0008;}
+            if RegisterHotKey(std::ptr::null_mut(),HOTKEY_BASE+actions.len() as i32,modifiers,chord.key)!=0 {actions.push(action);}
         }
-        HOTKEY_COUNT.store(count,Relaxed);
-        GLOBAL_TOGGLE_REGISTERED.store(count>0,std::sync::atomic::Ordering::Release);
+        HOTKEY_COUNT.store(actions.len() as i32,Relaxed);
+        GLOBAL_TOGGLE_REGISTERED.store(actions.contains(&uu_core::hotkeys::Action::ToggleLocal),std::sync::atomic::Ordering::Release);
+        crate::boss_key::windows::registered(actions.contains(&uu_core::hotkeys::Action::BossKey));
+        *registered_actions().lock().unwrap()=actions;
+        crate::boss_key::windows::restore_if_unavailable();
     }
     fn clock_ms()->u64 {
         static START:std::sync::OnceLock<std::time::Instant>=std::sync::OnceLock::new();
@@ -478,10 +493,12 @@ mod windows {
         let result=std::sync::Arc::new(Route {old_proc:old,context,viewport,policy:0.into(),session:0.into(),
             keys:std::sync::Mutex::new(crate::keyboard_capture::RecipientKeys::new()),queue:Default::default(),overflow:false.into()});
         routes().write().unwrap().insert(window as isize,result.clone());
+        crate::boss_key::windows::mark(window);
         result
     }
     pub unsafe fn remove_window_keyboard(window:HWND,route:&Route) {
         route.policy.store(0,Relaxed);
+        crate::boss_key::windows::unmark(window);
         if route.old_proc!=0 && IsWindow(window)!=0 && GetWindowLongPtrW(window,GWLP_WNDPROC)==window_keyboard as *const () as isize {
             SetWindowLongPtrW(window,GWLP_WNDPROC,route.old_proc);
         }
@@ -497,6 +514,7 @@ mod windows {
     unsafe extern "system" fn window_keyboard(window:HWND,message:u32,wparam:usize,lparam:isize)->isize {
         let Some(state)=route(window) else{return DefWindowProcW(window,message,wparam,lparam)};
         if message==WM_NULL { state.context.request_repaint_of(state.viewport); }
+        if message!=0 && message==crate::boss_key::windows::message() {crate::boss_key::windows::receive(wparam!=0);return 0;}
         let down=message==WM_KEYDOWN||message==WM_SYSKEYDOWN;
         let up=message==WM_KEYUP||message==WM_SYSKEYUP;
         if down||up {
@@ -684,6 +702,7 @@ mod windows {
             }
             let installed_ms=clock_ms();
             refresh_global_hotkeys();
+            let boss_retry=SetTimer(std::ptr::null_mut(),0,500,None);
             if ready_tx.send(Some((windows_sys::Win32::System::Threading::GetCurrentThreadId(),installed_ms))).is_ok(){
                 while GetMessageW(&mut message,std::ptr::null_mut(),0,0)>0 {
                     if message.message==PUMP_PROBE {
@@ -692,13 +711,28 @@ mod windows {
                         continue;
                     }
                     if message.message==PUMP_HOTKEY_REFRESH {refresh_global_hotkeys();continue;}
+                    if message.message==WM_TIMER && boss_retry!=0 && message.wParam==boss_retry {
+                        if crate::boss_key::windows::recording_active() {unregister_global_hotkeys();continue;}
+                        let keys=global_hotkeys().lock().unwrap();
+                        let retry=HOTKEY_COUNT.load(Relaxed)==0 && !keys.is_empty() || !crate::boss_key::windows::available() && keys.iter().any(|(action,_)|*action==uu_core::hotkeys::Action::BossKey);
+                        drop(keys);
+                        if retry{refresh_global_hotkeys();}
+                        continue;
+                    }
                     if message.message==WM_HOTKEY {
-                        if (HOTKEY_BASE..HOTKEY_BASE+3).contains(&(message.wParam as i32)) {GLOBAL_TOGGLE.store(true,std::sync::atomic::Ordering::Release);}
+                        if crate::boss_key::windows::recording_active() {unregister_global_hotkeys();continue;}
+                        let action=registered_actions().lock().unwrap().get((message.wParam as i32-HOTKEY_BASE) as usize).copied();
+                        match action {
+                            Some(uu_core::hotkeys::Action::ToggleLocal)=>GLOBAL_TOGGLE.store(true,std::sync::atomic::Ordering::Release),
+                            Some(uu_core::hotkeys::Action::BossKey)=>{crate::boss_key::windows::toggle();},
+                            _=>{},
+                        }
                         continue;
                     }
                     TranslateMessage(&message);DispatchMessageW(&message);
                 }
             }
+            KillTimer(std::ptr::null_mut(),boss_retry);
             unregister_global_hotkeys();
             UnhookWindowsHookEx(hook);
         }).ok()?;
@@ -724,6 +758,7 @@ mod windows {
             // Accept injected input from outer remote desktop clients as well.
             // Ownership applies uniformly to every key; no Win-chord exceptions.
             if down||up {
+                if HOTKEY_COUNT.load(Relaxed)>0 && crate::boss_key::windows::recording_window(foreground) {unregister_global_hotkeys();}
                 let now=clock_ms();
                 let _=HOOK_FIRST_CALLBACK.compare_exchange(0,now,Relaxed,Relaxed);
                 HOOK_LAST_CALLBACK.store(now,Relaxed);

@@ -1043,9 +1043,11 @@ struct Standalone {
     host: super::sharing_ui::HostUi,
     appearance: super::theme::PreferenceWatch,
     plugins: super::plugin_ui::Manager,
+    platform:super::platform::Platform,
 }
 impl eframe::App for Standalone {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::boss_key::apply();
         self.appearance.poll(ctx);
         self.plugins.poll();
         self.entry.loaded_plugins=self.plugins.loaded_manifests();
@@ -1056,6 +1058,8 @@ impl eframe::App for Standalone {
                 self.entry.show(ui, &mut self.host, true);
             });
         });
+        self.platform.show(ctx);
+        crate::boss_key::apply();
     }
 }
 struct ServicePairing {
@@ -1231,6 +1235,7 @@ fn run_manager(virtual_displays: bool) -> eframe::Result {
                 manager.section = Section::VirtualDisplays;
             }
             Ok(Box::new(Standalone {
+                platform:super::platform::Platform::new(cc,None),
                 entry: Entry {
                     manager: Some(manager),
                     ..Default::default()

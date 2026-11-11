@@ -37,6 +37,14 @@ impl Shortcuts {
 mod tests {
     use super::*;
     #[test]
+    fn boss_key_owns_repeat_and_release_after_hiding_and_leaving_the_stream() {
+        let mut keys=Shortcuts::default();
+        assert_eq!(keys.key(Key::B,true,false,CHORD,true,true),KeyAction::Trigger(Action::BossKey));
+        assert_eq!(keys.key(Key::B,true,true,Modifiers::NONE,false,true),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::B,false,false,Modifiers::NONE,false,true),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::B,true,false,CHORD,false,false),KeyAction::Trigger(Action::BossKey));
+    }
+    #[test]
     fn vsync_toggle_owns_repeat_and_release_across_capture_and_nested_changes() {
         let mut keys=Shortcuts::default();
         assert_eq!(keys.key(Key::V,true,false,CHORD,true,false),KeyAction::Trigger(Action::Vsync));
