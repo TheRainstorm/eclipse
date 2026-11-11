@@ -2,9 +2,9 @@
 
 当前开发分支的设备配置、共享与公钥授权已统一，完整操作与迁移见[设备连接、共享与授权](device-connection-and-trust.md)。旧版的两端共用配对文件仅保留在 CLI 诊断路径中。
 
-原生连接支持 IP 直连、UU 账号及自建 VPS。连接服务负责寻址和信令；认证成功后仍复用原生视频、声音、输入、剪贴板和呈现。它不等于媒体中继。
+原生连接支持 IP 直连、UU 账号及自建 VPS。连接服务负责寻址和信令；认证成功后仍复用原生视频、声音、输入、剪贴板和呈现。信令与媒体转发由不同组件承担。
 
-默认只接受 UDP 直连候选；无法直连时明确失败，不自动分配 TURN。可选 UU 插件的独立设置可显式允许服务下发的 TURN/UDP；目前底层不支持 TURN/TCP 或 TURN/TLS。
+自建连接服务支持双方主动上线、在线设备目录、ICE/STUN 直连优先及 TURN/UDP 自动回退；接入与部署见[连接服务](connection-service.md)。可选 UU 插件仍使用其独立的中转设置。目前底层不支持 TURN/TCP 或 TURN/TLS。
 
 ## 桌面使用
 
@@ -19,7 +19,7 @@ UU 连接步骤：
 
 UU 的 `2001` 表示被控设备不在线：先检查对方是否开始共享，不能仅凭错误推断账号不同或身份重复。跨账号能否加入仍取决于服务侧权限。
 
-VPS 模式先在“连接服务”添加服务器、访问令牌及必要的证书。主机启用本机发布并设置名称；控制端添加设备时选择同一服务，填写该目标名称。多个设备可引用同一服务器配置。名称仅使用字母、数字、短横线或下划线。
+自建服务推荐使用“加入连接服务”，两端粘贴同一接入码，然后在在线目录中选择目标并配对。也保留手动编辑服务器、访问令牌、必要证书及发布 ID 的方式；手动发布 ID 仅使用字母、数字、短横线或下划线。多个设备可引用同一服务器配置，展示名称与发布 ID 分开。
 
 服务器地址支持 `主机:端口` 和完整 `wss://…/v1/signal` URL。是否导入证书取决于信任链，自签名或私有 CA 通常需要；公开可信且名称匹配的证书可留空。证书验证服务器，原生公钥验证对端设备，两者分开。
 
@@ -36,49 +36,13 @@ VPS 模式先在“连接服务”添加服务器、访问令牌及必要的证�
 
 详情显示的是双方媒体端点，不是 UU/自建信令服务器的地址，也不是 STUN 服务自身的地址。两端候选可能不完整；可用候选取决于当前网络及 ICE 服务。面板打开时约每秒刷新，地址不会加入自动诊断日志；分享复制内容前可自行隐藏地址。
 
-## 自建信令与 STUN
+## 自建服务与协议兼容
 
-`uu-signal` 是独立进程，无桌面采集、输入或媒体转发功能。WSS 自定义协议支持版本 1 和 2，包含主机注册、加入、会话消息与退出。新版主机用版本 2 按会话分别路由，不设置固定的已连接会话数量上限；服务端明确不支持时才回退版本 1 的单会话模式。旧服务版本可能仍有四会话限制，多会话使用前也应更新信令服务。旧控制端可继续使用版本 1 加入，路由按会话隔离。它不是任意 WebRTC 客户端均可使用的统一信令协议。标准 UDP STUN Binding 服务与其运行在同一进程中。
+`eclipse-signal` 是独立信令进程，不访问桌面；coturn 提供 STUN 与媒体中转。完整构建包、systemd、反向代理与云端端口配置见[连接服务部署](connection-service.md#部署服务器)。
 
-```mermaid
-flowchart LR
-    H[原生主机] <-->|WSS 建连信息| S[自建 uu-signal]
-    C[原生客户端] <-->|WSS 建连信息| S
-    H -.->|STUN 映射发现| U[自建 UDP STUN]
-    C -.->|STUN 映射发现| U
-    H <==>|DTLS-SRTP 视频声音与原生输入| C
-```
+新主机用版本 3 注册，支持展示名称、在线目录及会话临时 ICE 凭据；仅在服务明确报告不支持时才降为版本 2 或版本 1。版本 2 已按会话路由，版本 1 只有单观看端。新观看端用版本 2 加入，双方都支持时才接收新会话配置，旧观看端仍收到原来的严格事件。它不是任意 WebRTC 客户端均可使用的通用信令协议。
 
-构建：
-
-```sh
-cargo build --release -p uu-cli --bin uu --bin eclipse-signal
-```
-
-服务器准备 TLS 证书、私钥和随机访问凭据。访问凭据可通过 `uu internet keygen --file server.token` 生成，不覆盖已有文件。使用自签名证书时必须包含用户实际连接的 IP 或域名 SAN，客户端通过证书文件建立信任，不能关闭证书校验。
-
-```sh
-uu-signal --bind 0.0.0.0:8443 \
-  --certificate /etc/eclipse-signal/server.pem \
-  --private-key /etc/eclipse-signal/server.key \
-  --token-file /etc/eclipse-signal/server.token \
-  --stun stun:YOUR_PUBLIC_HOST:3478 \
-  --stun-bind 0.0.0.0:3478
-```
-
-`YOUR_PUBLIC_HOST` 替换为实际地址；监听地址 `0.0.0.0` 不能作为对外发布地址。云安全组、主机网络策略需要允许选定的 TCP 信令端口和 UDP STUN 端口。进程监听成功不代表公网端口已开放。普通 STUN 只返回 NAT 映射，无法保证所有 NAT 组合均能直连。
-
-可参考 [systemd 服务模板](../tools/internet/eclipse-signal.service)，建立专用系统用户、安装二进制到 `/opt/eclipse-signal/uu-signal`，配置目录限制读取权限。模板的 `/etc/eclipse-signal/service.env` 内容：
-
-```ini
-SIGNAL_BIND=0.0.0.0:8443
-STUN_BIND=0.0.0.0:3478
-STUN_URL=stun:YOUR_PUBLIC_HOST:3478
-```
-
-已有 HTTPS 服务可反向代理 WSS。需透传 `Authorization`、WebSocket Upgrade 并将外部路径映射到 `/v1/signal`；默认 heartbeat 为 10 秒，代理空闲超时应大于 35 秒。STUN 是独立 UDP 服务，HTTP 反向代理不能代替开放 UDP。
-
-本实现限制连接数量、消息大小、候选类型、会话归属及 STUN 请求速率；不提供 TURN Allocate，不接受媒体作为信令负载。
+WSS 代理需透传 `Authorization` 和 WebSocket Upgrade，并将外部路径映射到 `/v1/signal`；默认心跳为 10 秒，代理空闲超时应大于 35 秒。STUN/TURN 是独立 UDP 服务，HTTP 反向代理不能代替开放 UDP。单独运行旧内置 STUN 仍可用于直连，但无法提供 TURN 中转。
 
 ## 旧 PSK CLI 诊断
 
@@ -99,10 +63,10 @@ STUN_URL=stun:YOUR_PUBLIC_HOST:3478
 UU 配置将 `provider` 改为 `uu`，`device` 填目标 UU 编号，服务器字段不使用。主机使用本机正常登录身份，不使用该字段冒充目标主机。
 
 ```sh
-uu internet keygen --file access.key
-uu internet host --settings connection.json --synthetic --width 640 --height 360 \
+eclipse-cli internet keygen --file access.key
+eclipse-cli internet host --settings connection.json --synthetic --width 640 --height 360 \
   --synthetic-audio --encoder software --max-seconds 15
-uu internet probe --settings connection.json --frames 120 --report metrics.json
+eclipse-cli internet probe --settings connection.json --frames 120 --report metrics.json
 ```
 
 真实屏幕共享去掉 `--synthetic`，按需显式启用 `--allow-input`、`--audio`、`--encoder auto`。硬件编码仍取决于平台构建和驱动，不因连接方式改变。

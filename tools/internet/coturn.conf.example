@@ -1,0 +1,27 @@
+# Copy to /etc/eclipse-turn/turnserver.conf, readable by root and turnserver.
+# Set the same random secret as /etc/eclipse-signal/turn.secret below.
+# Never use a public example value as the authentication secret.
+listening-port=3478
+listening-ip=0.0.0.0
+pidfile=/run/eclipse-turn/turnserver.pid
+# On a cloud VM with address translation, set both values for that VM:
+# relay-ip=<private IPv4>
+# external-ip=<public IPv4>/<private IPv4>
+min-port=49152
+max-port=49251
+realm=eclipse
+fingerprint
+use-auth-secret
+# Required: uncomment and supply the generated private secret.
+# static-auth-secret=<contents of /etc/eclipse-signal/turn.secret>
+stale-nonce=600
+no-cli
+no-tls
+no-dtls
+no-tcp
+no-tcp-relay
+no-multicast-peers
+user-quota=32
+total-quota=512
+log-file=stdout
+simple-log

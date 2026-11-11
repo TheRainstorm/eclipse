@@ -70,7 +70,7 @@ python3 install.py
 
 应用菜单入口为 **Eclipse**，命令行为 `eclipse-cli`。旧 `uu-client`、`uu-remote-rust` 和 `uu-rust` 别名保留，原用户数据目录继续使用。共享支持 X11 与 Wayland；Wayland 需要门户授权或合成器提供的采集与输入能力。[运行依赖与平台差异](docs/linux-client.md)
 
-**连接两台设备**：在被控端打开“服务管理”，启用所需入口并启动共享；在控制端设备页右键添加地址，发起配对，将八位码输入被控端确认。之后可从设备卡片连接，并按设备保存画质配置。[局域网连接与配对](docs/native-lan.md) · [公网与自建服务](docs/native-internet.md)
+**连接两台设备**：在被控端打开“服务管理”，启用所需入口并启动共享；在控制端设备页右键添加地址，发起配对，将八位码输入被控端确认。之后可从设备卡片连接，并按设备保存画质配置。[局域网连接与配对](docs/native-lan.md) · [连接服务与外网直连/中转](docs/connection-service.md)
 
 已有源码和 GitHub CLI 时，也可下载并校验发布包，无需本机编译：
 
