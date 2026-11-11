@@ -62,6 +62,17 @@ impl Workspace {
         connection: &mut dyn FnMut(&mut egui::Ui, Option<&str>),
     ) {
         let locked = self.host.stopping();
+        #[cfg(not(windows))]
+        {
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!locked, crate::theme::primary_button(uu_i18n::text("加入连接服务"))).clicked() { self.enrollment.open(); }
+            ui.weak(uu_i18n::text("使用同一个接入码，让两台电脑互相发现并连接。"));
+        });
+        self.enrollment.status(ui);
+        card(ui, |ui| {
+            if let Some(target) = self.service_directory.show(ui, self.service_config.as_ref(), &self.book) { actions.push(Action::OpenPrepared(target)); }
+        });
+        }
         let mut draft = self
             .connection_draft
             .clone()

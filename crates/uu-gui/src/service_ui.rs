@@ -22,6 +22,7 @@ use deployment::{automatic_restart_ready, Deployment, DeploymentOutcome};
 #[cfg(test)]
 use deployment::automatic_restart_safe;
 use worker::{Event, Job};
+pub(super) fn enrollment_restart_ready() -> anyhow::Result<bool> { deployment::automatic_restart_ready() }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
@@ -56,6 +57,7 @@ pub(super) struct Entry {
     deployment_error: String,
 }
 impl Entry {
+    pub fn take_open(&mut self) -> Option<crate::sessions::StreamTarget> { self.manager.as_mut().and_then(|manager| manager.pending_open.take()) }
     pub fn set_loaded_plugins(&mut self,plugins:Vec<uu_plugin_sdk::Manifest>,preferences:Option<uu_core::plugins::Preferences>,automatic_sync:bool) {
         self.loaded_plugins=plugins;
         self.plugin_preferences=preferences;
@@ -71,6 +73,10 @@ impl Entry {
             }
         }
         if let Some(manager) = &mut self.manager {
+            manager.enrollment.bind_config(manager.client_config.as_ref(), ctx);
+            manager.enrollment.poll(ctx);
+            if manager.enrollment.take_changed() { manager.directory.reset(); }
+            if let Some(target) = manager.directory.take_open() { manager.pending_open = Some(target); }
             manager.loaded_plugins=self.loaded_plugins.clone();
             if let Some(section)=self.requested_section.take() {manager.section=section;}
             manager.poll();
@@ -408,6 +414,10 @@ enum Confirmation {
     Restart,
 }
 struct Manager {
+    enrollment: super::connection_service_ui::Join,
+    directory: super::connection_service_ui::Directory,
+    client_config: Option<uu_core::Config>,
+    pending_open: Option<crate::sessions::StreamTarget>,
     expected_profile: Option<String>,
     allow_legacy_profile: bool,
     virtual_display: super::virtual_display_ui::State,
@@ -446,6 +456,7 @@ impl Manager {
         let allow_legacy_profile = false;
         let mut manager = Self::with_worker(worker::Worker::start());
         manager.expected_profile = Some(expected_profile);
+        manager.client_config = Some(config);
         manager.allow_legacy_profile = allow_legacy_profile;
         Ok(manager)
     }
@@ -455,6 +466,7 @@ impl Manager {
     }
     fn with_worker(worker: worker::Worker) -> Self {
         Self {
+            enrollment: Default::default(), directory: Default::default(), client_config: None, pending_open: None,
             expected_profile: None,
             allow_legacy_profile: true,
             virtual_display: Default::default(),
@@ -918,6 +930,15 @@ impl Manager {
                 });
             }
             Section::Connections => {
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(enabled, crate::theme::primary_button(uu_i18n::text("加入连接服务"))).clicked() { self.enrollment.open(); }
+                    ui.weak(uu_i18n::text("使用同一个接入码，让两台电脑互相发现并连接。"));
+                });
+                self.enrollment.status(ui);
+                self.enrollment.show(ui.ctx(), self.client_config.as_ref());
+                section_card(ui, uu_i18n::text("设备目录"), |ui| {
+                    if let Some(id) = self.directory.show_local(ui, self.client_config.as_ref()) { self.pending_open = Some(id); }
+                });
                 section_card(ui, uu_i18n::text("IP 直连"), |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
                         let before=self.draft.clone();
@@ -1051,6 +1072,7 @@ impl Manager {
     }
 }
 struct Standalone {
+    sessions: super::sessions::Sessions,
     entry: Entry,
     host: super::sharing_ui::HostUi,
     appearance: super::theme::PreferenceWatch,
@@ -1070,6 +1092,11 @@ impl eframe::App for Standalone {
                 self.entry.show(ui, &mut self.host, true);
             });
         });
+        if let Some(target) = self.entry.take_open() {
+                if let Err(error) = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target, self.platform.origin())) {
+                    self.entry.feedback.error(super::ui_feedback::Scope::Services(5), error.to_string());
+                }
+        }
         self.platform.show(ctx);
         crate::boss_key::apply();
     }
@@ -1247,6 +1274,7 @@ fn run_manager(virtual_displays: bool) -> eframe::Result {
                 manager.section = Section::VirtualDisplays;
             }
             Ok(Box::new(Standalone {
+                sessions: Default::default(),
                 platform:super::platform::Platform::new(cc,None),
                 entry: Entry {
                     manager: Some(manager),
@@ -1829,6 +1857,7 @@ mod tests {
                 completed: false,
                 result: Ok(Response::Connections {
                     snapshot: uu_core::service_admin::connections::Snapshot {
+                        imported: None,
                         revision: "service-revision".into(),
                         entries: vec![],
                         restart_required: false,

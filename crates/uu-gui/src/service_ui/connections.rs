@@ -283,6 +283,7 @@ mod tests {
             false,
             Ok(Response::Connections {
                 snapshot: Snapshot {
+                    imported: None,
                     revision: "new-revision".into(),
                     entries: vec![],
                     restart_required: false,
@@ -306,6 +307,7 @@ mod tests {
             true,
             Ok(Response::Connections {
                 snapshot: Snapshot {
+                    imported: None,
                     revision: "saved-revision".into(),
                     entries: vec![],
                     restart_required: true,

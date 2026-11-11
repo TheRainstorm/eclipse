@@ -299,6 +299,7 @@ pub(super) struct HostUi {
     stopping: bool,
     allow_control: bool,
     active_sharing: Option<uu_core::device_book::Sharing>,
+    active_services: Vec<uu_core::device_book::Service>,
     restart: Option<(uu_core::Config, Book, TrustStore)>,
     restart_context:Option<(uu_core::Config,TrustStore)>,
 }
@@ -315,6 +316,10 @@ impl HostUi {
     }
     pub fn changes_pending(&self,saved:&uu_core::device_book::Sharing)->bool {
         self.active_sharing.as_ref().is_some_and(|active|active!=saved)
+    }
+    #[cfg(not(windows))]
+    pub fn connection_services_current(&self, saved: &[uu_core::device_book::Service]) -> bool {
+        self.running() && !self.stopping && self.active_services == saved
     }
     pub fn uses_provider(&self,id:&str) -> bool {
         self.endpoints.iter().any(|entry|entry.provider.as_deref()==Some(id))
@@ -490,6 +495,7 @@ impl HostUi {
         self.access = Some(access);
         self.endpoints = endpoints;
         self.allow_control = book.sharing.control;
+        self.active_services = book.services;
         self.active_sharing=Some(book.sharing);
         self.stopping = false;
         self.notice.clear();
@@ -601,6 +607,7 @@ impl HostUi {
             self.legacy_pending.clear();
             self.stopping = false;
             self.active_sharing=None;
+            self.active_services.clear();
         }
         if !self.running() {
             if let Some((config,book,trust))=self.restart.take() {

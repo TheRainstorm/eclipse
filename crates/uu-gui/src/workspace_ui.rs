@@ -52,6 +52,7 @@ pub(super) struct HomeRoute {
 pub(super) enum Action {
     DevicesHidden(bool),
     Open(String),
+    OpenPrepared(crate::sessions::StreamTarget),
     RefreshWallpaper,
     FavoriteWallpaper,
     DownloadWallpaper,
@@ -118,6 +119,12 @@ pub(super) struct Workspace {
     pub book: Book,
     pub host: super::sharing_ui::HostUi,
     connection_history: super::connection_history_ui::State,
+    #[cfg(not(windows))]
+    enrollment: super::connection_service_ui::Join,
+    #[cfg(not(windows))]
+    service_directory: super::connection_service_ui::Directory,
+    #[cfg(not(windows))]
+    service_config: Option<uu_core::Config>,
     history_path: Option<std::path::PathBuf>,
     pub store: Option<Store>,
     pub trust: Option<TrustStore>,
@@ -938,6 +945,12 @@ impl Workspace {
             book,
             host: Default::default(),
             connection_history: Default::default(),
+            #[cfg(not(windows))]
+            enrollment: Default::default(),
+            #[cfg(not(windows))]
+            service_directory: Default::default(),
+            #[cfg(not(windows))]
+            service_config: config.cloned(),
             history_path: config.map(|config| config.at("device-trust/connection-history.json")),
             #[cfg(windows)]
             background_service:Default::default(),
@@ -969,6 +982,33 @@ impl Workspace {
         }
     }
     pub fn poll(&mut self, ctx: &egui::Context, window: isize) {
+        #[cfg(not(windows))]
+        {
+            self.enrollment.poll(ctx);
+            if self.enrollment.take_changed() {
+                self.refresh(); self.service_directory.reset();
+                if !self.host.connection_services_current(&self.book.services) { self.enrollment.require_activation(); }
+            }
+            if self.enrollment.activation_pending() && !self.host.stopping() {
+                if let (Some(config), Some(trust)) = (self.service_config.clone(), self.trust.clone()) {
+                    let reserved = self.host.access.as_ref().map(|access| {
+                        let token = uuid::Uuid::new_v4().to_string();
+                        access.sessions.reserve_configuration_switch(&token, false).map(|_| (access.clone(), token))
+                    });
+                    if reserved.as_ref().is_none_or(|result| result.is_ok()) {
+                        let result = if self.host.running() { self.host.restart(config, self.book.clone(), trust, ctx) }
+                            else { self.host.start(config, self.book.clone(), trust, ctx) };
+                        match result {
+                            Ok(()) => self.enrollment.activation_started(),
+                            Err(error) => {
+                                if let Some(Ok((access, token))) = reserved { let _ = access.sessions.reserve_configuration_switch(&token, true); }
+                                self.feedback.error(super::ui_feedback::Scope::Services(0), error.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         self.feedback.tick(ctx);
         self.host.poll(ctx, window);
         #[cfg(windows)]
@@ -1949,6 +1989,13 @@ impl Workspace {
 
     pub fn dialogs(&mut self, ctx: &egui::Context, info: &Info) -> Vec<Action> {
         let mut actions = Vec::new();
+        #[cfg(windows)]
+        if let Some(target) = self.background_service.take_open() { actions.push(Action::OpenPrepared(target)); }
+        #[cfg(not(windows))]
+        {
+            if let Some(target) = self.service_directory.take_open() { actions.push(Action::OpenPrepared(target)); }
+            self.enrollment.show(ctx, self.service_config.as_ref());
+        }
         self.host.dialogs(ctx);
         if let Some(mut editor)=self.client_editor.take() {
             let mut open=true; let mut save=false; let mut cancel=false; let mut remove=false;
@@ -2327,6 +2374,11 @@ impl super::App {
                     self.persist_preferences();
                 }
                 Action::Open(id) => self.open_device_profile(&id),
+                Action::OpenPrepared(target) => {
+                    if let Err(error) = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target, self.platform.origin())) {
+                        self.workspace.feedback.error(super::ui_feedback::Scope::Devices, error.to_string());
+                    }
+                }
                 Action::SelfStream => {
                     let target=super::sessions::StreamTarget{connection:super::sessions::ConnectionTarget::NativeLoopback,
                         alias:uu_i18n::text("本机串流测试").into(),view_only:true};
