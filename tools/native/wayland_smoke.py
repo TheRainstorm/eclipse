@@ -34,13 +34,13 @@ def main():
     env = os.environ.copy()
     for name in ('DISPLAY', 'WAYLAND_DISPLAY', 'SWAYSOCK', 'DBUS_SESSION_BUS_ADDRESS', 'UU_AUTOCONNECT', 'UU_FORCE_JOIN'):
         env.pop(name, None)
-    env.update(XDG_RUNTIME_DIR=str(runtime), XDG_DATA_HOME=str(out / 'data'),
+    env.update(ECLIPSE_PROFILE_DIR=str(out / "profile"), XDG_RUNTIME_DIR=str(runtime), XDG_DATA_HOME=str(out / 'data'),
                XDG_STATE_HOME=str(out / 'state'), UU_SIGNING_KEY_FILE=str(out / 'absent-signing-key'),
                WLR_BACKENDS='headless', WLR_HEADLESS_OUTPUTS='2' if args.multi_dpi else '1',
                WLR_LIBINPUT_NO_DEVICES='1', WLR_RENDERER=args.renderer,
                WLR_RENDER_DRM_DEVICE='/dev/dri/renderD128',
                UU_DECODER='hw' if args.expect_hardware else args.decoder, RUST_LOG='error')
-    data = out / 'data' / 'uu-remote'
+    data = out / 'profile' / 'data'
     data.mkdir(parents=True)
     (data / 'gui-settings.json').write_text(json.dumps(dict(
         hud=True, clipboard=False, muted=True, lan_discovery=False,
@@ -112,7 +112,7 @@ def main():
 
     def events():
         result = []
-        for path in (out / 'state' / 'uu-remote' / 'diagnostics').glob('uu-session-*.jsonl'):
+        for path in (out / 'profile' / 'state' / 'diagnostics').glob('uu-session-*.jsonl'):
             for line in path.read_text().splitlines():
                 try:
                     result.append(json.loads(line))
