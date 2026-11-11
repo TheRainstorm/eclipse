@@ -1,6 +1,7 @@
 //! Devices are the primary object. Sharing settings and connection services
 //! have their own pages and never ask for a per-device shared key file.
 use super::theme;
+mod device_management;
 use eframe::egui::{self, RichText};
 use std::{
     path::PathBuf,
@@ -48,6 +49,7 @@ pub(super) struct HomeRoute {
     pub settings_return: Page,
 }
 pub(super) enum Action {
+    DevicesHidden(bool),
     Open(String),
     RefreshWallpaper,
     FavoriteWallpaper,
@@ -128,6 +130,10 @@ pub(super) struct Workspace {
     client_editor: Option<ClientEditor>,
     pub client_defaults: uu_core::client_settings::ClientSettings,
     dark_background:bool,
+    devices_hidden:bool,
+    device_icon_size:f32,
+    device_text_size:f32,
+    management:device_management::State,
     last_read: Instant,
     pub pairing_visible: bool,
     pairing_settings:super::pairing_ui::HostUi,
@@ -141,6 +147,32 @@ pub(super) struct Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn device_management_selects_without_connecting_and_deletes_the_batch() {
+        let mut h=Harness::new();
+        for i in 1..=2 {
+            h.workspace.store.as_ref().unwrap().save_device(Profile::new(&format!("Device {i}"),Destination::Ip{address:format!("192.0.2.{i}:48998"),legacy_device:None})).unwrap();
+        }
+        h.workspace.refresh();h.workspace.management.active=true;
+        assert!(h.click("Device 1").is_empty());
+        assert_eq!(h.workspace.management.selected.len(),1);
+        h.click("全选");assert_eq!(h.workspace.management.selected.len(),2);
+        h.click("删除所选");h.click("确认删除");
+        assert!(h.workspace.store.as_ref().unwrap().read().unwrap().devices.is_empty());
+    }
+    #[test]
+    fn hidden_devices_can_be_restored_from_the_wallpaper_menu() {
+        let mut h=Harness::new();h.workspace.devices_hidden=true;
+        h.frame(vec![]);
+        assert!(!h.texts.iter().any(|(s,_)|s=="尚未添加设备"));
+        let position=egui::pos2(100.,100.);
+        for pressed in [true,false] {
+            h.frame(vec![egui::Event::PointerMoved(position),egui::Event::PointerButton{pos:position,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);
+        }
+        assert!(matches!(&h.click("显示设备")[..],[Action::DevicesHidden(false)]));
+        h.frame(vec![]);
+        assert!(h.texts.iter().any(|(s,_)|s=="尚未添加设备"));
+    }
     #[test]
     #[cfg(not(windows))]
     fn extension_settings_stay_with_their_provider_between_ip_and_self_hosted_cards() {
@@ -900,6 +932,10 @@ impl Workspace {
             client_editor: None,
             client_defaults:Default::default(),
             dark_background:false,
+            devices_hidden:false,
+            device_icon_size:230.0,
+            device_text_size:17.0,
+            management:Default::default(),
             last_read: Instant::now(),
             pairing_visible: false,
             pairing_settings:Default::default(),
@@ -1176,6 +1212,8 @@ impl Workspace {
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
         blank.context_menu(|ui| {
             compact_context_menu(ui);
+            self.device_management_menu(ui,actions);
+            ui.separator();
             if let Some((width,height))=info.wallpaper_size {ui.label(uu_i18n::format!("原图：{} × {} 像素",width,height));ui.separator();}
             if theme::menu_action(ui,info.wallpaper_ready,uu_i18n::text("收藏当前壁纸")).clicked(){actions.push(Action::FavoriteWallpaper);ui.close_menu();}
             if theme::menu_action(ui,info.wallpaper_download_ready,uu_i18n::text("下载壁纸")).clicked(){actions.push(Action::DownloadWallpaper);ui.close_menu();}
@@ -1204,7 +1242,9 @@ impl Workspace {
             }
         });
         self.feedback.show(ui, super::ui_feedback::Scope::Devices);
+        if self.devices_hidden {return;}
         let profiles:Vec<_>=self.book.devices.iter().filter(|p|p.redirect.is_none()).cloned().collect();
+        self.device_management_toolbar(ui,&profiles);
         if profiles.is_empty() {
             card(ui, |ui| {
                 ui.vertical_centered(|ui| {
@@ -1234,27 +1274,31 @@ impl Workspace {
                 });
             });
         }
-        let columns=((ui.available_width()+22.)/252.).floor().clamp(1.,8.) as usize;
+        let columns=((ui.available_width()+22.)/(self.device_icon_size+22.)).floor().clamp(1.,32.) as usize;
         for row in profiles.chunks(columns) {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x=22.;
-                for profile in row {self.device_tile(ui,profile,actions);}
+                for profile in row {
+                    let response=self.device_tile(ui,profile,actions);
+                    self.device_management_drag(ui,&response,&profile.id);
+                }
             });
             ui.add_space(22.);
         }
+        self.finish_device_management();
     }
-    fn device_tile(&mut self,ui:&mut egui::Ui,profile:&Profile,actions:&mut Vec<Action>) {
+    fn device_tile(&mut self,ui:&mut egui::Ui,profile:&Profile,actions:&mut Vec<Action>)->egui::Response {
         ui.push_id(&profile.id,|ui| {
-            let width=230_f32.min(ui.available_width());
+            let width=self.device_icon_size.min(ui.available_width());
             let offline=self.presence.status(&profile.id)==super::device_presence::Status::Offline;
             let color=if offline {
                 if self.dark_background {egui::Color32::from_gray(200)}else{theme::palette(ui.visuals()).muted}
             }else if self.dark_background {egui::Color32::WHITE}else{theme::palette(ui.visuals()).text};
-            let mut label=egui::text::LayoutJob::simple(profile.name.clone(),egui::FontId::proportional(17.),color,width);
+            let mut label=egui::text::LayoutJob::simple(profile.name.clone(),egui::FontId::proportional(self.device_text_size),color,width);
             label.halign=egui::Align::Center;
             let text=ui.painter().layout_job(label);
-            let (rect,response)=ui.allocate_exact_size(egui::vec2(width,width*9./16.+20.+text.size().y),egui::Sense::click());
-            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),uu_i18n::format!("连接 {}",profile.name)));
+            let (rect,response)=ui.allocate_exact_size(egui::vec2(width,width*9./16.+20.+text.size().y),if self.management.active {egui::Sense::click_and_drag()}else{egui::Sense::click()});
+            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),if self.management.active {uu_i18n::format!("选择设备 {}",profile.name)} else {uu_i18n::format!("连接 {}",profile.name)}));
             if response.hovered()||response.has_focus()||response.is_pointer_button_down_on(){let p=theme::palette(ui.visuals());ui.painter().rect_filled(rect.expand(7.),theme::RADIUS,if response.is_pointer_button_down_on(){p.primary.gamma_multiply(0.35)}else{p.accent.gamma_multiply(0.18)});}
             let picture=egui::Rect::from_min_size(rect.min,egui::vec2(width,width*9./16.));
             let mut painter=ui.painter().clone();
@@ -1265,9 +1309,18 @@ impl Workspace {
                 ui.painter().galley_with_override_text_color(pos+egui::vec2(0.,1.),text.clone(),egui::Color32::from_black_alpha(210));
             }
             ui.painter().galley(pos,text,color);
-            if response.clicked(){actions.push(Action::Open(profile.id.clone()));}
+            if self.management.active && self.management.selected.contains(&profile.id) {
+                ui.painter().rect_stroke(rect.expand(4.),theme::RADIUS,egui::Stroke::new(3.,theme::palette(ui.visuals()).primary));
+            }
+            if response.clicked(){
+                if self.management.active {
+                    if !self.management.selected.remove(&profile.id) {self.management.selected.insert(profile.id.clone());}
+                }else{actions.push(Action::Open(profile.id.clone()));}
+            }
             response.context_menu(|ui| {
                 compact_context_menu(ui);
+                self.device_management_menu(ui,actions);
+                ui.separator();
                 if theme::menu_action(ui,true,uu_i18n::text("刷新在线状态")).clicked(){self.presence.refresh();ui.close_menu();}
                 if theme::menu_action(ui,true,uu_i18n::text("详情")).clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
                 ui.menu_button(uu_i18n::text("连接方式"),|ui| {
@@ -1298,7 +1351,8 @@ impl Workspace {
                     self.edit_client_config(profile,selected,false);ui.close_menu();
                 }
             });
-        });
+            response
+        }).inner
     }
     fn route_picker(&mut self,ui:&mut egui::Ui,profile:&Profile) {
                 let mut selected=profile.selected_route.clone();
@@ -2333,6 +2387,9 @@ impl super::App {
             && self.preferences.wallpaper_enabled;
         self.workspace.client_defaults = self.preferences.client.clone();
         self.workspace.dark_background = wallpaper_root;
+        self.workspace.devices_hidden = self.preferences.devices_hidden;
+        self.workspace.device_icon_size = self.preferences.device_icon_size;
+        self.workspace.device_text_size = self.preferences.device_text_size;
         let mut actions = Vec::new();
         let mut extensions=Vec::new();
         egui::CentralPanel::default()
@@ -2362,6 +2419,10 @@ impl super::App {
     pub(super) fn workspace_actions(&mut self, actions: Vec<Action>, ctx: &egui::Context) {
         for action in actions {
             match action {
+                Action::DevicesHidden(hidden) => {
+                    self.preferences.devices_hidden=hidden;
+                    self.persist_preferences();
+                }
                 Action::Open(id) => self.open_device_profile(&id),
                 Action::SelfStream => {
                     let target=super::sessions::StreamTarget{connection:super::sessions::ConnectionTarget::NativeLoopback,

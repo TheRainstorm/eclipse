@@ -49,6 +49,8 @@ fn save_profile_client_settings(store:&uu_core::device_book::Store,connection:&s
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceView { #[default] Cards, List }
+pub(super) const DEVICE_ICON_RANGE: std::ops::RangeInclusive<f32> = 80.0..=480.0;
+pub(super) const DEVICE_TEXT_RANGE: std::ops::RangeInclusive<f32> = 10.0..=36.0;
 
 pub(super) const PHOTOGRAPHY_WALLPAPER: &str = "https://picsum.photos/1920/1080";
 pub(super) const ANIME_WALLPAPER: &str = "https://img-api.pipw.top";
@@ -92,6 +94,9 @@ pub struct Settings {
     pub lan_service_port: u16,
     pub lan_discovery_port: u16,
     pub device_view: DeviceView,
+    pub devices_hidden: bool,
+    pub device_icon_size: f32,
+    pub device_text_size: f32,
     pub wallpaper_enabled: bool,
     #[serde(default)]
     pub app_autostart:bool,
@@ -114,7 +119,7 @@ impl Default for Settings {
         Self { client: ClientSettings::default(), application_hotkeys:None, theme_preference:super::theme::DEFAULT_PREFERENCE, color_theme:Default::default(), language:uu_i18n::Language::default(), onboarding_dismissed:false,lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
-            device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:true,close_to_tray:true,show_input_status:false,virtual_display_presets:Default::default(),
+            device_view:DeviceView::Cards, devices_hidden:false, device_icon_size:230.0, device_text_size:17.0, wallpaper_enabled:true, app_autostart:true,close_to_tray:true,show_input_status:false,virtual_display_presets:Default::default(),
             wallpaper_source:WallpaperSource::Anime, wallpaper_favorite:None, wallpaper_api:ANIME_WALLPAPER.into() }
     }
 }
@@ -151,6 +156,7 @@ impl Settings {
     }
     fn validate(&self)->anyhow::Result<()> {
         self.client.validate()?;
+        anyhow::ensure!(DEVICE_ICON_RANGE.contains(&self.device_icon_size) && DEVICE_TEXT_RANGE.contains(&self.device_text_size), "invalid device appearance size");
         self.virtual_display_presets.validate()?;
         anyhow::ensure!(self.application_hotkeys().issues().is_empty(),"{}", uu_i18n::format!("客户端快捷键存在冲突，请在应用设置中修正"));
         anyhow::ensure!(self.lan_service_port>0&&self.lan_discovery_port>0,"{}", uu_i18n::format!("局域网端口必须在 1–65535 之间"));

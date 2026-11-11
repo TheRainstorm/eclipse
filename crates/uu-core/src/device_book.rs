@@ -799,22 +799,62 @@ impl Store {
         Ok(())
     }
     pub fn forget(&self, id: &str) -> Result<()> {
+        self.forget_many(&[id.to_owned()]).map(|_| ())
+    }
+    pub fn reorder_device(&self, source: &str, target: &str, after: bool) -> Result<()> {
+        self.edit(|book| {
+            let source = book.device(source)?.id.clone();
+            let target = book.device(target)?.id.clone();
+            if source == target { return Ok(()); }
+            let index = book.devices.iter().position(|p| p.id == source).unwrap();
+            let profile = book.devices.remove(index);
+            let index = book.devices.iter().position(|p| p.id == target).unwrap();
+            book.devices.insert(index + usize::from(after), profile);
+            Ok(())
+        })
+    }
+    /// Resolve the complete selection under one lock before removing anything.
+    /// Forgetting local records never revokes trust or closes running streams.
+    pub fn forget_many(&self, ids: &[String]) -> Result<usize> {
         let mut images=Vec::new();
+        let mut removed=0;
         self.edit(|b| {
-            let canonical=b.device(id)?.id.clone();
-            for profile in b.devices.iter().filter(|p|p.id==canonical||p.redirect.as_deref()==Some(&canonical)) {
+            let canonical=ids.iter().map(|id|b.device(id).map(|p|p.id.clone()))
+                .collect::<Result<std::collections::BTreeSet<_>>>()?;
+            removed=canonical.len();
+            for profile in b.devices.iter().filter(|p|canonical.contains(&p.id)||p.redirect.as_ref().is_some_and(|id|canonical.contains(id))) {
                 if let Some(preview)=&profile.preview {images.push(preview.id.clone());}
             }
-            b.devices.retain(|p|p.id!=canonical&&p.redirect.as_deref()!=Some(&canonical));Ok(())
+            b.devices.retain(|p|!canonical.contains(&p.id)&&!p.redirect.as_ref().is_some_and(|id|canonical.contains(id)));Ok(())
         })?;
         for id in images{let _=std::fs::remove_file(self.directory.join("previews").join(format!("{id}.jpg")));}
-        Ok(())
+        Ok(removed)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn device_reorder_and_batch_forget_preserve_fresh_records_and_apply_atomically() {
+        let root=std::env::temp_dir().join(format!("eclipse-device-management-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let profiles:Vec<_>=(1..=3).map(|i|Profile::new(&format!("Device {i}"),Destination::Ip{address:format!("192.0.2.{i}:48998"),legacy_device:None})).collect();
+        for profile in &profiles {store.save_device(profile.clone()).unwrap();}
+        let mut fresh=profiles[2].clone();fresh.name="Renamed elsewhere".into();store.save_device(fresh).unwrap();
+        store.reorder_device(&profiles[0].id,&profiles[2].id,true).unwrap();
+        let reopened=Store::open(&root).unwrap();
+        let book=reopened.read().unwrap();
+        assert_eq!(book.devices.iter().map(|p|p.id.as_str()).collect::<Vec<_>>(),vec![profiles[1].id.as_str(),profiles[2].id.as_str(),profiles[0].id.as_str()]);
+        assert_eq!(book.devices[1].name,"Renamed elsewhere");
+        let path=root.join("connections.json");let unchanged=std::fs::read(&path).unwrap();
+        assert!(store.forget_many(&[profiles[0].id.clone(),uuid::Uuid::new_v4().to_string()]).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),unchanged);
+        assert_eq!(store.forget_many(&[profiles[0].id.clone(),profiles[2].id.clone()]).unwrap(),2);
+        assert_eq!(reopened.read().unwrap().devices[0].id,profiles[1].id);
+        assert_eq!(reopened.read().unwrap().devices.len(),1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn host_output_mute_defaults_on_for_older_settings_and_opt_out_survives_save() {
         let mut old=serde_json::to_value(Sharing::default()).unwrap();

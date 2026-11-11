@@ -2066,5 +2066,21 @@
   "{scope} 端口规则缺失或受限，可点击修复补齐双栈规则": "{scope} port rules are missing or restricted; use Repair to add dual-stack rules",
   "为当前程序补齐 IPv4 和 IPv6 入站规则，仅开放专用/域网络的服务、发现及串流端口。已有阻止规则和公用网络设置保持不变。": "Add missing IPv4 and IPv6 inbound rules for this program’s service, discovery and streaming ports on Private/Domain networks. Existing Block rules and Public network settings are preserved.",
   "启用 IPv6": "Enable IPv6",
-  "允许通过 IPv6 地址直连，默认开启。关闭后仅监听 IPv4；保存并重启服务后生效。": "Allow direct connections over IPv6 (enabled by default). Turn off to listen on IPv4 only; save and restart the service to apply."
+  "允许通过 IPv6 地址直连，默认开启。关闭后仅监听 IPv4；保存并重启服务后生效。": "Allow direct connections over IPv6 (enabled by default). Turn off to listen on IPv4 only; save and restart the service to apply.",
+  "隐藏设备": "Hide devices",
+  "显示设备": "Show devices",
+  "设备管理": "Manage devices",
+  "设备图标大小": "Device icon size",
+  "设备文字大小": "Device text size",
+  "已选择 {} 台设备": "{} devices selected",
+  "全选": "Select all",
+  "取消选择": "Clear selection",
+  "删除所选": "Delete selected",
+  "点击设备进行选择，拖动设备调整顺序。": "Click devices to select them; drag to reorder.",
+  "删除所选 {} 台设备？仅移除本地记录，现有串流继续运行。": "Delete {} selected devices? Only local records are removed; existing streams keep running.",
+  "确认删除": "Confirm deletion",
+  "已删除所选设备": "Selected devices deleted",
+  "设备顺序已保存": "Device order saved",
+  "设备管理操作失败：{error:#}": "Device management failed: {error:#}",
+  "选择设备 {}": "Select device {}"
 }

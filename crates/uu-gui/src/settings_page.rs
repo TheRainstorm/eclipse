@@ -344,7 +344,7 @@ impl SoftwareSection {
         let defaults=Settings::default();
         match self {
             Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;s.close_to_tray=defaults.close_to_tray;}
-            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.color_theme=defaults.color_theme;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
+            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.color_theme=defaults.color_theme;s.device_icon_size=defaults.device_icon_size;s.device_text_size=defaults.device_text_size;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
             Self::VirtualDisplays=>s.virtual_display_presets=defaults.virtual_display_presets,
@@ -402,6 +402,14 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
             note(ui,uu_i18n::text("保存后应用到主窗口和串流窗口。"));
         });
         group(ui,uu_i18n::text("设备页外观"),|ui| {
+        ui.horizontal(|ui| {
+            ui.label(uu_i18n::text("设备图标大小"));
+            crate::theme::slider(ui, egui::Slider::new(&mut s.device_icon_size, super::settings::DEVICE_ICON_RANGE).suffix(" px"));
+        });
+        ui.horizontal(|ui| {
+            ui.label(uu_i18n::text("设备文字大小"));
+            crate::theme::slider(ui, egui::Slider::new(&mut s.device_text_size, super::settings::DEVICE_TEXT_RANGE).suffix(" px"));
+        });
         crate::theme::switch(ui,&mut s.wallpaper_enabled,uu_i18n::text("显示背景壁纸"));
         ui.horizontal(|ui| {
             ui.label(uu_i18n::text("壁纸图片来源"));
