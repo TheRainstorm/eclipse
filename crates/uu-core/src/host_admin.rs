@@ -148,6 +148,7 @@ impl Service {
                 let mut next=settings;
                 next.name=active.name.clone();
                 next.ip_enabled=active.ip_enabled;
+                next.ipv6_enabled=active.ipv6_enabled;
                 next.service_port=active.service_port;
                 next.discovery_port=active.discovery_port;
                 next.plugin_services=active.plugin_services.clone();
@@ -199,6 +200,7 @@ mod tests {
         let mut changed=server.saved;changed.audio=false;
         changed.virtual_display_limit=1;
         changed.service_port=changed.service_port.saturating_sub(1);
+        changed.ipv6_enabled=false;
         let initial=service.defaults();
         let switching=uuid::Uuid::new_v4().to_string();
         context.access.sessions.reserve_configuration_switch(&switching,false).unwrap();
@@ -212,6 +214,8 @@ mod tests {
         assert!(!live.audio,"new media admissions must use the saved default without restarting the host");
         assert_eq!(live.virtual_display_limit,1);
         assert_eq!(live.service_port,initial.service_port,"a saved port must not claim the listener has moved");
+        assert!(!store.read().unwrap().sharing.ipv6_enabled);
+        assert!(live.ipv6_enabled,"a saved IPv6 setting must not claim the listener has changed before restart");
         assert!(initial.audio,"already admitted media retains its immutable settings");
         assert!(service.execute(&context,Request::Save{revision:server.revision,settings:Sharing::default(),restart:false}).unwrap_err().to_string().contains("其它窗口"));
         trust.revoke(&client.id()).unwrap();

@@ -652,12 +652,13 @@ mod tests {
     fn media_draft_does_not_restore_old_connection_ports_or_enable_flags() {
         let mut h=Harness::new();
         h.workspace.draft.audio=false;
-        h.workspace.update_connections(|s|{s.ip_enabled=false;s.plugin_services=vec!["example-addon".into()];s.service_port=51001;s.discovery_port=51002;});
+        h.workspace.update_connections(|s|{s.ip_enabled=false;s.ipv6_enabled=false;s.plugin_services=vec!["example-addon".into()];s.service_port=51001;s.discovery_port=51002;});
         assert!(h.workspace.save_sharing());
         assert!(!h.workspace.server_dirty());
         let book=h.workspace.store.as_ref().unwrap().read().unwrap();
         assert!(!book.sharing.audio);
         assert!(!book.sharing.ip_enabled && book.sharing.plugin_services==vec!["example-addon".to_owned()]);
+        assert!(!book.sharing.ipv6_enabled);
         assert_eq!((book.sharing.service_port,book.sharing.discovery_port),(51001,51002));
     }
     #[test]
@@ -1014,6 +1015,7 @@ impl Workspace {
             .and_then(|s| s.edit(|book| {
                 let mut media = self.draft.clone();
                 media.ip_enabled = book.sharing.ip_enabled;
+                media.ipv6_enabled = book.sharing.ipv6_enabled;
                 media.plugin_services = book.sharing.plugin_services.clone();
                 media.service_port = book.sharing.service_port;
                 media.discovery_port = book.sharing.discovery_port;
@@ -1845,6 +1847,12 @@ impl Workspace {
                 }
             });
             muted(ui,uu_i18n::text("同一网络或已有路由时直接连接，默认开启。"));
+            let mut ipv6 = self.book.sharing.ipv6_enabled;
+            if ui.add_enabled_ui(!locked && self.book.sharing.ip_enabled, |ui| {
+                crate::theme::switch(ui, &mut ipv6, uu_i18n::text("启用 IPv6"))
+            }).inner.on_hover_text(uu_i18n::text("允许通过 IPv6 地址直连，默认开启。关闭后仅监听 IPv4；保存并重启服务后生效。")).changed() {
+                self.update_connections(|s| s.ipv6_enabled = ipv6);
+            }
             let mut tcp=self.book.sharing.service_port;
             let mut udp=self.book.sharing.discovery_port;
             ui.add_enabled_ui(!locked, |ui| {
@@ -1859,7 +1867,7 @@ impl Workspace {
             self.endpoint_state(ui,uu_i18n::text("IP 直连"));
             ui.collapsing(uu_i18n::text("本机地址"),|ui| {
                 if let Ok(addresses)=super::native_interfaces::enumerate() {
-                    for address in addresses {
+                    for address in addresses.into_iter().filter(|a| a.ip.is_ipv4() || self.book.sharing.ipv6_enabled) {
                         let endpoint=std::net::SocketAddr::new(address.ip,self.book.sharing.service_port).to_string();
                         ui.horizontal(|ui| {ui.monospace(&endpoint); if ui.add(crate::theme::secondary_button(uu_i18n::text("复制")).small()).clicked(){ui.ctx().copy_text(endpoint);}});
                     }

@@ -235,11 +235,12 @@ impl Runner {
                 audio: sharing.audio_source(),
                 clipboard: factory.clone(),
             };
-            match lan::Server::bind_dual_stack(
+            match lan::Server::bind_all_interfaces(
                 lan_config,
                 stop.clone(),
                 lan_events,
                 access.clone(),
+                sharing.ipv6_enabled,
             )
             .await
             {
@@ -347,6 +348,41 @@ async fn preparation_worker(mut stop:watch::Receiver<bool>, mut shutdown:watch::
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn ipv6_setting_controls_the_listener_while_preserving_ipv4() {
+        for ipv6 in [false, true] {
+            let root = std::env::temp_dir().join(format!("eclipse-ipv6-setting-{}", uuid::Uuid::new_v4()));
+            let config = Config { data_dir: root.join("data"), state_dir: root.join("state"), signaling_host: String::new() };
+            let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = tcp.local_addr().unwrap().port();
+            let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let mut book = Book::default();
+            book.sharing.ipv6_enabled = ipv6;
+            book.sharing.service_port = port;
+            book.sharing.discovery_port = udp.local_addr().unwrap().port();
+            let store = Store::open(config.at("device-trust")).unwrap();
+            store.sharing(book.sharing).unwrap();
+            let book = store.read().unwrap();
+            let trust = TrustStore::open(config.at("device-trust")).unwrap();
+            let prepared = prepare_service(config, book, trust, None, || Ok(()), |_| {}).unwrap();
+            let state = prepared.endpoints[0].state.clone();
+            drop((tcp, udp));
+            let (stop, receive) = watch::channel(false);
+            let running = tokio::spawn(prepared.runner.run_with_startup(receive, |_, _| Ok(None)));
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while matches!(*state.borrow(), EndpointStatus::Starting) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }).await.unwrap();
+            assert!(matches!(*state.borrow(), EndpointStatus::Ready));
+            assert!(lan::inspect(&format!("127.0.0.1:{port}")).await.is_ok());
+            let v6 = lan::inspect(&format!("[::1]:{port}")).await;
+            assert_eq!(v6.is_ok(), ipv6, "the saved setting must control actual IPv6 acceptance");
+            stop.send_replace(true);
+            tokio::time::timeout(Duration::from_secs(5), running).await.unwrap().unwrap().unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
     #[tokio::test]
     async fn installed_host_keeps_management_and_identity_when_entrances_are_unavailable() {
         for conflict in [false,true] {

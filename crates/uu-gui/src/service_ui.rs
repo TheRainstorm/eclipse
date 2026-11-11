@@ -916,6 +916,9 @@ impl Manager {
                             &mut self.draft.ip_enabled,
                             uu_i18n::text("IP 直连"),
                         );
+                        ui.add_enabled_ui(self.draft.ip_enabled, |ui| {
+                            crate::theme::switch(ui, &mut self.draft.ipv6_enabled, uu_i18n::text("启用 IPv6"))
+                        }).inner.on_hover_text(uu_i18n::text("允许通过 IPv6 地址直连，默认开启。关闭后仅监听 IPv4；保存并重启服务后生效。"));
                         ui.horizontal_wrapped(|ui| {
                             ui.label(uu_i18n::text("服务端口"));
                             crate::theme::number_input(

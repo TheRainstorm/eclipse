@@ -325,14 +325,14 @@ impl Server {
         access:Arc<crate::shared_host::Access>)->Result<(Self,Handle)> {
         Self::bind_inner(config,stop,events,Some(access),false).await
     }
-    /// The unified host serves both address families with the same identity,
+    /// The unified host always serves IPv4 and optionally IPv6 with one identity,
     /// grants, admission limits and session owner. Explicit CLI binds stay local
     /// to the requested interface and family.
-    pub(crate) async fn bind_dual_stack(config:Config,stop:watch::Receiver<bool>,events:mpsc::UnboundedSender<Event>,
-        access:Arc<crate::shared_host::Access>)->Result<(Self,Handle)> {
+    pub(crate) async fn bind_all_interfaces(config:Config,stop:watch::Receiver<bool>,events:mpsc::UnboundedSender<Event>,
+        access:Arc<crate::shared_host::Access>,ipv6:bool)->Result<(Self,Handle)> {
         ensure!(config.bind.ip() == IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-            "dual-stack host requires the IPv4 wildcard address");
-        Self::bind_inner(config,stop,events,Some(access),true).await
+            "shared IP host requires the IPv4 wildcard address");
+        Self::bind_inner(config,stop,events,Some(access),ipv6).await
     }
     async fn bind_inner(config:Config,stop:watch::Receiver<bool>,events:mpsc::UnboundedSender<Event>,
         access:Option<Arc<crate::shared_host::Access>>,dual_stack:bool)->Result<(Self,Handle)> {

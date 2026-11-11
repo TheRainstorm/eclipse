@@ -65,6 +65,7 @@ pub struct Sharing {
     #[serde(flatten)]
     pub extensions: std::collections::BTreeMap<String,serde_json::Value>,
     pub ip_enabled: bool,
+    pub ipv6_enabled: bool,
     pub auto_start: bool,
     /// Kept for older configuration readers. Native display definitions use
     /// the fixed MAX_DISPLAY_LIMIT budget; this value is no longer editable.
@@ -90,6 +91,7 @@ impl Default for Sharing {
             plugin_services: Vec::new(),
             extensions: Default::default(),
             ip_enabled: true,
+            ipv6_enabled: true,
             auto_start: false,
             virtual_display_limit: crate::virtual_display::DEFAULT_DISPLAY_LIMIT,
         }
@@ -1071,14 +1073,17 @@ mod tests {
         let initial=Sharing::default();initial.validate().unwrap();
         assert_eq!(initial.rate_control,RateMode::Vbr);
         assert!(initial.clipboard);
+        assert!(initial.ipv6_enabled);
         let legacy:Sharing=serde_json::from_value(serde_json::json!({"name":"generated"})).unwrap();
         assert_eq!(legacy.codec,None);assert_eq!(legacy.rate_control,RateMode::Cbr);
         assert!(!legacy.clipboard,"a missing legacy field must not grant clipboard access");
+        assert!(legacy.ipv6_enabled,"older configurations retain dual-stack IP sharing by default");
         assert_eq!(legacy.native().video_policy.unwrap().preferred_codec,None);
         let explicit:Sharing=serde_json::from_value(serde_json::json!({"name":"generated","codec":"h264"})).unwrap();
         assert_eq!(explicit.codec,Some(native::VideoCodec::H264));
-        let mut sharing=legacy;sharing.codec=Some(native::VideoCodec::Av1);sharing.rate_control=RateMode::Vbr;sharing.bitrate_mbps=20;sharing.peak_bitrate_mbps=35;
+        let mut sharing=legacy;sharing.codec=Some(native::VideoCodec::Av1);sharing.rate_control=RateMode::Vbr;sharing.bitrate_mbps=20;sharing.peak_bitrate_mbps=35;sharing.ipv6_enabled=false;
         let restored:Sharing=serde_json::from_value(serde_json::to_value(&sharing).unwrap()).unwrap();restored.validate().unwrap();
+        assert!(!restored.ipv6_enabled,"an explicitly disabled IPv6 setting must survive storage");
         assert_eq!(restored.native().codec,native::VideoCodec::Av1);assert_eq!(restored.native().rate_control,uu_media::encoder::RateControl::Vbr{peak_kbps:36000});
         sharing.peak_bitrate_mbps=19;sharing.bitrate_mbps=u32::MAX;sharing.fps=1;sharing.max_bitrate_mbps=1;
         sharing.validate().unwrap();

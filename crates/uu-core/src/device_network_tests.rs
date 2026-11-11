@@ -25,7 +25,7 @@ async fn dual_stack_bind_failure_releases_the_other_family() {
     config.bind = (std::net::Ipv4Addr::UNSPECIFIED, port).into();
     let (_, rx) = watch::channel(false);
     let (events, _) = mpsc::unbounded_channel();
-    let error = lan::Server::bind_dual_stack(config, rx, events, access).await.err().unwrap();
+    let error = lan::Server::bind_all_interfaces(config, rx, events, access, true).await.err().unwrap();
     assert!(format!("{error:#}").contains("IPv6"));
     let _released = crate::listen_socket::tcp((std::net::Ipv4Addr::UNSPECIFIED, port).into()).unwrap();
     std::fs::remove_dir_all(root).unwrap();
@@ -43,7 +43,7 @@ async fn dual_stack_host_authenticates_and_streams_both_families_on_one_service_
     config.bind = "0.0.0.0:0".parse().unwrap();
     let (stop, rx) = watch::channel(false);
     let (events, _) = mpsc::unbounded_channel();
-    let (server, _) = lan::Server::bind_dual_stack(config, rx, events, access.clone()).await.unwrap();
+    let (server, _) = lan::Server::bind_all_interfaces(config, rx, events, access.clone(), true).await.unwrap();
     let port = server.address().unwrap().port();
     let serving = tokio::spawn(server.run());
     for ip in ["127.0.0.1", "::1"] {
