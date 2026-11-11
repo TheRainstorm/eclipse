@@ -120,9 +120,19 @@ impl Invitation {
     pub(crate) fn from_authenticated_broker(
         mut self,
         requested_at: Instant,
+        broker_ip: IpAddr,
         observed_client_ip: Option<IpAddr>,
     ) -> Result<Self> {
         self.validate_format()?;
+        ensure!(
+            !broker_ip.is_unspecified() && !broker_ip.is_multicast()
+                && broker_ip.is_ipv4() == self.address.is_ipv4(),
+            "invalid authenticated broker address"
+        );
+        // The broker's local interface is private behind a port forward.
+        // Keep its allocated port and pinned certificate, but connect through
+        // the same authenticated peer as the original IP connection.
+        self.address.set_ip(broker_ip);
         if let Some(ip) = observed_client_ip {
             ensure!(
                 !ip.is_unspecified()
@@ -267,7 +277,8 @@ pub async fn connect(
     invitation: &Invitation,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
     invitation.validate()?;
-    timeout(TIMEOUT, async {
+    let mut phase = "TCP connection (check streaming TCP ports 49000–49009 and router forwarding)";
+    let result = timeout(TIMEOUT, async {
         let mut roots = rustls::RootCertStore::empty();
         roots
             .add(CertificateDer::from(invitation.certificate.clone()))
@@ -282,10 +293,12 @@ pub async fn connect(
             .await
             .context("cannot reach native host")?;
         socket.set_nodelay(true)?;
+        phase = "TLS handshake";
         let mut stream = TlsConnector::from(Arc::new(tls))
             .connect(ServerName::try_from(TLS_NAME)?, socket)
             .await
             .context("native host certificate verification failed")?;
+        phase = "stream authorization";
         stream.write_all(&invitation.token).await?;
         stream.flush().await?;
         let response = stream.read_u8().await?;
@@ -294,8 +307,8 @@ pub async fn connect(
         }
         Ok(stream)
     })
-    .await
-    .context("native pairing timed out")?
+    .await;
+    result.with_context(|| format!("native pairing timed out during {phase}"))?
 }
 
 #[cfg(test)]
@@ -330,6 +343,35 @@ mod tests {
         let credentials =
             HostCredentials::new(listener.local_addr().unwrap(), Duration::from_secs(60)).unwrap();
         (listener, credentials)
+    }
+    #[tokio::test]
+    async fn forwarded_broker_keeps_the_reachable_route_and_pinned_tls_identity() {
+        let (listener, credentials) = host().await;
+        let private = listener.local_addr().unwrap();
+        let public_ip = "127.0.0.2".parse().unwrap();
+        let forward = TcpListener::bind(SocketAddr::new(public_ip, private.port())).await.unwrap();
+        let original = credentials.invitation().clone();
+        let invitation = original.clone().from_authenticated_broker(Instant::now(), public_ip, None).unwrap();
+        assert_eq!(invitation.address(), forward.local_addr().unwrap());
+        assert_eq!(invitation.certificate, original.certificate);
+        assert_eq!(invitation.token, original.token);
+        assert_eq!(original.address(), private);
+        let forwarding = tokio::spawn(async move {
+            let (mut client, _) = forward.accept().await.unwrap();
+            let mut server = TcpStream::connect(private).await.unwrap();
+            tokio::io::copy_bidirectional(&mut client, &mut server).await.unwrap();
+        });
+        let host = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut stream = credentials.accept(socket).await.unwrap();
+            stream.write_all(b"forwarded").await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+        let mut stream = connect(&invitation).await.unwrap();
+        let mut received = [0;9]; stream.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"forwarded");
+        drop(stream); host.await.unwrap();
+        timeout(Duration::from_secs(2), forwarding).await.unwrap().unwrap();
     }
     #[tokio::test]
     async fn actual_tls13_pairing_allows_only_the_invited_host_and_capability() {
@@ -384,7 +426,7 @@ mod tests {
         let invitation = credentials
             .invitation()
             .clone()
-            .from_authenticated_broker(Instant::now(), None)
+            .from_authenticated_broker(Instant::now(), "127.0.0.1".parse().unwrap(), None)
             .unwrap();
         credentials.invitation.expires_at = now().unwrap() - 1;
         let task = tokio::spawn(async move {
@@ -406,12 +448,12 @@ mod tests {
         assert!(invitation.validate().is_err());
         let fresh = invitation
             .clone()
-            .from_authenticated_broker(Instant::now(), None)
+            .from_authenticated_broker(Instant::now(), "127.0.0.1".parse().unwrap(), None)
             .unwrap();
         assert!(fresh.validate().is_ok());
         let observed = invitation
             .clone()
-            .from_authenticated_broker(Instant::now(), Some("127.0.0.2".parse().unwrap()))
+            .from_authenticated_broker(Instant::now(), "127.0.0.1".parse().unwrap(), Some("127.0.0.2".parse().unwrap()))
             .unwrap();
         assert_eq!(
             observed.observed_client_ip(),
@@ -429,7 +471,7 @@ mod tests {
         wire["broker_deadline"] = serde_json::json!("2099-01-01");
         assert!(serde_json::from_value::<Invitation>(wire).is_err());
         assert!(invitation
-            .from_authenticated_broker(Instant::now() - Duration::from_secs(31), None)
+            .from_authenticated_broker(Instant::now() - Duration::from_secs(31), "127.0.0.1".parse().unwrap(), None)
             .is_err());
     }
     #[tokio::test]

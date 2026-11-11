@@ -41,6 +41,8 @@ use webrtc::{
 
 #[cfg(all(test,target_os="linux"))]
 pub(crate) mod socket_lifetime_test;
+#[cfg(all(test,target_os="linux"))]
+mod forwarded_test;
 
 // ICMP port-unreachable replies during ICE probing are not a teardown of this
 // connectionless socket. Otherwise Windows reports 10054 to the mux, whose
@@ -99,10 +101,18 @@ impl AudioSender {
     }
 }
 
-fn validate_candidates(sdp: &str, peer_ip: IpAddr) -> Result<()> {
+/// IP connections use the authenticated TCP peer as their only media IP.
+/// A host behind port forwarding cannot advertise its public interface itself;
+/// retaining its private candidate would either fail or contact another LAN.
+fn pin_candidates(sdp: &str, peer_ip: IpAddr) -> Result<String> {
+    ensure!(!peer_ip.is_unspecified() && !peer_ip.is_multicast(), "invalid native signaling peer");
     let mut candidates = 0usize;
-    for line in sdp.lines().filter(|line| line.starts_with("a=candidate:")) {
-        let words: Vec<_> = line.split_whitespace().collect();
+    let mut pinned = String::with_capacity(sdp.len());
+    for line in sdp.lines() {
+        let Some(raw) = line.strip_prefix("a=candidate:") else {
+            pinned.push_str(line); pinned.push_str("\r\n"); continue;
+        };
+        let mut words: Vec<_> = line.split_whitespace().collect();
         ensure!(
             words.len() >= 8
                 && words[2].eq_ignore_ascii_case("udp")
@@ -113,17 +123,21 @@ fn validate_candidates(sdp: &str, peer_ip: IpAddr) -> Result<()> {
         let address: IpAddr = words[4]
             .parse()
             .context("native LAN candidate needs a numeric address")?;
-        ensure!(
-            address == peer_ip,
-            "native LAN candidate must match the authenticated signaling peer"
-        );
+        ensure!(!address.is_unspecified() && !address.is_multicast()
+            && address.is_ipv4() == peer_ip.is_ipv4(), "invalid native IP candidate address");
+        // Let the existing ICE parser validate component/priority/port too.
+        webrtc::ice::candidate::candidate_base::unmarshal_candidate(raw)
+            .context("invalid native IP candidate")?;
+        let peer = peer_ip.to_string();
+        words[4] = &peer;
+        pinned.push_str(&words.join(" ")); pinned.push_str("\r\n");
         candidates += 1;
     }
     ensure!(
         candidates > 0,
         "native LAN peer did not provide a media candidate"
     );
-    Ok(())
+    Ok(pinned)
 }
 
 fn h264_capability() -> RTCRtpCodecCapability {
@@ -272,7 +286,7 @@ impl NativePeer {
     }
     /// The optional address comes from the authenticated broker's observation
     /// of this client's TCP connection. UDP stays bound to the local interface;
-    /// remote candidates still must match the authenticated signaling peer.
+    /// remote candidate IPs are pinned to the authenticated signaling peer.
     pub async fn new_with_advertised(
         local_ip: IpAddr,
         advertised_ip: IpAddr,
@@ -647,8 +661,8 @@ impl NativePeer {
         if offer {self.diagnostics.offer(&description);}
         Ok(description)
     }
-    pub async fn remote(&self, description: RTCSessionDescription, peer_ip: IpAddr) -> Result<()> {
-        validate_candidates(&description.sdp, peer_ip)?;
+    pub async fn remote(&self, mut description: RTCSessionDescription, peer_ip: IpAddr) -> Result<()> {
+        description.sdp = pin_candidates(&description.sdp, peer_ip)?;
         if description.sdp_type==webrtc::peer_connection::sdp::sdp_type::RTCSdpType::Offer {self.diagnostics.offer(&description);}
         self.repairs.configure(&description.sdp);
         self.fec.remote(&self.pc, &description).await?;
@@ -973,15 +987,16 @@ mod tests {
         host.close().await;viewer.close().await;
     }
     #[tokio::test]
-    async fn authenticated_observed_address_changes_advertisement_without_relaxing_peer_validation() {
+    async fn authenticated_observed_address_changes_advertisement_and_pins_the_route() {
         let local = "127.0.0.1".parse().unwrap();
         let observed = "127.0.0.2".parse().unwrap();
         let peer = NativePeer::new_with_advertised(local, observed, None, false).await.unwrap();
         let (frames, _receiver) = crate::media::frame_channel();
         peer.receiver(frames, Arc::new(MediaStats::default())).await.unwrap();
         let offer = peer.description(true).await.unwrap();
-        assert!(validate_candidates(&offer.sdp, observed).is_ok());
-        assert!(validate_candidates(&offer.sdp, local).is_err());
+        assert!(pin_candidates(&offer.sdp, observed).unwrap().contains("127.0.0.2"));
+        let pinned = pin_candidates(&offer.sdp, local).unwrap();
+        assert!(!pinned.contains("127.0.0.2"));
         peer.close().await;
         assert!(NativePeer::new_with_advertised(local, "0.0.0.0".parse().unwrap(), None, false).await.is_err());
         assert!(NativePeer::new_with_advertised(local, "224.0.0.1".parse().unwrap(), None, false).await.is_err());
@@ -991,17 +1006,22 @@ mod tests {
     fn media_candidates_cannot_redirect_a_paired_session_to_another_host() {
         let peer = "127.0.0.1".parse().unwrap();
         let prefix = "a=candidate:1 1 udp 1 ";
-        assert!(
-            validate_candidates(&format!("{prefix}127.0.0.1 12345 typ host\r\n"), peer).is_ok()
-        );
+        assert!(pin_candidates(&format!("{prefix}127.0.0.1 12345 typ host\r\n"), peer).is_ok());
+        let redirected = pin_candidates(&format!("{prefix}127.0.0.2 12345 typ host\r\n"), peer).unwrap();
+        assert_eq!(redirected, format!("{prefix}127.0.0.1 12345 typ host\r\n"));
         for candidate in [
-            "127.0.0.2 12345 typ host",
             "localhost 12345 typ host",
             "127.0.0.1 12345 typ relay",
+            "127.0.0.1 65536 typ host",
+            "0.0.0.0 12345 typ host",
+            "224.0.0.1 12345 typ host",
+            "::1 12345 typ host",
         ] {
-            assert!(validate_candidates(&format!("{prefix}{candidate}\r\n"), peer).is_err());
+            assert!(pin_candidates(&format!("{prefix}{candidate}\r\n"), peer).is_err());
         }
-        assert!(validate_candidates("v=0\r\n", peer).is_err());
+        assert!(pin_candidates("v=0\r\n", peer).is_err());
+        let v6 = pin_candidates("a=candidate:1 1 udp 1 fd00::2 49001 typ host\r\n", "2001:db8::1".parse().unwrap()).unwrap();
+        assert_eq!(v6, "a=candidate:1 1 udp 1 2001:db8::1 49001 typ host\r\n");
     }
 
     #[tokio::test]

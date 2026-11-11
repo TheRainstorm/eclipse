@@ -835,7 +835,7 @@ pub async fn connect_device(endpoint:&str,store:&crate::device_trust::TrustStore
         _=>anyhow::bail!("{}", uu_i18n::format!("被控端未确认设备连接")),
     };
     ensure!(peer_id==remote.device.id() && invitation.is_some()==media,"{}", uu_i18n::format!("设备串流授权响应不匹配"));
-    let invitation=invitation.map(|v|v.from_authenticated_broker(requested_at,observed_client_ip)).transpose()?;
+    let invitation=invitation.map(|v|v.from_authenticated_broker(requested_at,found.address.ip(),observed_client_ip)).transpose()?;
     Ok(DeviceConnection {invitation,peer:Some(remote.device)})
 }
 
@@ -949,7 +949,7 @@ pub async fn connect(device: &Device, client_id: &str) -> Result<Invitation> {
         Reply::Session {
             invitation,
             observed_client_ip,
-        } => invitation.from_authenticated_broker(requested_at, observed_client_ip),
+        } => invitation.from_authenticated_broker(requested_at, found.address.ip(), observed_client_ip),
         Reply::Error { message } => Err(anyhow::anyhow!(message)),
         _ => Err(anyhow::anyhow!("{}", uu_i18n::format!("连接响应无效"))),
     }
