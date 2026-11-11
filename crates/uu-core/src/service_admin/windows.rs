@@ -376,11 +376,11 @@ pub async fn request_owner(request: Request) -> Result<Response> {
     let mutation = request.is_mutation();
     let result = async {
         super::write(&mut stream, &request).await?;
-        let response:Response=if mutation {
-            super::read(&mut stream).await?
-        } else {
-            tokio::time::timeout(Duration::from_secs(100),super::read(&mut stream)).await
+        let response:Response=if let Some(wait) = request.response_timeout() {
+            tokio::time::timeout(wait,super::read(&mut stream)).await
                 .context("后台服务响应超时，请刷新确认结果")??
+        } else {
+            super::read(&mut stream).await?
         };
         match response {
             Response::SubmittedUnknown{message}=>Err(super::SubmittedUnknown(message).into()),
@@ -448,11 +448,11 @@ pub async fn request(request: Request) -> Result<Response> {
     // Once accepted, mutations run to an explicit result. Dropping a timeout
     // cannot cancel blocking OS work or a durable configuration write, and
     // must not encourage the frontend to replay a still-running operation.
-    if mutation {
-        super::read(&mut pipe).await.map_err(|error| super::SubmittedUnknown(format!("{error:#}")).into())
-    } else {
-        tokio::time::timeout(Duration::from_secs(5), super::read(&mut pipe))
+    if let Some(wait) = request.response_timeout() {
+        tokio::time::timeout(wait, super::read(&mut pipe))
             .await.context(uu_i18n::text("后台服务管理请求超时"))?
+    } else {
+        super::read(&mut pipe).await.map_err(|error| super::SubmittedUnknown(format!("{error:#}")).into())
     }
 }
 pub struct ServiceHandle(pub SC_HANDLE);

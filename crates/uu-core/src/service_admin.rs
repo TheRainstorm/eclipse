@@ -55,6 +55,14 @@ pub enum Request {
     Restart,
 }
 impl Request {
+    pub fn response_timeout(&self) -> Option<std::time::Duration> {
+        if let Self::Scoped { request, .. } = self { return request.response_timeout(); }
+        if self.is_mutation() { return None; }
+        Some(match self {
+            Self::Firewall { repair: false } => crate::firewall::OPERATION_TIMEOUT + std::time::Duration::from_secs(10),
+            _ => std::time::Duration::from_secs(5),
+        })
+    }
     /// Queries may time out safely. An accepted mutation must settle or report
     /// an unknown result; disconnecting its frontend never cancels the work.
     pub fn is_mutation(&self) -> bool {
@@ -224,6 +232,16 @@ pub mod windows;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn firewall_queries_outlive_os_work_at_every_management_hop() {
+        let inspect = Request::Firewall { repair: false };
+        let scoped = Request::Scoped { profile: "fixture".into(), request: Box::new(inspect.clone()) };
+        assert!(inspect.response_timeout().unwrap() > crate::firewall::OPERATION_TIMEOUT);
+        assert_eq!(scoped.response_timeout(), inspect.response_timeout());
+        assert_eq!(Request::Status.response_timeout(), Some(std::time::Duration::from_secs(5)));
+        assert_eq!(Request::Firewall { repair: true }.response_timeout(), None);
+        assert_eq!(Request::Scoped { profile: "fixture".into(), request: Box::new(Request::Restart) }.response_timeout(), None);
+    }
     #[test]
     fn independent_profiles_reject_cross_profile_and_nested_management() {
         let scoped = |id:&str, request| Request::Scoped { profile:id.into(), request:Box::new(request) };
