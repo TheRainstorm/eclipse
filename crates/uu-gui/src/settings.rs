@@ -126,7 +126,7 @@ impl Default for Settings {
         Self { client: ClientSettings::default(), application_hotkeys:None, theme_preference:super::theme::DEFAULT_PREFERENCE, color_theme:Default::default(), language:uu_i18n::Language::default(), onboarding_dismissed:false,lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
-            device_view:DeviceView::Cards, devices_hidden:false, device_icon_size:230.0, device_text_size:17.0, wallpaper_enabled:true, app_autostart:true,close_to_tray:true,virtual_display_presets:Default::default(),
+            device_view:DeviceView::Cards, devices_hidden:false, device_icon_size:230.0, device_text_size:17.0, wallpaper_enabled:true, app_autostart:false,close_to_tray:true,virtual_display_presets:Default::default(),
             wallpaper_source:WallpaperSource::Anime, wallpaper_refresh:WallpaperRefresh::EveryHours,wallpaper_refresh_hours:24,wallpaper_favorite:None, wallpaper_api:ANIME_WALLPAPER.into() }
     }
 }

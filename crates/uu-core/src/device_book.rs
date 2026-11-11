@@ -66,6 +66,8 @@ pub struct Sharing {
     pub extensions: std::collections::BTreeMap<String,serde_json::Value>,
     pub ip_enabled: bool,
     pub ipv6_enabled: bool,
+    // Older files without this preference must not unexpectedly start sharing.
+    #[serde(default)]
     pub auto_start: bool,
     /// Kept for older configuration readers. Native display definitions use
     /// the fixed MAX_DISPLAY_LIMIT budget; this value is no longer editable.
@@ -92,7 +94,7 @@ impl Default for Sharing {
             extensions: Default::default(),
             ip_enabled: true,
             ipv6_enabled: true,
-            auto_start: false,
+            auto_start: true,
             virtual_display_limit: crate::virtual_display::DEFAULT_DISPLAY_LIMIT,
         }
     }
