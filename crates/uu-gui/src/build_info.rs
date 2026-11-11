@@ -62,6 +62,8 @@ pub fn label() -> String {
     describe(env!("UU_BUILD_COMMIT"), env!("UU_BUILD_DIRTY"), manifest)
 }
 
+pub fn built_at()->&'static str {env!("ECLIPSE_BUILD_TIME")}
+
 fn tooltip(version: &str, tag: &str, commit: &str, status: &str) -> String {
     let mut result = format!("{} v{version}", super::brand::NAME);
     if !tag.is_empty() {
@@ -70,6 +72,7 @@ fn tooltip(version: &str, tag: &str, commit: &str, status: &str) -> String {
     if support::valid_revision(commit) {
         result.push_str(&format!("\nCommit: {commit}"));
     }
+    result.push_str(&uu_i18n::format!("\n构建时间：{}",built_at()));
     result.push('\n');
     result.push_str(status);
     result

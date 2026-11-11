@@ -74,6 +74,9 @@ impl super::App {
             ui.label(uu_i18n::text("构建"));
             ui.add(egui::Label::new(&self.build_label).wrap());
             ui.end_row();
+            ui.label(uu_i18n::text("构建时间"));
+            ui.label(super::build_info::built_at());
+            ui.end_row();
             ui.label(uu_i18n::text("平台"));
             ui.label(format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH));
             ui.end_row();
@@ -88,17 +91,10 @@ impl super::App {
         ui.hyperlink_to("GitHub · Eclipse", REPOSITORY);
         ui.add_space(8.0);
         ui.small(uu_i18n::text("独立开源项目，与所兼容服务的提供方无隶属关系。"));
-        ui.collapsing(uu_i18n::text("诊断信息"), |ui| {
-            ui.label(uu_i18n::text("程序路径"));
-            ui.add(egui::Label::new(&self.executable_path).wrap());
-            if ui.add(crate::theme::secondary_button(uu_i18n::text("复制版本与诊断信息"))).clicked() {
-                ui.output_mut(|output| output.copied_text = uu_i18n::format!(
-                    "{NAME} {}\n构建：{}\n平台：{} / {}\n{REPOSITORY}",
-                    env!("CARGO_PKG_VERSION"), self.build_label,
-                    std::env::consts::OS, std::env::consts::ARCH));
-            }
-            ui.small(uu_i18n::text("复制内容仅含版本、构建、平台与项目链接，不含程序路径或账号信息。"));
-        });
+        if ui.add(crate::theme::secondary_button(uu_i18n::text("复制版本信息"))).clicked() {
+            ui.ctx().copy_text(format!("{}\n{} / {}\n{REPOSITORY}",
+                super::build_info::version_tooltip(&self.build_label),std::env::consts::OS,std::env::consts::ARCH));
+        }
     }
 
     pub(super) fn about_ui(&mut self, ctx: &egui::Context) {

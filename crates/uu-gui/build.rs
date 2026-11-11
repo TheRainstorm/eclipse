@@ -74,6 +74,13 @@ fn embed_provenance() {
 
 fn main() {
     embed_provenance();
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    let built_at=match env::var("SOURCE_DATE_EPOCH") {
+        Ok(value)=>time::OffsetDateTime::from_unix_timestamp(value.parse().expect("SOURCE_DATE_EPOCH must be Unix seconds")).expect("SOURCE_DATE_EPOCH is out of range"),
+        Err(env::VarError::NotPresent)=>time::OffsetDateTime::now_utc(),
+        Err(error)=>panic!("invalid SOURCE_DATE_EPOCH: {error}"),
+    };
+    println!("cargo:rustc-env=ECLIPSE_BUILD_TIME={:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",built_at.year(),built_at.month() as u8,built_at.day(),built_at.hour(),built_at.minute(),built_at.second());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build_support.rs");
     println!("cargo:rerun-if-changed=../../assets/branding/eclipse.ico");

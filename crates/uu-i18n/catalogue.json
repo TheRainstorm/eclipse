@@ -2100,5 +2100,8 @@
   "每 X 小时": "Every X hours",
   "壁纸刷新策略": "Wallpaper refresh",
   " 小时": " hours",
-  "摄影使用 Lorem Picsum，二次元使用 Pipw；自定义 API 可填 JPEG / PNG / WebP 图片地址。首次无缓存时会加载一张，之后遵循刷新策略，失败保留已有壁纸；收藏按顺序轮换。": "Photography uses Lorem Picsum and Anime uses Pipw. Custom APIs may return JPEG, PNG or WebP. An image is loaded if no cache exists; subsequent updates follow the refresh policy. Failures retain the existing image. Favorites rotate in order."
+  "摄影使用 Lorem Picsum，二次元使用 Pipw；自定义 API 可填 JPEG / PNG / WebP 图片地址。首次无缓存时会加载一张，之后遵循刷新策略，失败保留已有壁纸；收藏按顺序轮换。": "Photography uses Lorem Picsum and Anime uses Pipw. Custom APIs may return JPEG, PNG or WebP. An image is loaded if no cache exists; subsequent updates follow the refresh policy. Failures retain the existing image. Favorites rotate in order.",
+  "构建时间": "Build time",
+  "\n构建时间：{}": "\nBuilt at: {}",
+  "复制版本信息": "Copy version information"
 }

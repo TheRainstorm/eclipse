@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Eclipse — open-source remote desktop streaming"
 
+[build-dependencies]
+time = "0.3"
+
 [[bin]]
 name = "eclipse"
 path = "src/main.rs"
