@@ -91,7 +91,7 @@ impl Enrollment {
     }
 }
 fn normalize_url(address: &str) -> Result<String> {
-    let address = address.trim();
+    let address = address.trim().trim_end_matches('/');
     ensure!(
         !address.is_empty() && address.len() <= 2048,
         "连接服务地址无效"
@@ -116,10 +116,16 @@ fn normalize_url(address: &str) -> Result<String> {
 
 /// Re-import updates the same server entry and keeps device routes valid.
 /// Existing streams retain their admitted credential files until retirement.
+pub enum Publication<'a> {
+    /// The host owns its published identity; an existing custom room stays valid.
+    PreserveOrDefault(&'a str),
+    /// A client mirrors the actual host identity confirmed by management IPC.
+    Mirror(&'a str),
+}
 pub fn import(
     directory: &Path,
     invitation: &Enrollment,
-    published_name: &str,
+    publication: Publication<'_>,
     host_enabled: bool,
 ) -> Result<Service> {
     invitation.validate()?;
@@ -137,6 +143,15 @@ pub fn import(
             .as_ref()
             .map(|s| s.id.clone())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let published_name = match publication {
+            Publication::PreserveOrDefault(default) => previous
+                .as_ref()
+                .map(|s| s.published_name.as_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(default),
+            Publication::Mirror(actual) => actual,
+        }
+        .to_owned();
         let token_file = if let Some(service) = previous.as_ref().filter(|s| {
             super::server::read_token(&s.token_file).ok().as_deref()
                 == Some(invitation.token.as_str())
@@ -170,7 +185,7 @@ pub fn import(
             token_file,
             certificate,
             host_enabled,
-            published_name: published_name.into(),
+            published_name,
         };
         if let Some(previous) = book.services.iter_mut().find(|s| s.id == service.id) {
             *previous = service.clone();
@@ -252,8 +267,20 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("eclipse-enrollment-{}", uuid::Uuid::new_v4()));
         let invitation = enrollment();
-        let first = import(&directory, &invitation, "owned-device", true).unwrap();
-        let second = import(&directory, &invitation, "owned-device", true).unwrap();
+        let first = import(
+            &directory,
+            &invitation,
+            Publication::PreserveOrDefault("owned-device"),
+            true,
+        )
+        .unwrap();
+        let second = import(
+            &directory,
+            &invitation,
+            Publication::PreserveOrDefault("owned-device"),
+            true,
+        )
+        .unwrap();
         assert_eq!(first.id, second.id);
         assert_eq!(first.token_file, second.token_file);
         assert_eq!(
@@ -272,7 +299,13 @@ mod tests {
             None,
         )
         .unwrap();
-        let rotated = import(&directory, &next, "owned-device", true).unwrap();
+        let rotated = import(
+            &directory,
+            &next,
+            Publication::PreserveOrDefault("owned-device"),
+            true,
+        )
+        .unwrap();
         assert_eq!(rotated.id, first.id);
         assert_ne!(rotated.token_file, first.token_file);
         assert_eq!(
@@ -281,5 +314,57 @@ mod tests {
         );
         assert!(rotated.host_enabled);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn equivalent_urls_preserve_custom_host_rooms_and_clients_mirror_the_confirmed_room() {
+        let root =
+            std::env::temp_dir().join(format!("eclipse-room-import-{}", uuid::Uuid::new_v4()));
+        let host = root.join("host");
+        let client = root.join("client");
+        let invitation = enrollment();
+        let first = import(
+            &host,
+            &invitation,
+            Publication::PreserveOrDefault("custom-room"),
+            true,
+        )
+        .unwrap();
+        let equivalent = Enrollment::new(
+            invitation.name.clone(),
+            format!("{}/", invitation.url),
+            invitation.token.clone(),
+            None,
+        )
+        .unwrap();
+        let again = import(
+            &host,
+            &equivalent,
+            Publication::PreserveOrDefault("new-public-key-id"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(first.id, again.id);
+        assert_eq!(again.published_name, "custom-room");
+        assert_eq!(
+            Store::open(&host).unwrap().read().unwrap().services.len(),
+            1
+        );
+        let previous = import(
+            &client,
+            &invitation,
+            Publication::PreserveOrDefault("old-client-room"),
+            false,
+        )
+        .unwrap();
+        let mirrored = import(
+            &client,
+            &equivalent,
+            Publication::Mirror(&again.published_name),
+            true,
+        )
+        .unwrap();
+        assert_eq!(mirrored.id, previous.id);
+        assert_eq!(mirrored.published_name, "custom-room");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -11,7 +11,9 @@ use zeroize::Zeroizing;
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Inspect,
-    Import { invitation: Zeroizing<String> },
+    Import {
+        invitation: Zeroizing<String>,
+    },
     Save {
         revision: String,
         entry: Entry,
@@ -57,7 +59,10 @@ pub struct Snapshot {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Imported { pub service_id: String, pub device: String }
+pub struct Imported {
+    pub service_id: String,
+    pub device: String,
+}
 fn revision(services: &[Service]) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(services)?)))
 }
@@ -93,8 +98,9 @@ pub fn execute(directory: &Path, active: &[Service], request: Request) -> Result
             let invitation = crate::internet::enrollment::Enrollment::decode(&invitation)?;
             let trust = crate::device_trust::TrustStore::open(directory)?;
             let device = trust.card(&store.read()?.sharing.name).id();
-            let service = crate::internet::enrollment::import(directory, &invitation, &device, true)?;
-            imported = Some(Imported { service_id: service.id, device });
+            let service = crate::internet::enrollment::import(directory, &invitation,
+                crate::internet::enrollment::Publication::PreserveOrDefault(&device), true)?;
+            imported = Some(Imported { service_id: service.id, device: service.published_name });
             Ok(())
         },
         Request::Save { revision: expected, entry, token, certificate } => store.edit(|book| {
@@ -329,21 +335,73 @@ mod tests {
     #[test]
     fn enrollment_returns_the_host_identity_and_is_idempotent_without_changing_inspect_shape() {
         let fixture = Fixture::new();
-        let invitation = crate::internet::enrollment::Enrollment::new("Fixture service".into(),
-            "wss://signal.example/v1/signal".into(), Zeroizing::new("ab".repeat(32)), None).unwrap().encode().unwrap();
-        let first = fixture.request(&[], Request::Import { invitation: invitation.clone() }).unwrap();
+        let invitation = crate::internet::enrollment::Enrollment::new(
+            "Fixture service".into(),
+            "wss://signal.example/v1/signal".into(),
+            Zeroizing::new("ab".repeat(32)),
+            None,
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let first = fixture
+            .request(
+                &[],
+                Request::Import {
+                    invitation: invitation.clone(),
+                },
+            )
+            .unwrap();
         let published = first.imported.as_ref().unwrap();
-        let host = crate::device_trust::TrustStore::open(&fixture.0).unwrap().card("Fixture host").id();
+        let host = crate::device_trust::TrustStore::open(&fixture.0)
+            .unwrap()
+            .card("Fixture host")
+            .id();
         assert_eq!(published.device, host);
         assert_eq!(first.entries[0].published_name, host);
         assert!(first.entries[0].host_enabled && first.restart_required);
         let active = Store::open(&fixture.0).unwrap().read().unwrap().services;
-        let second = fixture.request(&active, Request::Import { invitation }).unwrap();
+        let second = fixture
+            .request(&active, Request::Import { invitation })
+            .unwrap();
         assert_eq!(second.entries.len(), 1);
         assert_eq!(second.entries[0].id, published.service_id);
         assert!(!second.restart_required);
         let inspect = fixture.request(&active, Request::Inspect).unwrap();
         let serialized = serde_json::to_string(&inspect).unwrap();
         assert!(!serialized.contains("imported") && !serialized.contains(&"ab".repeat(32)));
+    }
+    #[test]
+    fn reimport_confirms_the_existing_custom_room_instead_of_replacing_it_with_a_key_hash() {
+        let fixture = Fixture::new();
+        let saved = fixture
+            .request(
+                &[],
+                save(
+                    fixture.initial().revision,
+                    Entry {
+                        published_name: "legacy-room".into(),
+                        ..entry()
+                    },
+                    Some("ab".repeat(32)),
+                    CertificateChange::Keep,
+                ),
+            )
+            .unwrap();
+        let invitation = crate::internet::enrollment::Enrollment::new(
+            "Fixture".into(),
+            "wss://signal.example/v1/signal/".into(),
+            Zeroizing::new("ab".repeat(32)),
+            None,
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let imported = fixture
+            .request(&[], Request::Import { invitation })
+            .unwrap();
+        assert_eq!(imported.entries.len(), 1);
+        assert_eq!(imported.entries[0].id, saved.entries[0].id);
+        assert_eq!(imported.imported.unwrap().device, "legacy-room");
     }
 }
