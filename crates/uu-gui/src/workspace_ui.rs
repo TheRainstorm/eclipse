@@ -1859,8 +1859,8 @@ impl Workspace {
             self.endpoint_state(ui,uu_i18n::text("IP 直连"));
             ui.collapsing(uu_i18n::text("本机地址"),|ui| {
                 if let Ok(addresses)=super::native_interfaces::enumerate() {
-                    for address in addresses.into_iter().filter(|a| a.ip.is_ipv4()) {
-                        let endpoint=format!("{}:{}",address.ip,self.book.sharing.service_port);
+                    for address in addresses {
+                        let endpoint=std::net::SocketAddr::new(address.ip,self.book.sharing.service_port).to_string();
                         ui.horizontal(|ui| {ui.monospace(&endpoint); if ui.add(crate::theme::secondary_button(uu_i18n::text("复制")).small()).clicked(){ui.ctx().copy_text(endpoint);}});
                     }
                 }
