@@ -90,6 +90,22 @@ use uu_core::{
     virtual_display::{Display, Owner, Slot, Spec, Status},
 };
 
+fn driver_check_feedback(status:&Status)->(Kind,String) {
+    use uu_core::virtual_display::preparation::Phase;
+    if let Some(preparation)=&status.preparation {
+        if preparation.phase!=Phase::Ready || preparation.error.is_some() {
+            let kind=if preparation.error.is_some() || matches!(preparation.phase,Phase::Failed|Phase::RecoveryPending|Phase::Unsupported) {Kind::Error}
+                else if preparation_ui::active(preparation){Kind::Progress}else{Kind::Info};
+            return (kind,uu_i18n::format!("驱动检查结果：{}",uu_core::native_virtual_display::preparation_message(preparation)));
+        }
+    }
+    if status.supported && status.driver_present {
+        (Kind::Success,uu_i18n::text("驱动检查完成：驱动已就绪，可启用虚拟显示器。").into())
+    }else{
+        (Kind::Error,uu_i18n::text(if status.supported {"驱动检查完成：尚未检测到可用驱动，请完成驱动准备。"}else{"驱动检查完成：当前系统不支持虚拟显示器。"}).into())
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Startup {
     Waiting(Instant),
@@ -122,6 +138,7 @@ pub struct State {
     worker_started: Option<Instant>,
     worker_timed_out: bool,
     worker_preparation: bool,
+    driver_check_pending: bool,
     inspect_inflight: bool,
     deferred_request: Option<LocalRequest>,
     uncertain_owners: BTreeSet<LocalOwner>,
@@ -241,6 +258,7 @@ impl State {
         self.editors.clear();self.submitted_editor=None;self.limit_draft=None;self.next_inventory_check=None;
         self.slots.clear();
         self.preparation = None;
+        self.driver_check_pending=false;
         self.details.clear();
         self.background_setup_requested = false;
         self.next_preparation_check = None;
@@ -385,6 +403,7 @@ impl State {
         self.worker_started = Some(Instant::now());
         self.worker_timed_out = false;
         self.worker_preparation = preparing;
+        self.driver_check_pending |= preparing;
         std::thread::spawn(move || {
             let result = work().map_err(|error| local_error(&error));
             let _ = send.send(result);
@@ -483,8 +502,17 @@ impl State {
                 self.slots = slots;
                 self.next_inventory_check=Some(Instant::now()+Duration::from_secs(2));
                 if !self.inspect_inflight {
-                    self.message(Kind::Info, String::new());
-                    self.details.clear();
+                    if !self.driver_check_pending {
+                        self.message(Kind::Info, String::new());
+                        self.details.clear();
+                    }
+                }
+                if self.driver_check_pending {
+                    let status=self.status.as_ref().unwrap();
+                    let (kind,message)=driver_check_feedback(status);
+                    self.driver_check_pending=status.preparation.as_ref().is_some_and(preparation_ui::active);
+                    self.message(kind,message);
+                    self.details=self.preparation.as_ref().and_then(|s|s.error.clone()).unwrap_or_default();
                 }
             }
             Response::Created { display } => {
@@ -517,6 +545,7 @@ impl State {
                 self.next_inventory_check=Some(Instant::now());
             }
             Response::Error { message } => {
+                self.driver_check_pending=false;
                 self.submitted_editor=None;
                 if self.startup.is_some() {
                     self.startup = Some(Startup::Finished);
@@ -543,11 +572,11 @@ impl State {
                     self.worker = None;
                     self.worker_started = None;
                     self.worker_timed_out = false;
-                    self.worker_preparation = false;
                     let owner = self.worker_owner.take();
                     match result {
                         Ok(response) => self.receive(response, owner),
                         Err(error) => {
+                            self.driver_check_pending=false;
                             if owner == Some(LocalOwner::Foreground) {
                                 if let Some(id) = error.retained_lease {
                                     self.foreground_displays.insert(id);
@@ -571,6 +600,7 @@ impl State {
                             }
                         }
                     }
+                    self.worker_preparation = false;
                     self.inspect_inflight=false;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -904,6 +934,22 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_driver_check_reports_waiting_then_ready_and_passive_refresh_keeps_the_notice() {
+        use uu_core::virtual_display::preparation::Phase;
+        let mut state=State::generated_preview();state.driver_check_pending=true;
+        let mut status=state.status.clone().unwrap();
+        status.preparation=Some(preparation(Phase::WaitingForIdle,true));
+        state.receive(Response::Snapshot{status:status.clone(),displays:vec![],slots:vec![]},Some(LocalOwner::Background));
+        assert!(state.driver_check_pending);assert_eq!(state.feedback.current(&Scope::VirtualDisplays).unwrap().kind,Kind::Progress);
+        status.preparation=Some(preparation(Phase::Ready,false));state.inspect_inflight=true;
+        state.receive(Response::Snapshot{status:status.clone(),displays:vec![],slots:vec![]},Some(LocalOwner::Background));
+        assert!(!state.driver_check_pending);assert_eq!(state.feedback.current(&Scope::VirtualDisplays).unwrap().kind,Kind::Success);
+        let notice=state.feedback.clone();state.receive(Response::Snapshot{status,displays:vec![],slots:vec![]},Some(LocalOwner::Background));
+        assert!(state.feedback==notice);
+        let mut status=state.status.clone().unwrap();status.driver_present=false;status.preparation=None;
+        assert_eq!(driver_check_feedback(&status).0,Kind::Error);
+    }
     fn preparation(
         phase: uu_core::virtual_display::preparation::Phase,
         queued: bool,
