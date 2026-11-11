@@ -54,3 +54,5 @@ Eclipse-test/
 高级启动器也可以用绝对路径环境变量 `ECLIPSE_PROFILE_DIR` 选择独立配置根目录，内部仍为 `data/` 与 `state/`。优先级为该显式变量、程序旁的 `eclipse-data`、原用户目录。该变量须由启动环境提供；常规的双击启动和系统自启动请使用程序旁的目录。无效或不可访问的独立目录会报错，不静默回退到旧用户配置。
 
 便携目录隔离与随目录迁移的交互参考 [Moonlight 的便携版说明](https://github.com/moonlight-stream/moonlight-qt/releases)，实现独立编写；Windows 窗口按配置识别采用系统[窗口属性](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-properties)。
+
+收藏壁纸位于当前数据目录的 `wallpapers/favorites`，可以手工加入 PNG、JPEG、WebP、BMP 或 ICO 图片。程序首次扫描发现时记为收藏时间；迁移或备份时一并保留此目录及其中清单，可保留收藏顺序和页码。缓存和生成缩略图不改变原图片。
