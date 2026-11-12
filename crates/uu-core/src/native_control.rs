@@ -417,6 +417,7 @@ pub(crate) struct HostControl {
     video_e2e_registered: AtomicBool,
     quality:Mutex<Option<crate::native_quality::Runtime>>,
     quality_state:Mutex<Option<watch::Receiver<uu_media::encoder::Settings>>>,
+    quality_error:Arc<Mutex<(u64,Option<String>)>>,
     session:Mutex<Option<crate::shared_host::SessionContext>>,
     server_managed:AtomicBool,
     admin_busy:AtomicBool,
@@ -508,12 +509,23 @@ impl HostControl {
     pub fn request_quality(&self,settings:crate::native_quality::Update)->Result<()> {
         let runtime=self.quality.lock().unwrap().clone().context(uu_i18n::text("主机尚未准备好动态画质"))?;
         let reply=runtime.request(settings)?;
+        let status=self.quality_error.clone();
+        let generation={let mut status=status.lock().unwrap();status.0=status.0.wrapping_add(1);status.1=None;status.0};
+        let complete=async move {
+            let result=match timeout(Duration::from_secs(10),reply).await {
+                Ok(Ok(result))=>result.map(|_|()),
+                Ok(Err(_))=>Err(uu_i18n::text("主机画质更新已经取消").into()),
+                Err(_)=>Err(uu_i18n::text("主机画质更新超时").into()),
+            };
+            let mut status=status.lock().unwrap();
+            if status.0==generation {status.1=result.err().map(|message|message.chars().take(512).collect());}
+        };
         if let Ok(handle)=tokio::runtime::Handle::try_current() {
-            handle.spawn(async move { let _=reply.await; });
+            handle.spawn(complete);
         } else {
             std::thread::spawn(move|| {
                 if let Ok(runtime)=tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                    let _=runtime.block_on(reply);
+                    runtime.block_on(complete);
                 }
             });
         }
@@ -538,7 +550,8 @@ impl HostControl {
         let keyboard_mouse_active=self.worker.as_ref().is_some_and(|worker|worker.keyboard_mouse_ready());
         let pads=self.worker.as_ref().map(|worker|worker.gamepad_status());
         crate::shared_host::SessionControlSnapshot{input:self.input_permissions(),max_input:self.max_input_permissions(),fps,bitrate_kbps,display,displays,
-            keyboard_mouse_active,gamepads:pads.as_ref().map_or(0,|pads|pads.connected),gamepad_error:pads.and_then(|pads|pads.error)}
+            keyboard_mouse_active,gamepads:pads.as_ref().map_or(0,|pads|pads.connected),gamepad_error:pads.and_then(|pads|pads.error),
+            quality_error:self.quality_error.lock().unwrap().1.clone()}
     }
     #[cfg(test)]
     pub async fn new(
@@ -579,6 +592,7 @@ impl HostControl {
             video_e2e_registered:AtomicBool::new(false),
             quality:Mutex::new(None),
             quality_state:Mutex::new(None),
+            quality_error:Arc::default(),
             session:Mutex::new(None),server_managed:AtomicBool::new(false),admin_busy:AtomicBool::new(false),
             displays:Mutex::new(None),
             pending_display:Mutex::new(None),
@@ -1507,6 +1521,22 @@ mod tests {
         assert!(b.keyboard_mouse_ready());
         assert_eq!(generation,b.state.epoch.load(Ordering::Acquire),"keyboard handover must not retire the active gamepad generation");
         b.stop().await;
+    }
+    #[tokio::test]
+    async fn session_quality_failures_are_visible_and_old_receipts_cannot_replace_new_results() {
+        let host=HostControl::new(false,None,None).await;
+        let (runtime,changes)=crate::native_quality::Runtime::channel();host.set_quality(runtime);
+        let update=crate::native_quality::Update{fps:60,bitrate_kbps:Some(18000),rate_control:None};
+        host.request_quality(update).unwrap();let first=changes.recv().unwrap();
+        host.request_quality(update).unwrap();let second=changes.recv().unwrap();
+        second.reply.send(Ok(18000)).unwrap();
+        first.reply.send(Err("old failed update".into())).unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(host.control_snapshot().quality_error.is_none());
+        host.request_quality(update).unwrap();changes.recv().unwrap().reply.send(Err("encoder refused the requested frame rate".into())).unwrap();
+        wait(||host.control_snapshot().quality_error.is_some()).await;
+        assert_eq!(host.control_snapshot().quality_error.as_deref(),Some("encoder refused the requested frame rate"));
+        host.stop().await;
     }
     #[test]
     fn control_messages_are_bounded_and_do_not_accept_interop_or_extra_commands() {

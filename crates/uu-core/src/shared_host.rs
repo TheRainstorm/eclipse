@@ -19,6 +19,7 @@ pub struct SessionControlSnapshot {
     pub keyboard_mouse_active: bool,
     pub gamepads: usize,
     pub gamepad_error: Option<String>,
+    pub quality_error: Option<String>,
 }
 
 /// One running host per private configuration, including separate launcher
