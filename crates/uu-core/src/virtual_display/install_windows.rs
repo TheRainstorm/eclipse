@@ -21,7 +21,8 @@ use windows_sys::{
         Devices::DeviceAndDriverInstallation::*,
         Foundation::{
             GetLastError, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, GENERIC_WRITE,
-            INVALID_HANDLE_VALUE, ERROR_NO_SUCH_DEVINST,
+            INVALID_HANDLE_VALUE, ERROR_NO_SUCH_DEVINST, ERROR_PATH_NOT_FOUND, ERROR_NOT_FOUND,
+            ERROR_AUTHENTICODE_PUBLISHER_NOT_TRUSTED, ERROR_AUTHENTICODE_TRUST_NOT_ESTABLISHED,
         },
         Security::WinTrust::*,
         Security::{
@@ -34,7 +35,7 @@ use windows_sys::{
             CreateDirectoryW, CreateFileW, GetFileAttributesW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
             FILE_ATTRIBUTE_REPARSE_POINT, INVALID_FILE_ATTRIBUTES,
         },
-        System::{Com::CoTaskMemFree, Registry::*},
+        System::{Com::CoTaskMemFree, Registry::*, SystemInformation::GetSystemWindowsDirectoryW},
         UI::Shell::{FOLDERID_ProgramData, SHGetKnownFolderPath},
     },
 };
@@ -212,6 +213,94 @@ pub(super) fn verify_catalog(directory: &Path) -> Result<()> {
     // SetupAPI/NewDev additionally enforce catalog membership and driver policy
     // when staging/binding; no INSTALLFLAG_FORCE or unsigned fallback is used.
     Ok(())
+}
+
+/// A downloaded package is not an installed driver. Resolve the exact pinned
+/// package in DriverStore and require a published OEM INF before reporting it
+/// ready; no monitor or adapter is created by this check.
+pub(super) fn published_driver() -> Result<Option<PathBuf>> {
+    // SetupGetInfDriverStoreLocation accepts installed INF names, not an
+    // arbitrary downloaded INF. Find the published copy by the pinned bytes.
+    let mut system = [0u16; 32768];
+    let length = unsafe { GetSystemWindowsDirectoryW(system.as_mut_ptr(), system.len() as u32) } as usize;
+    if length == 0 || length >= system.len() { return Err(os_error("locate Windows INF directory", unsafe { GetLastError() })); }
+    let inf_directory = PathBuf::from(OsString::from_wide(&system[..length])).join("INF");
+    let expected = driver_package().files.iter().find(|file| file.name == "MttVDD.inf").ok_or_else(|| Error::Platform("pinned INF identity unavailable".into()))?;
+    let mut published = None;
+    for entry in std::fs::read_dir(inf_directory).map_err(|error| Error::Platform(error.to_string()))? {
+        let entry = entry.map_err(|error| Error::Platform(error.to_string()))?;
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if !name.starts_with("oem") || !name.ends_with(".inf") { continue; }
+        let metadata = entry.metadata().map_err(|error| Error::Platform(error.to_string()))?;
+        if !metadata.is_file() || metadata.len() != expected.bytes as u64 { continue; }
+        let bytes = std::fs::read(entry.path()).map_err(|error| Error::Platform(error.to_string()))?;
+        if hex::encode(Sha256::digest(&bytes)) == expected.sha256 { published = Some(entry.path()); break; }
+    }
+    let Some(published) = published else { return Ok(None); };
+    let mut stored = [0u16; 32768];
+    if unsafe { SetupGetInfDriverStoreLocationW(path_wide(&published).as_ptr(), null(), null(), stored.as_mut_ptr(), stored.len() as u32, null_mut()) } == 0 {
+        let code = unsafe { GetLastError() };
+        return match code {
+            ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_NOT_FOUND => Ok(None),
+            _ => Err(os_error("locate pinned driver in DriverStore", code)),
+        };
+    }
+    let stored = PathBuf::from(OsString::from_wide(&stored[..stored.iter().position(|c| *c == 0).unwrap_or(stored.len())]));
+    let parent = stored.parent().ok_or_else(|| Error::Platform("driver store directory unavailable".into()))?;
+    for expected in driver_package().files.iter().filter(|file| file.name != "vdd_settings.xml") {
+        let bytes = std::fs::read(parent.join(&expected.name)).map_err(|error| Error::Platform(error.to_string()))?;
+        if bytes.len() != expected.bytes || hex::encode(Sha256::digest(&bytes)) != expected.sha256 {
+            return Ok(None);
+        }
+    }
+    Ok(Some(published))
+}
+
+struct InstallationUi(i32);
+impl Drop for InstallationUi {
+    fn drop(&mut self) { unsafe { SetupSetNonInteractiveMode(self.0); } }
+}
+
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+    #[test]
+    fn noninteractive_setup_scope_restores_the_callers_ui_policy() {
+        let previous = unsafe { SetupGetNonInteractiveMode() };
+        {
+            let _scope = InstallationUi(unsafe { SetupSetNonInteractiveMode(1) });
+            assert_ne!(unsafe { SetupGetNonInteractiveMode() }, 0);
+        }
+        assert_eq!(unsafe { SetupGetNonInteractiveMode() }, previous);
+    }
+
+    #[test]
+    #[ignore = "requires the pinned signed driver to have been installed on this host; read-only"]
+    fn pinned_driver_readiness_requires_published_inf_and_matching_store_files() {
+        let published = published_driver().unwrap().expect("pinned driver has not been installed");
+        assert!(published.is_file());
+        assert!(published.file_name().unwrap().to_string_lossy().to_ascii_lowercase().starts_with("oem"));
+    }
+}
+
+/// Explicit installation runs in the user's elevated interactive helper.
+/// A System host must never display a publisher prompt on an unseen console.
+pub(super) fn stage_signed_driver(directory: &Path) -> Result<PathBuf> {
+    if let Some(published) = published_driver()? { return Ok(published); }
+    verify_catalog(directory)?;
+    let system = crate::service_admin::windows::process_user(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+        .map_err(|error| Error::Platform(error.to_string()))? == "S-1-5-18";
+    let _ui = InstallationUi(unsafe { SetupSetNonInteractiveMode(i32::from(system)) });
+    let mut destination = [0u16; 32768];
+    let copied = unsafe { SetupCopyOEMInfW(path_wide(&directory.join("MttVDD.inf")).as_ptr(), null(), SPOST_PATH, 0, destination.as_mut_ptr(), destination.len() as u32, null_mut(), null_mut()) };
+    if copied == 0 {
+        let code = unsafe { GetLastError() };
+        if system && matches!(code, ERROR_AUTHENTICODE_TRUST_NOT_ESTABLISHED | ERROR_AUTHENTICODE_PUBLISHER_NOT_TRUSTED) {
+            return Err(Error::Platform("首次驱动安装需要在主机桌面确认发布者；请在虚拟显示器页点击安装驱动，完成 Windows 确认后重试。".into()));
+        }
+        return Err(os_error("SetupCopyOEMInfW(signed MttVDD)", code));
+    }
+    published_driver()?.ok_or_else(|| Error::Platform("signed driver was not published in DriverStore".into()))
 }
 
 struct DevInfoSet(HDEVINFO);
@@ -551,23 +640,7 @@ impl DeviceNode {
         self.bind_exact(directory, None)
     }
     fn bind_exact(&mut self, directory: &Path, group: Option<&str>) -> Result<()> {
-        let inf = path_wide(&directory.join("MttVDD.inf"));
-        let mut destination = [0u16; 512];
-        win_ok(
-            unsafe {
-                SetupCopyOEMInfW(
-                    inf.as_ptr(),
-                    null(),
-                    SPOST_PATH,
-                    0,
-                    destination.as_mut_ptr(),
-                    destination.len() as u32,
-                    null_mut(),
-                    null_mut(),
-                )
-            },
-            "SetupCopyOEMInfW(signed MttVDD)",
-        )?;
+        let destination = path_wide(&stage_signed_driver(directory)?);
         // A hardware-ID-wide update could also bind a node concurrently
         // registered by another installer. Select the one staged INF for our
         // exact newly registered device, then install only that device.
@@ -739,6 +812,7 @@ impl Drop for DeviceNode {
 pub(super) fn stage_demand_package(payload:&[(String,Vec<u8>)]) -> Result<PathBuf> {
     let mut directory = ProtectedDirectory::create(payload)?;
     verify_catalog(&directory.path)?;
+    stage_signed_driver(&directory.path)?;
     let file = directory.path.join("vdd_settings.xml");
     let before = std::fs::read(&file).map_err(|e|Error::Platform(e.to_string()))?;
     let change = super::capacity_config::exact_count(&before,1)?;

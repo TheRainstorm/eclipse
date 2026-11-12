@@ -88,7 +88,7 @@ pub(super) fn prepared() -> Result<bool> {
     match state.directory {
         Some(directory) => {
             verify_package(&directory)?;
-            Ok(true)
+            Ok(driver::published_driver()?.is_some())
         }
         None => Ok(false),
     }
@@ -111,7 +111,7 @@ pub(super) fn prepare(package: &[(String, Vec<u8>)]) -> Result<()> {
     let mut state = load()?;
     if let Some(directory) = &state.directory {
         verify_package(directory)?;
-        return Ok(());
+        return driver::stage_signed_driver(directory).map(|_| ());
     }
     // Stage, verify and retain the signed package; publish no PnP device.
     let directory = driver::stage_demand_package(package)?;
@@ -422,7 +422,7 @@ pub(super) fn inventory(scope: Option<&str>) -> Result<Inventory> {
     }
     Ok(Inventory {
         supported: true,
-        driver_present: state.directory.is_some(),
+        driver_present: state.directory.is_some() && driver::published_driver()?.is_some(),
         targets,
     })
 }

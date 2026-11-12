@@ -1831,6 +1831,9 @@ pub(super) fn local_request(request: LocalRequest, owner: LocalOwner) -> anyhow:
     }
     #[cfg(windows)]
     {
+        if matches!(&request, LocalRequest::Prepare) {
+            super::virtual_display_install::install()?;
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;

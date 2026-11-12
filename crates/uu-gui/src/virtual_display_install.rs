@@ -168,6 +168,18 @@ pub fn install_downloaded(directory: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Keep first-install publisher consent on this user's desktop, including RDP.
+/// The background host only receives Prepare after Windows has installed the
+/// driver, so it never waits for a dialog on the physical console.
+pub fn install() -> Result<()> {
+    let downloaded = download()?;
+    let executable = std::env::current_exe()?;
+    uu_core::service_admin::windows::elevated(
+        &executable,
+        &format!("--install-virtual-display-driver \"{}\"", downloaded.directory.display()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
