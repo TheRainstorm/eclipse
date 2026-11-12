@@ -73,6 +73,7 @@ mod native_host_ui;
 mod native_interfaces;
 mod wallpapers;
 mod wallpaper_favorites;
+mod wallpaper_cache;
 mod wallpaper_download;
 mod virtual_display_ui;
 mod virtual_display_presets;
@@ -492,7 +493,7 @@ impl App {
             context: window_context::Context::new(ctx),
             status: String::new(),
             preview_writer:Default::default(),recorded_connection:false,
-            background:background::Background::new(config.as_ref().map(|c|c.at("appearance/wallpaper.jpg"))),
+            background:background::Background::new(config.as_ref().map(|c|c.at("appearance/wallpaper.jpg"))).archive_to(wallpaper_cache::directory()),
             config,
             controller: Default::default(),
             textures: std::collections::HashMap::new(),

@@ -41,6 +41,7 @@ pub(super) struct Background {
     received:bool,
     failure:Option<String>,
     cache:Option<PathBuf>,
+    archive:Option<PathBuf>,
     initialized:bool,
     enabled:bool,
     retry_at:Option<Instant>,
@@ -59,6 +60,7 @@ pub(super) struct Background {
 }
 impl Background {
     pub fn new(cache:Option<PathBuf>)->Self {Self{cache,..Default::default()}}
+    pub fn archive_to(mut self,directory:Option<PathBuf>)->Self {self.archive=directory;self}
     pub fn sync(&mut self,s:&Settings,ctx:&egui::Context) {
         let mode_changed=self.favorites_mode!=(s.wallpaper_source==WallpaperSource::Favorites);
         self.enabled=s.wallpaper_enabled;self.favorites_mode=s.wallpaper_source==WallpaperSource::Favorites;
@@ -157,8 +159,12 @@ impl Background {
         self.texture=Some(ctx.load_texture("workspace-background",egui::ColorImage::from_rgba_unmultiplied([image.width as usize,image.height as usize],&image.rgba),egui::TextureOptions::LINEAR));
         // Loading a fallback after a network failure must not erase its reason.
         if cache || self.failure.is_none() {self.notice.clear();}
-        if cache {if let (Some(path),Some(bytes))=(self.cache.clone(),self.current_encoded.clone()) {
-            std::thread::spawn(move|| {if let Err(error)=write_cache(&path,&image.url,&bytes) {eprintln!("wallpaper cache: {error}");}});
+        if cache {if let Some(bytes)=self.current_encoded.clone() {
+            let (path,archive)=(self.cache.clone(),self.archive.clone());
+            if path.is_some()||archive.is_some() {std::thread::spawn(move|| {
+                if let Some(path)=path {if let Err(error)=write_cache(&path,&image.url,&bytes){eprintln!("wallpaper cache: {error}");}}
+                if let Some(root)=archive {if let Err(error)=super::wallpaper_cache::save(&root,&bytes,image.original.extension()){eprintln!("wallpaper archive: {error}");}}
+            });}
         }}
     }
     fn displayed(&self)->Option<(Arc<Vec<u8>>,wallpapers::Original)> {

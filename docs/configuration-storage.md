@@ -56,3 +56,5 @@ Eclipse-test/
 便携目录隔离与随目录迁移的交互参考 [Moonlight 的便携版说明](https://github.com/moonlight-stream/moonlight-qt/releases)，实现独立编写；Windows 窗口按配置识别采用系统[窗口属性](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-properties)。
 
 收藏壁纸位于当前程序目录的 `wallpapers/favorites`，可以手工加入 PNG、JPEG、WebP、BMP 或 ICO 图片。程序首次扫描发现时记为收藏时间；迁移或备份时一并保留此目录及其中清单，可保留收藏顺序和页码。缓存和生成缩略图不改变原图片。
+
+成功刷新的壁纸原图还会保存在程序目录的 `wallpapers/cache`，按最近使用保留最多 100 张，相同图片不重复占位，旧缓存自动清理。收藏目录不参与淘汰。软件启动仍先显示上一次缓存，再按已设置的刷新策略更新。
