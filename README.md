@@ -47,13 +47,15 @@ Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应
 
 ## 开始使用
 
+**候选版 0.24.5-rc.1** 修复通过 RDP 安装后台服务及首次安装状态，改进公网连接准备；Windows/Linux 发布附件使用版本标签命名。详见[RC1 版本说明](docs/releases/v0.24.5-rc.1.md)。候选版用于测试，当前稳定版仍为 0.24.4。
+
 **0.24.4** 增加服务端逐会话权限、共享游戏厅、本机键鼠优先和悬浮球会话中心，支持Windows多客户端同屏；老板键只隐藏串流窗口。详见[0.24.4版本说明](docs/releases/v0.24.4.md)。Windows和Linux完整包由GitHub CI构建，正式资产以Releases为准。自建连接服务说明见[部署指南](docs/connection-service.md)。
 
 从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包，保留包内全部运行库与清单。
 
 需要独立体验首次使用或按版本保存配置，可在程序旁新建空的 `eclipse-data` 文件夹启用便携模式；退出后复制整个程序目录即可携带客户端配置。已有 Windows 主机服务仍由本机统一管理。[配置位置、便携模式与迁移](docs/configuration-storage.md)
 
-**Windows**：解压 `eclipse-windows-x64-<提交号>.zip`，在解压目录执行：
+**Windows**：解压 `eclipse-windows-x64-v<版本>.zip`（开发包使用提交号），在解压目录执行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1

@@ -1,6 +1,8 @@
 # 构建与版本发布
 
-当前版本：[0.24.4](releases/v0.24.4.md)；上一版：[0.24.3](releases/v0.24.3.md)，下载以 GitHub Releases 实际发布为准。此前开发版：[0.23.5-dev.20261104](releases/v0.23.5-dev.20261104.md)、[0.23.4-dev.20261104](releases/v0.23.4-dev.20261104.md)、[0.23.3-dev.20261104](releases/v0.23.3-dev.20261104.md)、[0.23.2-dev.20261104](releases/v0.23.2-dev.20261104.md)。此前源码里程碑：[Eclipse v0.23.1](releases/v0.23.1.md)、[v0.21.2](releases/v0.21.2.md)。历史开发版：[0.21.3-dev.20261103](releases/v0.21.3-dev.20261103.md)。
+候选版：[0.24.5-rc.1](releases/v0.24.5-rc.1.md)。RC 使用 `v主版本.次版本.修订号-rc.序号` 标签，在 GitHub 标为预发布，不替换最新稳定版。
+
+当前稳定版：[0.24.4](releases/v0.24.4.md)；上一版：[0.24.3](releases/v0.24.3.md)，下载以 GitHub Releases 实际发布为准。此前开发版：[0.23.5-dev.20261104](releases/v0.23.5-dev.20261104.md)、[0.23.4-dev.20261104](releases/v0.23.4-dev.20261104.md)、[0.23.3-dev.20261104](releases/v0.23.3-dev.20261104.md)、[0.23.2-dev.20261104](releases/v0.23.2-dev.20261104.md)。此前源码里程碑：[Eclipse v0.23.1](releases/v0.23.1.md)、[v0.21.2](releases/v0.21.2.md)。历史开发版：[0.21.3-dev.20261103](releases/v0.21.3-dev.20261103.md)。
 
 服务端会话控制与多客户端同屏已合入0.24.4；[早期开发说明](releases/v0.25.0-dev.20261112.md)保留最初迭代背景，当前行为以正式版本说明为准。
 
@@ -34,6 +36,12 @@ GitHub Actions 的 GUI/GPU 环境不能替代显卡、声音与桌面交互实�
 0.7起会话诊断统一写入用户状态目录的 `uu-remote/diagnostics`，不再优先写程序旁边；Linux遵循`XDG_STATE_HOME`。新建Unix目录/文件权限为0700/0600，Windows继承用户目录权限。诊断不包含键鼠内容、剪贴板、认证、SDP或网络候选原文；已有旧日志保留，不随升级自动删除。
 
 开发版对长会话保留起始段和七段近期轮转记录，每段最多256 KiB、单会话最多2 MiB；`.tail-N`为循环槽位，按事件`at_ms`还原时间顺序。视频恢复原因见[串流质量与恢复](streaming-quality.md#原生串流的突发与恢复)。
+
+## 发布附件命名
+
+Release 的完整包以标签命名，例如 `eclipse-windows-x64-v0.24.5-rc.1.zip` 和 `eclipse-linux-x86_64-v0.24.5-rc.1.tar.gz`；Linux 解压目录也使用这个标签。CI 在双平台验证后统一生成标签附件及 `SHA256SUMS`，校验内部源码提交与目标标签一致。本地开发包仍按提交号区分。
+
+可用 `python3 tools/release/download.py --tag v0.24.5-rc.1 --platform all` 下载并核验两端完整包。旧版按提交号命名的资产保持可验证。
 
 ## 发布步骤
 
