@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-12T09:51:44Z",
+  "updated_at": "2026-11-12T09:57:58Z",
   "files": {
     "aoci.code.txt": {
       "role": "index",
@@ -881,9 +881,9 @@
     },
     "crates/uu-gui/src/boss_key.rs": {
       "role": "index",
-      "sha256": "4c565266b970cd8dcf735721498c9adb4a6a64b8e2f5013a01a34bfdfe6e5fc1",
-      "size": 10272,
-      "normalized_sha256": "4c565266b970cd8dcf735721498c9adb4a6a64b8e2f5013a01a34bfdfe6e5fc1"
+      "sha256": "38b03ce99421f25f42f09d4e715966e5c4190c99f17d1062aadffd7fe4a4b4bb",
+      "size": 11233,
+      "normalized_sha256": "38b03ce99421f25f42f09d4e715966e5c4190c99f17d1062aadffd7fe4a4b4bb"
     },
     "crates/uu-gui/src/boss_key/linux.rs": {
       "role": "index",

@@ -95,7 +95,28 @@ fn next_focus() -> u64 {
 }
 #[cfg(target_os = "linux")]
 pub(super) fn take_activation_token(ctx: &egui::Context) -> Option<String> {
-    ctx.data_mut(|data| data.remove_temp(egui::Id::new(("boss-activation", ctx.viewport_id()))))
+    let viewport = ctx.viewport_id();
+    ctx.data_mut(|data| data.remove_temp(egui::Id::new(("boss-activation", viewport))))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod activation_tests {
+    #[test]
+    fn viewport_token_is_consumed_once_without_reentering_context_lock() {
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let ctx = eframe::egui::Context::default();
+            let key = eframe::egui::Id::new(("boss-activation", ctx.viewport_id()));
+            ctx.data_mut(|data| data.insert_temp(key, String::from("owned-activation")));
+            let first = super::take_activation_token(&ctx);
+            let second = super::take_activation_token(&ctx);
+            let _ = sent.send((first, second));
+        });
+        let (first, second) = received.recv_timeout(std::time::Duration::from_secs(2))
+            .expect("activation token lookup must not deadlock the UI context");
+        assert_eq!(first.as_deref(), Some("owned-activation"));
+        assert_eq!(second, None);
+    }
 }
 pub fn normal_visibility(viewport: egui::ViewportId, visible: bool) {
     #[cfg(windows)] let mut native_windows = vec![];
