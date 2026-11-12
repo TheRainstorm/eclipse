@@ -325,7 +325,7 @@ wayland_capture.rs[IU7S]: F:在所属Wayland surface管理系统快捷键抑制�
 wgl_interop.rs[IH6T]: F:动态解析WGL DX共享纹理API供解码导入与HDR呈现共用 | R:code:crates/uu-gui/src/video_d3d11.rs,code:crates/uu-gui/src/video_hdr.rs | A:Api | S:需当前DC与扩展支持，拒绝wglGetProcAddress特殊无效指针值
 window.rs[AU7L]: F:统一浮窗几何及原生迁屏收敛，并读取所属viewport显示器的物理模式 | R:code:crates/uu-gui/src/platform.rs,code:crates/uu-gui/src/window_context.rs,code:crates/uu-core/src/client_settings.rs | A:Appearance,Geometry,Snapshot,local_display | S:本地模式取原生窗口的当前monitor，物理像素不乘DPI；未知保持未知；OS迁屏取消迟到自动定位，不跨DPI重建坐标；尺寸收敛有界且全屏不画缩放边
 window_context.rs[RU7M]: F:把命令与异步唤醒绑定会话当前viewport，并在拆并中挂起、恢复或永久退休路由 | R:code:crates/uu-gui/src/stream_workspace.rs | A:Context,Route,bind,suspend,retire | S:回调克隆共享路由；转移中不唤醒旧surface；退休永久生效，取消转移可恢复原窗；回调不得持路由锁跨egui；视频以1ns单pass唤醒，避免额外settling绘制
-workspace_ui.rs[AU8L]: F:组织设备和主机页面，以统一新增复用、可用路线过滤和完整服务名称管理连接 | R:code:crates/uu-core/src/device_book.rs,code:crates/uu-gui/src/connection_service_ui/device_picker.rs,code:crates/uu-gui/src/connection_service_ui/endpoint.rs | A:Workspace,DeviceEditor,ClientEditor,Action,dialogs | S:新增与附近添加共用upsert，编辑已有卡片保独立语义；未启用插件从选择隐藏但配置保留，不自动换路线；自建保存须新鲜目录；快捷添加挂起草稿再恢复；入口按稳定身份匹配；OpenPrepared只交付冻结目标，Linux重启预约空闲
+workspace_ui.rs[AU8L]: F:组织设备和主机页面，协调设备菜单、配置编辑及统一新增复用和连接路线 | R:code:crates/uu-core/src/device_book.rs,code:crates/uu-gui/src/workspace_ui/device_menus.rs,code:crates/uu-gui/src/connection_service_ui/device_picker.rs,code:crates/uu-gui/src/connection_service_ui/endpoint.rs | A:Workspace,DeviceEditor,ClientEditor,Action,dialogs | S:新增与附近添加共用upsert，编辑已有卡片保独立语义；未启用插件隐藏但保存配置，不自动换路线；自建保存须新鲜目录；快捷添加挂起草稿；入口按身份匹配；OpenPrepared只交冻结目标，Linux重启预约空闲
 video_dxgi_receipt.rs[IO8L]: F:在当前呈现所有者内以DXGI Count关联冻结图像，向端到端模型提交经验显示区间 | R:code:crates/uu-gui/src/video_frame_observation.rs,code:crates/uu-media/src/present_observation.rs,code:crates/uu-core/src/video_e2e.rs | A:Bridge | S:区间止于首次对应查询后；跳号不证明未显示；含STILL_DRAWING的失败、零Count、缺口、溢出或换代均退休，不用旧统计补首显；不猜SyncQPCTime或增加GPU等待
 video_frame_observation.rs[DO7S]: F:把解码输出冻结身份与弱会话关联并管理原生显示观察者的生命周期 | R:code:crates/uu-core/src/display_frames.rs,code:crates/uu-core/src/video_e2e.rs,code:crates/uu-gui/src/video_dxgi_receipt.rs | A:FrameIdentity,FrameObservation | S:Present不重查较新PTS；RGBA无冻结元数据就无身份；媒体或观测退役后缓存不可复活；旧窗口清理不得清新观察者
 video_present_trace.rs[RO7L]: F:异步记录带图像身份的原生Present统计并确认退出完整性 | R:code:crates/uu-gui/src/video_frame_observation.rs,code:crates/uu-media/src/present_observation.rs | A:Producer,Row,from_env,shutdown | S:显式新文件才启用；渲染只try_send，限512项/32MiB；退出等≤2秒，缺终止或丢项即不完整；提交不等于显示
@@ -360,7 +360,7 @@ lib.rs[LL6T]: F:合并主目录与消费crate自有目录，展开双语格式�
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n/===
 Cargo.toml[FL4T]: F:声明应用语言库、双语宏和构建时目录依赖 | R:code:crates/uu-i18n/src/lib.rs | A:- | S:-
 build.rs[OL5T]: F:把翻译JSON生成到OUT_DIR的静态匹配函数 | R:code:crates/uu-i18n/catalogue.json,code:crates/uu-i18n/src/catalogue.rs | A:main | S:目录变化触发重建，生成物不写回源码目录
-catalogue.json[FL6L]: F:维护主程序双语模板，覆盖行内别名、在线计数、可用路线及入口状态反馈 | R:code:crates/uu-i18n/build.rs,code:crates/uu-i18n-macros/src/lib.rs | A:- | S:插件词汇归插件；占位符须匹配；普通缺译回退中文，格式缺译编译失败；保留旧键不代表旧交互开启
+catalogue.json[FL6L]: F:维护主程序双语模板，覆盖设备与列表菜单、服务器管理和入口状态反馈 | R:code:crates/uu-i18n/build.rs,code:crates/uu-i18n-macros/src/lib.rs | A:- | S:插件词汇归插件；占位符须匹配；普通缺译回退中文，格式缺译编译失败；保留旧键不代表旧交互开启
 
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n/src/===
 catalogue.rs[LL4T]: F:把构建生成的静态英文查询函数引入语言库 | R:code:crates/uu-i18n/build.rs | A:- | S:-
@@ -852,7 +852,8 @@ tests.rs[TU6M]: F:用生成图片核验无限收藏、首扫时间、稳定页�
 
 ===/home/yfy/Repo/uu_remote/crates/uu-gui/src/workspace_ui/===
 connection_settings.rs[AU7M]: F:绘制IP、服务器及实际插件卡片，按入口身份呈现状态并保存连接草稿 | R:code:crates/uu-gui/src/workspace_ui.rs,code:crates/uu-gui/src/connection_service_ui/servers.rs | A:Draft,Workspace::services | S:只写IPv6端口插件字段且启IP，保并发媒体修改；状态按Ip或插件ID定位，不按展示名；停止期禁改，保存后重启；关闭发布仍能连接其他设备
-device_management.rs[AU6S]: F:提供设备隐藏恢复、管理多选批删确认及拖动排序交互 | R:code:crates/uu-gui/src/workspace_ui.rs,code:crates/uu-core/src/device_book.rs | A:State | S:管理态点击只选择，隐藏退出管理，进入管理显示设备；删除仅忘本地记录不关流；失败保选择；实际写入交Store统一锁事务
+device_management.rs[AU6S]: F:提供列表隐藏恢复、批量管理多选删除确认和拖动排序交互 | R:code:crates/uu-gui/src/workspace_ui.rs,code:crates/uu-core/src/device_book.rs,code:crates/uu-gui/src/workspace_ui/device_menus.rs | A:State | S:列表菜单先批量管理后隐藏；管理态点击只选择，隐藏退出管理，进入管理显示设备；删除仅忘本地记录不关流；失败保选择；写入交Store锁事务
+device_menus.rs[AU6M]: F:分别绘制设备和列表右键菜单，复用配置管理列表并确认设备移除 | R:code:crates/uu-gui/src/workspace_ui.rs,code:crates/uu-gui/src/workspace_ui/device_management.rs,code:crates/uu-core/src/device_book.rs | A:State,library_menu,device_menu,client_config_list,device_menu_dialogs | S:默认配置编辑全局，已存配置只改对应设备；移除确认后仅忘本地记录，不关流或撤权；隐藏插件不改已存路线；管理与详情共用列表
 
 ===/home/yfy/Repo/uu_remote/crates/uu-core/src/connection_history/===
 tests.rs[TO5S]: F:核验历史上限、失败与重连多屏去重、取消、重启中断和读者存活时的最终刷盘 | R:code:crates/uu-core/src/connection_history.rs,code:crates/uu-core/src/shared_host.rs | A:- | S:只用内存与自有临时文件；覆盖活动记录被淘汰仍提醒、坏文件不覆盖及Unix私有权限，不代替桌面通知验收
