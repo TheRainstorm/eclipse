@@ -72,6 +72,8 @@ python3 install.py
 
 应用菜单入口为 **Eclipse**，命令行为 `eclipse-cli`。旧 `uu-client`、`uu-remote-rust` 和 `uu-rust` 别名保留，原用户数据目录继续使用。共享支持 X11 与 Wayland；Wayland 需要门户授权或合成器提供的采集与输入能力。[运行依赖与平台差异](docs/linux-client.md)
 
+Linux 卸载工具位于源码的 `tools/linux/uninstall.py`，也可单独复制到目标电脑运行。先退出 Eclipse，再执行 `python3 uninstall.py`；使用 `--prefix` 可指定安装前缀。默认保留用户配置，`python3 uninstall.py --purge` 同时删除新旧配置、已配对设备、历史和缓存，适合重新体验首次使用。`--dry-run` 可查看将要删除的路径。
+
 **连接两台设备**：在被控端打开“服务管理”，启用所需入口并启动共享；在控制端设备页右键添加地址，发起配对，将八位码输入被控端确认。之后可从设备卡片连接，并按设备保存画质配置。[局域网连接与配对](docs/native-lan.md) · [连接服务与外网直连/中转](docs/connection-service.md)
 
 已有源码和 GitHub CLI 时，也可下载并校验发布包，无需本机编译：
