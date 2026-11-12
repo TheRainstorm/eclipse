@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-12T05:49:52Z",
+  "updated_at": "2026-11-12T06:14:24Z",
   "files": {
     ".cargo/config.toml": {
       "role": "index",
@@ -17,9 +17,9 @@
     },
     ".github/workflows/build-release.yml": {
       "role": "index",
-      "sha256": "cc564c1bff3ef2ba42e89e27959c6846fe27c1f35445ab069da29388867c47ba",
-      "size": 29910,
-      "normalized_sha256": "cc564c1bff3ef2ba42e89e27959c6846fe27c1f35445ab069da29388867c47ba"
+      "sha256": "f35359b86457df44deca22a9fac62750242ba8c0b3f3acd741b3c4a522a53e04",
+      "size": 31510,
+      "normalized_sha256": "f35359b86457df44deca22a9fac62750242ba8c0b3f3acd741b3c4a522a53e04"
     },
     ".gitignore": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "bce6bcacac47e63b1574af461a095d414bb1b706bc363a0451cab23b0c5bb574",
-      "size": 240566,
-      "normalized_sha256": "bce6bcacac47e63b1574af461a095d414bb1b706bc363a0451cab23b0c5bb574"
+      "sha256": "1661e89d26ff0a7040c664d2696113ff2dbc8491e1210ec1064ec4e4c7f7448b",
+      "size": 240703,
+      "normalized_sha256": "1661e89d26ff0a7040c664d2696113ff2dbc8491e1210ec1064ec4e4c7f7448b"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1463,9 +1463,9 @@
     },
     "crates/uu-gui/src/background.rs": {
       "role": "index",
-      "sha256": "161f049ba9587f65e2ec9ad5715ff250a5b5bf042aceecf1f9a3e328caed91ea",
-      "size": 31407,
-      "normalized_sha256": "161f049ba9587f65e2ec9ad5715ff250a5b5bf042aceecf1f9a3e328caed91ea"
+      "sha256": "5055b7e3242387c618962562312dbe62c1bb40044fc35ebc9be2d73ee46f770e",
+      "size": 31594,
+      "normalized_sha256": "5055b7e3242387c618962562312dbe62c1bb40044fc35ebc9be2d73ee46f770e"
     },
     "crates/uu-gui/src/brand.rs": {
       "role": "index",
@@ -3832,9 +3832,9 @@
     },
     "tools/release/download.py": {
       "role": "index",
-      "sha256": "d95deb6c282bafcbabb4f9681bfddcd1628797eaa15baf83cfa275af1ea8b6db",
-      "size": 7705,
-      "normalized_sha256": "d95deb6c282bafcbabb4f9681bfddcd1628797eaa15baf83cfa275af1ea8b6db"
+      "sha256": "e5004567415a0718ff0e9fbd074505e4c812388206bdf6c35ed791d1edb6c7cd",
+      "size": 7823,
+      "normalized_sha256": "e5004567415a0718ff0e9fbd074505e4c812388206bdf6c35ed791d1edb6c7cd"
     },
     "tools/release/plugin_sdk.py": {
       "role": "index",
@@ -3862,9 +3862,9 @@
     },
     "tools/release/test_download.py": {
       "role": "observe",
-      "sha256": "3cde9655a8eaa28cd83c5f53c42416a679606dfb707c3709e96a3a077566714a",
-      "size": 9309,
-      "normalized_sha256": "3cde9655a8eaa28cd83c5f53c42416a679606dfb707c3709e96a3a077566714a"
+      "sha256": "e1c326e1aaa5143e9acab28b007723c727850230d1e8d0c20fb4f5bd16be72c7",
+      "size": 10922,
+      "normalized_sha256": "e1c326e1aaa5143e9acab28b007723c727850230d1e8d0c20fb4f5bd16be72c7"
     },
     "tools/release/test_linux_package.py": {
       "role": "observe",
