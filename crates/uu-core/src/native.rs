@@ -613,6 +613,10 @@ async fn send_video(
                 .chain(choices.iter().copied().map(|c|(c,false))).collect::<Vec<_>>();
             let (encoder,encoder_settings)=encoder_startup::select(capture.as_mut(),&attempts,settings,fallback&&requested_codec!=Some(VideoCodec::Pyrowave),&cancel_open)
                 .map_err(|error| {
+                    if error.is::<uu_capture::CaptureError>() {
+                        tracing::warn!(%error,"native desktop capture preparation failed");
+                        return error;
+                    }
                     tracing::warn!(%error,"requested host encoders are unavailable");
                     anyhow::anyhow!("{}",uu_i18n::format!("无法启动视频编码（{}）。可用格式均已尝试，请降低分辨率或帧率，或关闭一路串流后重试；详细原因见主机日志。",choices.iter().map(|c|format!("{c:?}")).collect::<Vec<_>>().join(" / ")))
                 })?;

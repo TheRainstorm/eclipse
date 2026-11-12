@@ -18,16 +18,26 @@ fn admission(cancel:&AtomicBool)->Result<MutexGuard<'static,()>> {
 }
 
 fn verify(capture:&mut dyn uu_capture::Capture,encoder:&mut dyn VideoEncoder,cancel:&AtomicBool)->Result<()> {
+    verify_with_budget(capture,encoder,cancel,Duration::from_secs(5))
+}
+
+fn verify_with_budget(capture:&mut dyn uu_capture::Capture,encoder:&mut dyn VideoEncoder,cancel:&AtomicBool,budget:Duration)->Result<()> {
     capture.prefer_gpu(encoder.gpu_input(),encoder.gpu_vendor());
     encoder.request_keyframe();
-    let deadline=Instant::now()+Duration::from_secs(5);
+    let deadline=Instant::now()+budget;
     let mut inputs=0;
+    let mut suspended=None;
     loop {
         ensure!(!cancel.load(Ordering::Acquire),"capture preparation cancelled");
-        ensure!(Instant::now()<deadline&&inputs<8,"encoder produced no startup picture within its preparation budget");
+        if Instant::now()>=deadline || inputs>=8 {
+            if inputs==0 {
+                return Err(uu_capture::CaptureError::Suspended(uu_i18n::format!("桌面未提供首帧：{}",suspended.as_deref().unwrap_or(uu_i18n::text("等待当前桌面首帧")))).into());
+            }
+            anyhow::bail!("encoder produced no startup picture after {inputs} input frames within its preparation budget");
+        }
         let frame=match capture.next_frame() {
             Ok(frame)=>frame,
-            Err(uu_capture::CaptureError::Suspended(_))=>{std::thread::sleep(Duration::from_millis(25));continue;},
+            Err(uu_capture::CaptureError::Suspended(reason))=>{suspended=Some(reason);std::thread::sleep(Duration::from_millis(25));continue;},
             Err(error)=>return Err(error.into()),
         };
         inputs+=1;
@@ -68,6 +78,7 @@ fn select_with(
         match attempt(settings) {
             Ok(encoder)=>return Ok((encoder,settings)),
             Err(error)=>{
+                if error.is::<uu_capture::CaptureError>() { return Err(error); }
                 tracing::warn!(?codec,hdr,preference=?settings.preference,%error,"native encoder preparation failed");
                 last_error=Some(error);
             }
@@ -79,7 +90,7 @@ fn select_with(
             let settings=Settings{preference:Preference::Software,rate_control:RateControl::Cbr,..settings};
             match attempt(settings) {
                 Ok(encoder)=>return Ok((encoder,settings)),
-                Err(error)=>last_error=Some(error),
+                Err(error)=>{if error.is::<uu_capture::CaptureError>() {return Err(error);}last_error=Some(error);},
             }
         }
     }
@@ -162,4 +173,33 @@ mod tests {
         let frame=capture.next_frame().unwrap();let encoded=encoder.encode(&frame).unwrap();
         assert!(encoded.iter().any(|frame|frame.is_keyframe&&!frame.data.is_empty()));
     }
+    #[test]
+    fn missing_capture_is_reported_as_capture_and_not_retried_with_other_codecs() {
+        struct Missing;
+        impl uu_capture::Capture for Missing {
+            fn resolution(&self)->(u32,u32){(64,64)}
+            fn next_frame(&mut self)->Result<RawFrame,uu_capture::CaptureError>{Err(uu_capture::CaptureError::Backend("desktop unavailable".into()))}
+        }
+        let settings=|codec,hdr|Settings{tuning:Default::default(),hdr,source_hdr:None,codec,rate_control:RateControl::Cbr,width:64,height:64,fps:30,bitrate_kbps:1000,preference:Preference::Auto};
+        let calls=std::cell::Cell::new(0);
+        let result=select_with(&mut Missing,&[(VideoCodec::Av1,false),(VideoCodec::Hevc,false),(VideoCodec::H264,false)],settings,true,&AtomicBool::new(false),|settings,_|{
+            calls.set(calls.get()+1);
+            Ok(Box::new(Slot{codec:settings.codec,live:Default::default()}))
+        });
+        let error=result.err().expect("capture must fail");
+        assert!(error.is::<uu_capture::CaptureError>());
+        assert!(error.to_string().contains("desktop unavailable"));
+        assert_eq!(calls.get(),1,"changing codecs cannot repair a missing desktop");
+        struct Paused;
+        impl uu_capture::Capture for Paused {
+            fn resolution(&self)->(u32,u32){(64,64)}
+            fn next_frame(&mut self)->Result<RawFrame,uu_capture::CaptureError>{Err(uu_capture::CaptureError::Suspended("input desktop unavailable".into()))}
+        }
+        let mut encoder=Slot{codec:VideoCodec::H264,live:Default::default()};
+        let error=verify_with_budget(&mut Paused,&mut encoder,&AtomicBool::new(false),Duration::from_millis(1)).unwrap_err();
+        assert!(error.is::<uu_capture::CaptureError>());
+        assert!(error.to_string().contains("input desktop unavailable"));
+    }
+
+
 }

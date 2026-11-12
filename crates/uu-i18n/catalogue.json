@@ -1010,6 +1010,8 @@
   "共享采集源启动失败": "The shared capture source failed to start.",
   "共享采集源启动超时": "The shared capture source timed out while starting.",
   "共享采集源已经关闭": "The shared capture source is closed.",
+  "桌面未提供首帧：{}": "The desktop did not provide its first frame: {}",
+  "等待当前桌面首帧": "Waiting for the current desktop's first frame",
   "共享采集源暂无新画面": "The shared capture source has no new frame.",
   "共享采集帧率无效": "The shared capture frame rate is invalid.",
   "共享采集线程启动失败：{error}": "The shared capture thread failed to start: {error}",
