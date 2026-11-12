@@ -472,6 +472,65 @@ impl Launch {
 pub struct Store {
     directory: PathBuf,
 }
+// Both authenticated binding and route deduplication retain the canonical
+// profile's preferences. Callers establish compatible identities beforehand.
+fn merge_profiles(book: &mut Book, current: usize, other: usize, unused: &mut Vec<String>) {
+    if book.devices[other].peer.is_none() {
+        book.devices[other].peer = book.devices[current].peer.clone();
+    }
+    let at = book.devices[current].last_connected.take();
+    if let Some(at) = at {
+        book.devices[other].last_connected =
+            Some(book.devices[other].last_connected.unwrap_or(0).max(at));
+    }
+    if let Some(preview) = book.devices[current].preview.take() {
+        if book.devices[other].preview.as_ref().is_none_or(|p| {
+            (!p.pinned && preview.pinned)
+                || (p.pinned == preview.pinned && !p.pinned && p.at < preview.at)
+        }) {
+            if let Some(old) = book.devices[other].preview.replace(preview) {
+                unused.push(old.id);
+            }
+        } else {
+            unused.push(preview.id);
+        }
+    }
+    let configs = std::mem::take(&mut book.devices[current].client_configs);
+    let selection = book.devices[current].selected_client.take();
+    for config in configs {
+        if !book.devices[other]
+            .client_configs
+            .iter()
+            .any(|c| c.id == config.id)
+        {
+            book.devices[other].client_configs.push(config);
+        }
+    }
+    if book.devices[other].selected_client.is_none() {
+        book.devices[other].selected_client = selection;
+    }
+    let display_configs = std::mem::take(&mut book.devices[current].display_clients);
+    for config in display_configs {
+        if !book.devices[other]
+            .display_clients
+            .iter()
+            .any(|c| c.target == config.target)
+        {
+            book.devices[other].display_clients.push(config);
+        }
+    }
+    let routes = std::mem::take(&mut book.devices[current].routes);
+    for route in routes {
+        if !book.devices[other]
+            .routes
+            .iter()
+            .any(|r| r.id == route.id || r.destination.same_target(&route.destination))
+        {
+            book.devices[other].routes.push(route);
+        }
+    }
+    book.devices[current].redirect = Some(book.devices[other].id.clone());
+}
 impl Store {
     pub fn store_service_credential(&self, id: &str, text: &str) -> Result<PathBuf> {
         valid_id(id)?;
@@ -639,6 +698,150 @@ impl Store {
             Ok(())
         })
     }
+    /// Add a route without replacing the existing device's name, settings or
+    /// identity. Only supply `verified_peer` after authenticating that public
+    /// key; directory IDs and matching names are not authentication evidence.
+    /// An empty name uses the default label without matching other unnamed hosts.
+    pub fn upsert_device(
+        &self,
+        name: &str,
+        mut destination: Destination,
+        verified_peer: Option<&str>,
+    ) -> Result<String> {
+        let explicit_name = !name.trim().is_empty();
+        let name = if explicit_name {name.trim()} else {uu_i18n::text("远端设备")};
+        valid_name(name)?;
+        if let Destination::Ip { address, .. } = &mut destination {
+            *address = crate::native_discovery::endpoint(address)?;
+        }
+        if let Some(peer) = verified_peer {
+            ensure!(
+                peer.len() == 64 && hex::decode(peer).is_ok(),
+                "{}",
+                uu_i18n::format!("设备身份指纹无效")
+            );
+        }
+        let mut saved = String::new();
+        let mut unused = Vec::new();
+        self.edit(|book| {
+            let route_matches: Vec<_> = book
+                .devices
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    p.redirect.is_none()
+                        && p.routes
+                            .iter()
+                            .any(|route| route.destination.same_target(&destination))
+                })
+                .map(|(index, _)| index)
+                .collect();
+            let known_peers: std::collections::BTreeSet<_> = route_matches
+                .iter()
+                .filter_map(|&index| book.devices[index].peer.as_deref())
+                .chain(verified_peer)
+                .collect();
+            ensure!(
+                known_peers.len() <= 1,
+                "{}",
+                uu_i18n::format!("设备身份与保存的记录不一致")
+            );
+            let identity_match = verified_peer.and_then(|peer| {
+                book.devices
+                    .iter()
+                    .position(|p| p.redirect.is_none() && p.peer.as_deref() == Some(peer))
+            });
+            let known_route = route_matches
+                .iter()
+                .copied()
+                .find(|&index| book.devices[index].peer.is_some());
+            // Native hosts normally publish their public-key ID. Use that
+            // advertisement only to locate an existing pinned identity, never
+            // to create one or replace an authenticated route's expected key.
+            let advertised_match = match &destination {
+                Destination::Vps { device, .. } if verified_peer.is_none() => book
+                    .devices
+                    .iter()
+                    .position(|p| p.redirect.is_none() && p.peer.as_deref() == Some(device)),
+                _ => None,
+            };
+            let names: Vec<_> = book
+                .devices
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| explicit_name && p.redirect.is_none() && p.name.trim().eq_ignore_ascii_case(name))
+                .map(|(index, _)| index)
+                .collect();
+            let name_match = (names.len() == 1).then(|| names[0]).filter(|&index| {
+                verified_peer.is_none_or(|peer| {
+                    book.devices[index]
+                        .peer
+                        .as_deref()
+                        .is_none_or(|saved| saved == peer)
+                })
+            });
+            let target = identity_match
+                .or(known_route)
+                .or(advertised_match)
+                .or_else(|| route_matches.first().copied())
+                .or(name_match)
+                .unwrap_or_else(|| {
+                    let mut profile = Profile::new(name, destination.clone());
+                    profile.peer = verified_peer.map(str::to_owned);
+                    book.devices.push(profile);
+                    book.devices.len() - 1
+                });
+            if book.devices[target].peer.is_none() {
+                book.devices[target].peer = verified_peer.map(str::to_owned);
+            }
+            let peer = book.devices[target].peer.clone();
+            // A shared target or an already verified public key can collapse
+            // old duplicates. Multiple names alone never justify this step.
+            let duplicates: Vec<_> = book
+                .devices
+                .iter()
+                .enumerate()
+                .filter(|(index, p)| {
+                    *index != target
+                        && p.redirect.is_none()
+                        && (route_matches.contains(index)
+                            || peer
+                                .as_ref()
+                                .is_some_and(|peer| p.peer.as_ref() == Some(peer)))
+                })
+                .map(|(index, _)| index)
+                .collect();
+            for source in duplicates {
+                ensure!(
+                    book.devices[source]
+                        .peer
+                        .as_ref()
+                        .is_none_or(|source| peer.as_ref().is_none_or(|target| source == target)),
+                    "{}",
+                    uu_i18n::format!("设备身份与保存的记录不一致")
+                );
+                merge_profiles(book, source, target, &mut unused);
+            }
+            let profile = &mut book.devices[target];
+            if let Some(route) = profile
+                .routes
+                .iter()
+                .find(|route| route.destination.same_target(&destination))
+            {
+                profile.selected_route = route.id.clone();
+            } else {
+                let route = Route::new(destination);
+                profile.selected_route = route.id.clone();
+                profile.routes.push(route);
+            }
+            saved = profile.id.clone();
+            Ok(())
+        })?;
+        for id in unused {
+            let _ = std::fs::remove_file(self.directory.join("previews").join(format!("{id}.jpg")));
+        }
+        Ok(saved)
+    }
     /// Called only after the first decoded image, never when opening a window.
     pub fn record_connected(&self,device:&str,at:u64)->Result<()> {
         self.edit(|book| {
@@ -769,29 +972,7 @@ impl Store {
             if let Some(other) = b.devices.iter().position(|p| {
                 p.id != canonical && p.redirect.is_none() && p.peer.as_deref() == Some(peer)
             }) {
-                let at=b.devices[current].last_connected.take();
-                if let Some(at)=at {b.devices[other].last_connected=Some(b.devices[other].last_connected.unwrap_or(0).max(at));}
-                if let Some(preview)=b.devices[current].preview.take() {
-                    if b.devices[other].preview.as_ref().is_none_or(|p|(!p.pinned && preview.pinned) || (p.pinned==preview.pinned && !p.pinned && p.at<preview.at)){if let Some(old)=b.devices[other].preview.replace(preview){unused.push(old.id);}}else{unused.push(preview.id);}
-                }
-                let configs=std::mem::take(&mut b.devices[current].client_configs);
-                let selection=b.devices[current].selected_client.take();
-                for config in configs {if !b.devices[other].client_configs.iter().any(|c|c.id==config.id) {b.devices[other].client_configs.push(config);}}
-                if b.devices[other].selected_client.is_none() {b.devices[other].selected_client=selection;}
-                let display_configs=std::mem::take(&mut b.devices[current].display_clients);
-                for config in display_configs {if !b.devices[other].display_clients.iter().any(|c|c.target==config.target) {b.devices[other].display_clients.push(config);}}
-                let routes = std::mem::take(&mut b.devices[current].routes);
-                for route in routes {
-                    if !b.devices[other]
-                        .routes
-                        .iter()
-                        .any(|r| r.id == route.id || r.destination.same_target(&route.destination))
-                    {
-                        b.devices[other].routes.push(route);
-                    }
-                }
-                let id = b.devices[other].id.clone();
-                b.devices[current].redirect = Some(id);
+                merge_profiles(b,current,other,&mut unused);
             } else {
                 b.devices[current].peer = Some(peer.into());
             }
@@ -837,6 +1018,125 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn upsert_fixture() -> (PathBuf, Store) {
+        let root=std::env::temp_dir().join(format!("eclipse-device-upsert-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        (root,store)
+    }
+    fn generated_ip(index:u8) -> Destination {Destination::Ip {address:format!("192.0.2.{index}:48998"),legacy_device:None}}
+    #[test]
+    fn adding_same_route_or_unique_name_retains_profile_identity_order_and_preferences() {
+        let (root,store)=upsert_fixture();
+        let first=Profile::new("Another computer",generated_ip(1));
+        store.save_device(first.clone()).unwrap();
+        let id=store.upsert_device("Generated host",generated_ip(2),None).unwrap();
+        let peer="ab".repeat(32);store.bind(&id,&peer).unwrap();
+        let preset=crate::client_settings::NamedClientSettings::new("Generated preset",Default::default());
+        store.save_client_config(&id,preset.clone()).unwrap();store.select_client_config(&id,Some(preset.id.clone())).unwrap();
+        store.record_connected(&id,100).unwrap();
+        store.record_preview(&id,100,b"generated-image-bytes").unwrap();
+        let before=store.read().unwrap().device(&id).unwrap().clone();
+        let added=store.upsert_device(" generated HOST ",generated_ip(3),None).unwrap();
+        assert_eq!(id,added);
+        assert_eq!(store.upsert_device("New reported name",generated_ip(2),None).unwrap(),id);
+        let book=store.read().unwrap();let after=book.device(&id).unwrap();
+        assert_eq!(book.devices.iter().map(|p|p.id.as_str()).collect::<Vec<_>>(),vec![first.id.as_str(),id.as_str()]);
+        assert_eq!(after.name,before.name);assert_eq!(after.peer,before.peer);
+        assert_eq!(after.routes.len(),2);
+        assert_eq!(serde_json::to_value(&after.client_configs).unwrap(),serde_json::to_value(&before.client_configs).unwrap());
+        assert_eq!(after.selected_client,before.selected_client);
+        assert_eq!(after.last_connected,before.last_connected);
+        assert_eq!(serde_json::to_value(&after.preview).unwrap(),serde_json::to_value(&before.preview).unwrap());
+        assert_eq!(store.launch(&id).unwrap().expected_peer,Some(peer));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn public_directory_id_locates_existing_pin_and_collapses_an_unpaired_duplicate() {
+        let (root,store)=upsert_fixture();
+        let peer="ac".repeat(32);
+        let id=store.upsert_device("Generated host",generated_ip(1),None).unwrap();
+        store.bind(&id,&peer).unwrap();
+        let service=Service {id:uuid::Uuid::new_v4().to_string(),name:"Generated group".into(),address:"wss://signal.example:9443/v1/signal".into(),
+            token_file:"generated.token".into(),certificate:None,host_enabled:false,published_name:"generated-local".into()};
+        store.save_service(service.clone()).unwrap();
+        let route=Destination::Vps {service:service.id,device:peer.clone()};
+        let duplicate=Profile::new("Generated host",route.clone());
+        let preset=crate::client_settings::NamedClientSettings::new("Duplicate preset",Default::default());
+        store.save_device(duplicate.clone()).unwrap();store.save_client_config(&duplicate.id,preset.clone()).unwrap();store.select_client_config(&duplicate.id,Some(preset.id.clone())).unwrap();
+        assert_eq!(store.upsert_device("Generated host",route,None).unwrap(),id);
+        let book=store.read().unwrap();
+        assert_eq!(book.devices.iter().filter(|p|p.redirect.is_none()).count(),1);
+        assert_eq!(book.device(&duplicate.id).unwrap().id,id);
+        let canonical=book.device(&id).unwrap();
+        assert_eq!(canonical.peer.as_deref(),Some(peer.as_str()));assert_eq!(canonical.routes.len(),2);
+        assert_eq!(canonical.client_configs[0].id,preset.id);
+        assert_eq!(store.launch(&id).unwrap().expected_peer,Some(peer.clone()));
+        // Advertisements locate existing pins; a new advertised ID is unpaired.
+        let other_peer="ad".repeat(32);
+        let other=store.upsert_device("Other generated host",Destination::Vps {service:book.services[0].id.clone(),device:other_peer},None).unwrap();
+        assert!(store.read().unwrap().device(&other).unwrap().peer.is_none());
+        let mut custom_service=book.services[0].clone();custom_service.id=uuid::Uuid::new_v4().to_string();store.save_service(custom_service.clone()).unwrap();
+        let custom=Destination::Vps {service:custom_service.id,device:peer.clone()};
+        let actual_peer="ae".repeat(32);
+        let actual=store.upsert_device("Custom publisher",custom.clone(),Some(&actual_peer)).unwrap();
+        assert_ne!(actual,id,"a custom advertised name cannot override the authenticated key");
+        assert_eq!(store.upsert_device("Custom publisher",custom,None).unwrap(),actual,"an existing authenticated route takes precedence over a directory advertisement");
+        assert_eq!(store.launch(&actual).unwrap().expected_peer,Some(actual_peer));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn verified_identity_and_exact_routes_merge_old_records_but_not_conflicting_keys() {
+        let (root,store)=upsert_fixture();
+        let peer="ba".repeat(32);
+        let id=store.upsert_device("First generated name",generated_ip(1),Some(&peer)).unwrap();
+        let duplicate=Profile::new("Second generated name",generated_ip(2));
+        store.save_device(duplicate.clone()).unwrap();
+        assert_eq!(store.upsert_device("Second generated name",generated_ip(2),Some(&peer)).unwrap(),id);
+        assert_eq!(store.read().unwrap().device(&duplicate.id).unwrap().id,id);
+        let original=std::fs::read(root.join("connections.json")).unwrap();
+        assert!(store.upsert_device("Wrong host",generated_ip(1),Some(&"bb".repeat(32))).is_err());
+        assert_eq!(std::fs::read(root.join("connections.json")).unwrap(),original);
+        let conflict=store.upsert_device("First generated name",generated_ip(3),Some(&"bb".repeat(32))).unwrap();
+        assert_ne!(id,conflict,"matching names cannot replace an established identity");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn ambiguous_names_stay_separate_and_exact_duplicate_targets_converge() {
+        let (root,store)=upsert_fixture();
+        let first=Profile::new("Generated duplicate",generated_ip(1));
+        let second=Profile::new("Generated duplicate",generated_ip(2));
+        store.save_device(first.clone()).unwrap();store.save_device(second.clone()).unwrap();
+        let ambiguous=store.upsert_device("Generated duplicate",generated_ip(3),None).unwrap();
+        assert_ne!(ambiguous,first.id);assert_ne!(ambiguous,second.id);
+        let duplicate=Profile::new("Saved elsewhere",generated_ip(1));
+        store.save_device(duplicate.clone()).unwrap();
+        assert_eq!(store.upsert_device("New advertised name",generated_ip(1),None).unwrap(),first.id);
+        assert_eq!(store.read().unwrap().device(&duplicate.id).unwrap().id,first.id);
+        assert_eq!(store.read().unwrap().devices.iter().filter(|p|p.redirect.is_none()).count(),3);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn concurrent_adds_share_one_canonical_profile_without_losing_routes() {
+        let (root,store)=upsert_fixture();
+        let barrier=std::sync::Arc::new(std::sync::Barrier::new(2));
+        let threads:Vec<_>=(1..=2).map(|index|{let store=store.clone();let barrier=barrier.clone();std::thread::spawn(move||{
+            barrier.wait();store.upsert_device("Generated concurrent host",generated_ip(index),None).unwrap()
+        })}).collect();
+        let ids:Vec<_>=threads.into_iter().map(|thread|thread.join().unwrap()).collect();
+        assert_eq!(ids[0],ids[1]);
+        let book=store.read().unwrap();assert_eq!(book.devices.len(),1);assert_eq!(book.devices[0].routes.len(),2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn unnamed_adds_do_not_merge_unrelated_hosts_under_the_default_label() {
+        let (root,store)=upsert_fixture();
+        let first=store.upsert_device("",generated_ip(1),None).unwrap();
+        let second=store.upsert_device("  ",generated_ip(2),None).unwrap();
+        assert_ne!(first,second);
+        assert_eq!(store.upsert_device("",generated_ip(1),None).unwrap(),first);
+        assert_eq!(store.read().unwrap().devices.len(),2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn device_reorder_and_batch_forget_preserve_fresh_records_and_apply_atomically() {
         let root=std::env::temp_dir().join(format!("eclipse-device-management-{}",uuid::Uuid::new_v4()));
