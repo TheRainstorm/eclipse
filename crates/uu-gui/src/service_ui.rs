@@ -280,7 +280,7 @@ impl Entry {
             manager.show_tabs(ui);
         }
         let section = self.manager.as_ref().map_or(Section::Management, |manager| manager.section);
-        if section == Section::Management {
+        if section == Section::Management && !self.manager.as_ref().is_some_and(|manager|manager.connection_history.open) {
             self.show_status_card(ui, available);
         }
         if let Some(manager) = &mut self.manager {
@@ -905,6 +905,10 @@ impl Manager {
         let enabled = self.snapshot.is_some() && !self.busy;
         match self.section {
             Section::Management => {
+                if self.connection_history.open {
+                    if self.connection_history.show(ui) {self.submit(Job::HistoryRefresh);}
+                    return;
+                }
                 section_card(ui, uu_i18n::text("连接入口"), |ui| {
                     if let Some(endpoints) = &self.endpoint_status.values {
                         for endpoint in endpoints {
@@ -1083,9 +1087,9 @@ impl Manager {
         }
     }
     fn connections(&mut self, ui: &mut egui::Ui) {
+        if self.connection_history.button(ui){self.submit(Job::HistoryRefresh);}
+        ui.add_space(8.);
         self.current_connections(ui);
-        ui.separator();
-        if self.connection_history.show(ui) { self.submit(Job::HistoryRefresh); }
     }
     fn current_connections(&mut self, ui: &mut egui::Ui) {
         if let Some(snapshot) = self.snapshot.clone() {

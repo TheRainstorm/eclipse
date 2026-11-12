@@ -2239,5 +2239,9 @@
   "仅移除本地记录，现有串流和被控端授权不受影响。": "Only the local record is removed. Existing streams and host permissions are kept.",
   "确认移除": "Confirm removal",
   "删除选中的 {} 台设备？": "Delete the {} selected devices?",
-  "结束管理": "Finish managing devices"
+  "结束管理": "Finish managing devices",
+  "连接历史": "Connection history",
+  "返回会话": "Back to sessions",
+  "还没有已结束的连接记录。": "There are no completed connections yet.",
+  "第 {} / {} 页": "Page {} / {}"
 }

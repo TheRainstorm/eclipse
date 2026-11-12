@@ -1798,6 +1798,11 @@ impl Workspace {
         }
     }
     fn service_control(&mut self, ui:&mut egui::Ui, actions:&mut Vec<Action>) {
+        if self.connection_history.open {
+            if let Some(path)=&self.history_path {self.connection_history.local(path.clone(),self.host.access.as_ref().map(|a|&a.sessions.history),ui.ctx());}
+            card(ui,|ui|{self.connection_history.show(ui);});
+            return;
+        }
         #[cfg(windows)]
         if self.background_service.show(ui,&mut self.host,self.store.is_some()) {
             self.book.sharing.auto_start=false;
@@ -1875,7 +1880,10 @@ impl Workspace {
         }
         let sessions=self.host.sessions();
         card(ui,|ui| {
-            ui.strong(uu_i18n::text("会话"));
+            ui.horizontal(|ui| {
+                ui.strong(uu_i18n::text("会话"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{self.connection_history.button(ui);});
+            });
             if sessions.is_empty() {
                 muted(ui,uu_i18n::text("会话为空"));
                 return;
@@ -1907,10 +1915,6 @@ impl Workspace {
                     });
             }
         });
-        if let Some(path) = &self.history_path {
-            self.connection_history.local(path.clone(), self.host.access.as_ref().map(|a| &a.sessions.history), ui.ctx());
-            card(ui, |ui| { self.connection_history.show(ui); });
-        }
     }
     pub(super) fn server_settings(&mut self, ui: &mut egui::Ui, info: &Info, _actions: &mut Vec<Action>) {
         if self.service_tab==4 {
