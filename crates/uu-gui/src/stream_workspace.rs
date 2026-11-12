@@ -639,6 +639,7 @@ impl Window {
                 native.as_ref(),
                 ctx,
                 self.origin,
+                true,
             )));
             eframe::request_vsync(ctx, vsync);
         }

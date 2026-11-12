@@ -38,6 +38,7 @@ pub fn run() -> Result<()> {
         .with_title(title).with_visible(visible).with_inner_size(winit::dpi::PhysicalSize::new(320, 200)));
     let windows = Marked(vec![make("Owned restored Eclipse", true)?,
         make("Owned minimized Eclipse", true)?, make("Owned hidden Eclipse", false)?]);
+    let launcher = Marked(vec![make("Owned Eclipse launcher",true)?]);
     let external = make("Owned external foreground surrogate", true)?;
     windows.0[0].set_maximized(true);
     windows.0[1].set_minimized(true);
@@ -46,7 +47,8 @@ pub fn run() -> Result<()> {
     external.set_visible_no_activate(true);
     ensure!(windows.0[1].is_minimized() == Some(true), "fixture did not minimize its own window");
     ensure!(windows.0[0].is_maximized(), "fixture did not maximize its own window");
-    for window in &windows.0 { unsafe { boss::mark(hwnd(window)); } }
+    for window in &windows.0 { unsafe { boss::mark(hwnd(window),true); } }
+    unsafe {boss::mark(hwnd(&launcher.0[0]),false);}
     boss::registered(true);
     let before: Vec<_> = windows.0.iter().map(rect).collect();
     let visible: Vec<_> = windows.0.iter().map(visible_style).collect();
@@ -56,6 +58,8 @@ pub fn run() -> Result<()> {
     let raw_visibility: Vec<_> = windows.0.iter().map(|w| unsafe { IsWindowVisible(hwnd(w)) }).collect();
     let visibility_query_supported = raw_visibility[0] != 0;
     ensure!(boss::toggle(), "native hide intent rejected");
+    ensure!(!unsafe {property(&launcher.0[0],windows_sys::w!("Eclipse.BossKey.Restorable.1"))},
+        "launcher must not receive hide or restore intent");
     let targets = windows.0.iter().filter(|window| unsafe {
         property(window, windows_sys::w!("Eclipse.BossKey.RestoreTarget.1"))
     }).count();
@@ -66,6 +70,9 @@ pub fn run() -> Result<()> {
     }
     for window in &windows.0 { window.set_visible_no_activate(false); }
     ensure!(boss::toggle(), "native restore intent rejected");
+    ensure!(!unsafe {property(&launcher.0[0],windows_sys::w!("Eclipse.BossKey.Activate.1"))},
+        "launcher must not receive foreground intent");
+    ensure!(visible_style(&launcher.0[0]),"launcher visibility changed");
     ensure!(windows.0.iter().filter(|window| unsafe {
         property(window, windows_sys::w!("Eclipse.BossKey.Activate.1"))
     }).count() == usize::from(visibility_query_supported), "unexpected activation intent count");
@@ -98,7 +105,7 @@ pub fn run() -> Result<()> {
     println!("{}", serde_json::json!({"window":"passed","owned_station":true,
         "single_restore_target":visibility_query_supported.then_some(true),
         "visibility_query_supported":visibility_query_supported,"raw_visibility":raw_visibility,
-        "prior_hidden_flags_preserved":true,"minimized_preserved":true,"maximized_preserved":true,
+        "launcher_preserved":true,"prior_hidden_flags_preserved":true,"minimized_preserved":true,"maximized_preserved":true,
         "geometry_preserved":true,"automatic_recovery_does_not_activate":true,
         "native_focus_result":focus,"interactive_foreground_verified":false}));
     Ok(())

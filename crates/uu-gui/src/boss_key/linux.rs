@@ -338,7 +338,7 @@ async fn portal(
             .enumerate()
             .map(|(i, key)| {
                 let trigger = portal_trigger(*key);
-                NewShortcut::new(format!("boss-{i}"), "Eclipse: hide or restore all windows")
+                NewShortcut::new(format!("boss-{i}"), "Eclipse: hide or restore stream windows")
                     .preferred_trigger(Some(trigger.as_str()))
             })
             .collect();

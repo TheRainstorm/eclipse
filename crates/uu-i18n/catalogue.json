@@ -2249,7 +2249,7 @@
   "驱动检查完成：驱动已就绪，可启用虚拟显示器。": "Driver check complete: the driver is ready to enable virtual displays.",
   "驱动检查完成：尚未检测到可用驱动，请完成驱动准备。": "Driver check complete: no usable driver was found. Complete driver preparation first.",
   "驱动检查完成：当前系统不支持虚拟显示器。": "Driver check complete: virtual displays are not supported on this system.",
-  "老板键：隐藏 / 恢复所有窗口": "Boss key: hide / restore all windows",
+  "老板键：隐藏 / 恢复串流窗口": "Boss key: hide / restore stream windows",
   "无法启用全局老板键，请检查系统快捷键是否可用或被占用": "Cannot enable the global boss key. Check desktop shortcut support or conflicts.",
   "服务器已重新添加，已保留客户端配置；请刷新服务器列表": "The server was added again, so its client settings were kept. Refresh the server list.",
   "请选择服务器": "Select a server",

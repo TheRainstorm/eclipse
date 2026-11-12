@@ -49,6 +49,7 @@ fn parse_origin(value: &str) -> Option<(i32, i32)> {
 }
 
 pub struct Platform {
+    streaming: bool,
     #[cfg(target_os = "linux")]
     wayland: std::cell::RefCell<Option<wayland_capture::Capture>>,
     #[cfg(windows)]
@@ -85,11 +86,11 @@ impl Platform {
         }
         #[cfg(not(windows))] {let _=point;false}
     }
-    pub fn new(_cc: &eframe::CreationContext<'_>, _origin: Option<(i32, i32)>) -> Self {
-        Self::for_window(_cc,&_cc.egui_ctx,_origin)
+    pub fn new(_cc: &eframe::CreationContext<'_>, _origin: Option<(i32, i32)>, streaming: bool) -> Self {
+        Self::for_window(_cc,&_cc.egui_ctx,_origin,streaming)
     }
-    pub fn for_window(_handles:&(impl raw_window_handle::HasWindowHandle+raw_window_handle::HasDisplayHandle),_ctx:&egui::Context,_origin:Option<(i32,i32)>)->Self {
-        crate::boss_key::register(_ctx);
+    pub fn for_window(_handles:&(impl raw_window_handle::HasWindowHandle+raw_window_handle::HasDisplayHandle),_ctx:&egui::Context,_origin:Option<(i32,i32)>,streaming:bool)->Self {
+        crate::boss_key::register(_ctx,streaming);
         #[cfg(windows)]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -102,9 +103,10 @@ impl Platform {
                     windows::place_startup(window, origin);
                 }
             }
-            let route=unsafe{windows::install_window_keyboard(window,_ctx.clone())};
+            let route=unsafe{windows::install_window_keyboard(window,_ctx.clone(),streaming)};
             let hook = if window.is_null(){None}else{unsafe { windows::shared_keyboard_hook(window) }};
             Self {
+                streaming,
                 window,
                 hook,
                 route,
@@ -117,6 +119,7 @@ impl Platform {
         #[cfg(not(windows))]
         {
             Self {
+                streaming,
                 #[cfg(target_os = "linux")]
                 wayland: std::cell::RefCell::new(wayland_capture::Capture::new(_handles)),
                 show_pending: std::cell::Cell::new(false),
@@ -195,8 +198,9 @@ impl Platform {
         #[cfg(not(windows))] {None}
     }
     pub fn show(&self, ctx: &egui::Context) {
+        crate::boss_key::register(ctx,self.streaming);
         #[cfg(target_os = "linux")]
-        if !crate::boss_key::hidden() {
+        if self.streaming && !crate::boss_key::hidden() {
             if let Some(token) = crate::boss_key::take_activation_token(ctx) {
                 if let Some(capture) = self.wayland.borrow_mut().as_mut() { capture.activate(&token); }
             }
@@ -219,7 +223,7 @@ impl Platform {
                 }
             }
         }
-        if !crate::boss_key::hidden() && self.show_pending.replace(false) {
+        if (!self.streaming || !crate::boss_key::hidden()) && self.show_pending.replace(false) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.focus_window();
@@ -234,7 +238,7 @@ impl Platform {
         #[cfg(not(windows))] { Vec::new() }
     }
     pub fn focus_window(&self) {
-        if crate::boss_key::hidden(){return;}
+        if self.streaming && crate::boss_key::hidden(){return;}
         #[cfg(windows)]
         if !self.window.is_null() {
             let event = unsafe {windows::show_and_focus(self.window)};
@@ -497,13 +501,13 @@ mod windows {
     static HOOK_ALT_FORWARDED_INACTIVE: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_FORWARDED_BACKGROUND: AtomicU64=AtomicU64::new(0);
     static HOOK_ALT_FORWARDED_BACKGROUND: AtomicU64=AtomicU64::new(0);
-    pub unsafe fn install_window_keyboard(window:HWND,context:eframe::egui::Context)->std::sync::Arc<Route> {
+    pub unsafe fn install_window_keyboard(window:HWND,context:eframe::egui::Context,streaming:bool)->std::sync::Arc<Route> {
         let old=if window.is_null(){0}else{SetWindowLongPtrW(window,GWLP_WNDPROC,window_keyboard as *const () as isize)};
         let viewport=context.viewport_id();
         let result=std::sync::Arc::new(Route {old_proc:old,context,viewport,policy:0.into(),session:0.into(),
             keys:std::sync::Mutex::new(crate::keyboard_capture::RecipientKeys::new()),queue:Default::default(),overflow:false.into()});
         routes().write().unwrap().insert(window as isize,result.clone());
-        crate::boss_key::windows::mark(window);
+        crate::boss_key::windows::mark(window,streaming);
         result
     }
     pub unsafe fn remove_window_keyboard(window:HWND,route:&Route) {
@@ -852,7 +856,7 @@ mod windows {
             let window=CreateWindowExW(0,class.as_ptr(),std::ptr::null(),0,0,0,0,0,
                 HWND_MESSAGE,std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null());
             assert!(!window.is_null());
-            Window(window,install_window_keyboard(window,Default::default()))
+            Window(window,install_window_keyboard(window,Default::default(),true))
         };
         let a=create();let b=create();
         a.1.select(11);b.1.select(22);

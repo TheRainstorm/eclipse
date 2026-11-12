@@ -1,4 +1,4 @@
-//! Process-wide visibility owns no connection, audio or return-to-local state.
+//! Shared stream visibility owns no connection, audio or return-to-local state.
 use eframe::egui;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -24,6 +24,7 @@ struct Window {
     viewport: egui::ViewportId,
     snapshot: Option<Snapshot>,
     normal_visible: bool,
+    streaming: bool,
     recording: bool,
     #[cfg(target_os = "linux")]
     focused: bool,
@@ -48,7 +49,7 @@ fn observe(hidden: bool) {
         }
     }
 }
-pub fn register(ctx: &egui::Context) {
+pub fn register(ctx: &egui::Context, streaming: bool) {
     let Some(native) = eframe::viewport_window(ctx) else {
         return;
     };
@@ -62,7 +63,7 @@ pub fn register(ctx: &egui::Context) {
         .find(|w| w.native.upgrade().is_some_and(|w| w.id() == native.id())) {
         #[cfg(target_os = "linux")]
         {
-            if focused && !window.focused { window.focus_order = next_focus(); linux::focused(); }
+            if streaming && focused && !window.focused { window.focus_order = next_focus(); linux::focused(); }
             window.focused = focused;
         }
         #[cfg(not(target_os = "linux"))] let _ = window;
@@ -70,21 +71,22 @@ pub fn register(ctx: &egui::Context) {
     }
     drop(windows);
     #[cfg(target_os = "linux")]
-    if focused { linux::focused(); }
+    if streaming && focused { linux::focused(); }
     let mut windows = self::windows().lock().unwrap();
     windows.push(Window {
         native: std::sync::Arc::downgrade(&native),
         ctx: ctx.clone(),
         viewport: ctx.viewport_id(),
-        snapshot: hidden().then_some(Snapshot {
+        snapshot: (streaming && hidden()).then_some(Snapshot {
             visible: true,
             minimized: false,
             maximized: false,
         }),
         normal_visible: true,
+        streaming,
         recording: false,
         #[cfg(target_os = "linux")] focused,
-        #[cfg(target_os = "linux")] focus_order: if focused { next_focus() } else { 0 },
+        #[cfg(target_os = "linux")] focus_order: if streaming && focused { next_focus() } else { 0 },
         #[cfg(target_os = "linux")] activation: None,
     });
 }
@@ -212,6 +214,7 @@ pub fn apply() {
         let mut windows = windows().lock().unwrap();
         windows.retain(|w| w.native.strong_count() > 0);
         for (index, window) in windows.iter_mut().enumerate() {
+            if !window.streaming { continue; }
             let Some(native) = window.native.upgrade() else {
                 continue;
             };

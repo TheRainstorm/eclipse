@@ -180,7 +180,7 @@ mod probe {
                 "owned boss-key window probe timed out in phase {}",
                 self.phase
             );
-            boss_key::register(ctx);
+            boss_key::register(ctx,self.child);
             boss_key::apply();
             if !self.child {
                 for (id, visible, title) in [
@@ -194,7 +194,7 @@ mod probe {
                             .with_inner_size([280., 180.])
                             .with_visible(visible),
                         |ctx, _| {
-                            boss_key::register(ctx);
+                            boss_key::register(ctx,true);
                             boss_key::apply();
                             egui::CentralPanel::default().show(ctx, |ui| {
                                 ui.label("Generated native window only");
@@ -245,7 +245,7 @@ mod probe {
                         self.at = Instant::now();
                         self.phase = 11;
                     }
-                    1 if visible == [false, false, false]
+                    1 if visible == [true, false, false]
                         && self.child_state()["visible"] == false =>
                     {
                         self.hide_ms = self.at.elapsed().as_millis();
@@ -285,18 +285,18 @@ mod probe {
                         self.at = Instant::now();
                         self.phase = 6;
                     }
-                    6 if boss_key::hidden() && visible == [false, false, false] => {
+                    6 if boss_key::hidden() && visible == [true, false, false] => {
                         self.keys.press(true);
                         self.keys.press(false);
                         self.phase = 7;
                     }
                     7 if !boss_key::hidden() && visible == [true, true, false]
-                        && owned[..3].contains(&self.keys.focused()) => {
+                        && self.keys.focused()==owned[1] => {
                         assert_eq!(identity, self.identity);
                         assert_eq!(geometry, self.geometry);
                         println!(
                             "{}",
-                            serde_json::json!({"window":"passed","processes":2,"windows":4,"hide_ms":self.hide_ms,"restore_ms":self.restore_ms,"repeat_suppressed":true,"prior_hidden_preserved":true,"geometry_and_identity_preserved":true,"owner_exit_takeover":true,"recording_suspension":true,"external_focus_preserved_while_hidden":true,"last_active_process_restored":true,"owned_ewmh_window_manager":true})
+                            serde_json::json!({"window":"passed","processes":2,"windows":4,"stream_windows":3,"launcher_preserved":true,"hide_ms":self.hide_ms,"restore_ms":self.restore_ms,"repeat_suppressed":true,"prior_hidden_preserved":true,"geometry_and_identity_preserved":true,"owner_exit_takeover":true,"recording_suspension":true,"external_focus_preserved_while_hidden":true,"last_active_process_restored":true,"owned_ewmh_window_manager":true})
                         );
                         self.phase = 8;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -388,7 +388,7 @@ mod probe {
                 ..Default::default()
             },
             Box::new(move |cc| {
-                boss_key::register(&cc.egui_ctx);
+                boss_key::register(&cc.egui_ctx,child);
                 Ok(Box::new(App {
                     child,
                     report,

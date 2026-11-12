@@ -1197,7 +1197,7 @@ mod tests {
         struct NoWindow;
         impl HasWindowHandle for NoWindow {fn window_handle(&self)->Result<WindowHandle<'_>,HandleError>{Err(HandleError::Unavailable)}}
         impl HasDisplayHandle for NoWindow {fn display_handle(&self)->Result<DisplayHandle<'_>,HandleError>{Err(HandleError::Unavailable)}}
-        let platform=std::rc::Rc::new(crate::platform::Platform::for_window(&NoWindow,ctx,None));
+        let platform=std::rc::Rc::new(crate::platform::Platform::for_window(&NoWindow,ctx,None,false));
         let target=crate::sessions::StreamTarget{connection:crate::sessions::ConnectionTarget::NativeDevice("generated-quality-menu".into()),alias:"Generated".into(),view_only:true};
         let mut app=crate::App::new_session(ctx,None,platform,Some(target),false,None,true);
         app.preferences.client=Default::default();app.target_fps=60;app.resolution_idx=0;

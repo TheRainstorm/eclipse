@@ -1,4 +1,4 @@
-//! One desktop shortcut broadcasts visibility to marked Eclipse windows only.
+//! All windows coordinate the shortcut; only stream windows hide and restore.
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     OnceLock,
@@ -8,6 +8,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::*,
 };
 const MARKER: *const u16 = windows_sys::w!("Eclipse.BossKey.Window.1");
+const STREAM: *const u16 = windows_sys::w!("Eclipse.BossKey.Stream.1");
 const REGISTERED: *const u16 = windows_sys::w!("Eclipse.BossKey.Ready.1");
 const RECORDING: *const u16 = windows_sys::w!("Eclipse.Shortcut.Recording.1");
 const RESTORABLE: *const u16 = windows_sys::w!("Eclipse.BossKey.Restorable.1");
@@ -21,19 +22,21 @@ pub fn message() -> u32 {
         unsafe { RegisterWindowMessageW(name.as_ptr()) }
     })
 }
-pub unsafe fn mark(window: HWND) {
+pub unsafe fn mark(window: HWND, streaming: bool) {
     if window.is_null() {
         return;
     }
     let hidden = any(2, false);
     super::observe(hidden);
     SetPropW(window, MARKER, if hidden { 2 } else { 1 } as _);
+    if streaming { SetPropW(window, STREAM, 1usize as _); }
     if OWNED.load(Ordering::Acquire) {
         SetPropW(window, REGISTERED, 1usize as _);
     }
 }
 pub unsafe fn unmark(window: HWND) {
     RemovePropW(window, MARKER);
+    RemovePropW(window, STREAM);
     RemovePropW(window, REGISTERED);
     RemovePropW(window, RECORDING);
     RemovePropW(window, RESTORABLE);
@@ -126,7 +129,7 @@ pub fn receive(window: HWND, hidden: bool) {
     super::observe(hidden);
     unsafe {
         let activation = if hidden { 0 } else { RemovePropW(window, ACTIVATE) as isize };
-        if activation != 0 && !GetPropW(window, RESTORABLE).is_null() {
+        if activation != 0 && !GetPropW(window, STREAM).is_null() && !GetPropW(window, RESTORABLE).is_null() {
             // Handle the foreground grant in the HWND dispatch, before a full
             // GUI frame. A later key-up in another process revokes ASFW rights.
             SetWindowPos(window, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -170,13 +173,14 @@ fn broadcast(hidden: bool, activate: bool) {
     unsafe {
         let mut windows = vec![];
         EnumWindows(Some(collect), &mut windows as *mut Vec<HWND> as isize);
+        let streams=windows.iter().copied().filter(|&w|!GetPropW(w,STREAM).is_null()).collect::<Vec<_>>();
         // EnumWindows supplies Z order. An explicit restore has one target,
         // including when the foreground at hide time belonged to another app.
         let target = if hidden {
-            windows.iter().copied().find(|&w| IsWindowVisible(w) != 0 && IsIconic(w) == 0)
+            streams.iter().copied().find(|&w| IsWindowVisible(w) != 0 && IsIconic(w) == 0)
         } else {
-            windows.iter().copied().find(|&w| !GetPropW(w, RESTORE_TARGET).is_null())
-                .or_else(|| windows.iter().copied().find(|&w| !GetPropW(w, RESTORABLE).is_null()))
+            streams.iter().copied().find(|&w| !GetPropW(w, RESTORE_TARGET).is_null())
+                .or_else(|| streams.iter().copied().find(|&w| !GetPropW(w, RESTORABLE).is_null()))
         };
         let mut granted = false;
         if activate {
@@ -191,7 +195,7 @@ fn broadcast(hidden: bool, activate: bool) {
         for &window in &windows {
             if GetPropW(window, MARKER).is_null() { continue; }
             RemovePropW(window, ACTIVATE);
-            if hidden {
+            if hidden && !GetPropW(window, STREAM).is_null() {
                 RemovePropW(window, RESTORABLE);
                 RemovePropW(window, RESTORE_TARGET);
                 if IsWindowVisible(window) != 0 && IsIconic(window) == 0 { SetPropW(window, RESTORABLE, 1usize as _); }

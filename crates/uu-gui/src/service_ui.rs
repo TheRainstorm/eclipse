@@ -1376,7 +1376,7 @@ fn run_manager(virtual_displays: bool) -> eframe::Result {
             }
             Ok(Box::new(Standalone {
                 sessions: Default::default(),
-                platform:super::platform::Platform::new(cc,None),
+                platform:super::platform::Platform::new(cc,None,false),
                 entry: Entry {
                     manager: Some(manager),
                     ..Default::default()

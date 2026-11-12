@@ -137,7 +137,7 @@ impl crate::App {
             .with_title(uu_i18n::text("悬浮会话中心 · Eclipse"))
             .with_inner_size([450., 600.]).with_min_inner_size([360., 220.])
             .with_window_level(egui::WindowLevel::AlwaysOnTop)
-            .with_visible(!crate::boss_key::hidden()), |ctx, _| {
+            .with_visible(true), |ctx, _| {
                 if ctx.input(|input| input.viewport().close_requested()) { self.host_sessions_open = false; }
                 egui::CentralPanel::default().frame(egui::Frame::none().fill(crate::theme::palette(&ctx.style().visuals).base).inner_margin(12.)).show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {

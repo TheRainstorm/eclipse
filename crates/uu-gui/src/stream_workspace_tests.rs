@@ -133,7 +133,7 @@ fn catalog_state(screens:Vec<uu_core::screen_control::RemoteScreen>,current:i32)
         fn display_handle(&self)->Result<DisplayHandle<'_>,HandleError>{Err(HandleError::Unavailable)}
     }
     let ctx=egui::Context::default();
-    let platform=Rc::new(crate::platform::Platform::for_window(&NoWindow,&ctx,None));
+    let platform=Rc::new(crate::platform::Platform::for_window(&NoWindow,&ctx,None,true));
     let target=owned_target("A");
     let mut app=App::new_session(&ctx,None,platform.clone(),Some(target.clone()),false,None,false);
     let stats=Arc::new(uu_core::media::MediaStats::default());

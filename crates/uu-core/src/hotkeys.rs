@@ -45,7 +45,7 @@ impl Action {
         match self {
             Self::Stats => "HUD",
             Self::Vsync => uu_i18n::text("垂直同步"),
-            Self::BossKey => uu_i18n::text("老板键：隐藏 / 恢复所有窗口"),
+            Self::BossKey => uu_i18n::text("老板键：隐藏 / 恢复串流窗口"),
             Self::Menu => uu_i18n::text("悬浮菜单"),
             Self::Mute => uu_i18n::text("静音"),
             Self::Fullscreen => uu_i18n::text("全屏"),
