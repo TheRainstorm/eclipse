@@ -23,6 +23,7 @@ _linux_spec.loader.exec_module(_linux_installer)
 
 TAG = re.compile(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?')
 ARCHIVE = re.compile(r'(?:eclipse|uu-client)-(windows-x64|linux-x86_64)-([0-9a-f]{12})\.(zip|tar\.gz)')
+SIGNAL_ARCHIVE = re.compile(r'eclipse-signal-linux-x86_64-[0-9a-f]{12}\.tar\.gz')
 
 
 def gh(arguments):
@@ -41,7 +42,7 @@ def checksums(text):
         if len(fields) != 2 or not re.fullmatch('[0-9a-fA-F]{64}', fields[0]):
             raise ValueError('Invalid SHA256SUMS')
         name = fields[1].removeprefix('*')
-        if not ARCHIVE.fullmatch(name) or name in result:
+        if not (ARCHIVE.fullmatch(name) or SIGNAL_ARCHIVE.fullmatch(name)) or name in result:
             raise ValueError('Unsafe or duplicate archive name in SHA256SUMS')
         result[name] = fields[0].lower()
     if not result:

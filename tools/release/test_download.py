@@ -66,14 +66,14 @@ class DownloadTests(unittest.TestCase):
                     info.size = 0
                 archive.addfile(info, io.BytesIO(data))
 
-    def hashes(self):
+    def hashes(self, extra=()):
         (self.assets / 'SHA256SUMS').write_text(''.join(
-            download.digest(self.assets / name) + '  ' + name + '\n' for name in (self.windows, self.linux)))
+            download.digest(self.assets / name) + '  ' + name + '\n' for name in (self.windows, self.linux, *extra)))
 
     def fake_gh(self, arguments):
         if arguments[:2] == ['release', 'view']:
             return json.dumps({'tagName': 'v1.2.3', 'assets': [
-                {'name': name} for name in ('SHA256SUMS', self.windows, self.linux)]})
+                {'name': path.name} for path in sorted(self.assets.iterdir())]})
         if arguments[0] == 'api':
             return self.revision + '\n'
         if arguments[:2] == ['release', 'download']:
@@ -119,6 +119,30 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual((self.output / 'windows-latest.json').read_bytes(), previous)
         self.assertFalse((self.output / self.windows).exists())
         self.assertFalse(list(self.output.glob('.release-download-*')))
+
+    def test_shared_checksums_allow_signal_asset_without_selecting_it_as_desktop(self):
+        signal = 'eclipse-signal-linux-x86_64-' + self.revision[:12] + '.tar.gz'
+        (self.assets / signal).write_bytes(b'standalone server fixture')
+        self.hashes(extra=(signal,))
+        with patch.object(download, 'gh', side_effect=self.fake_gh) as github:
+            result = download.download('example/project', 'v1.2.3', self.output)
+        self.assertEqual(set(result['packages']), {'windows', 'linux'})
+        self.assertEqual(download.checksums((self.assets / 'SHA256SUMS').read_text())[signal],
+                         download.digest(self.assets / signal))
+        self.assertFalse((self.output / signal).exists())
+        downloads = [call.args[0] for call in github.call_args_list
+                     if call.args[0][:2] == ['release', 'download']]
+        self.assertEqual(len(downloads), 1)
+        self.assertNotIn(signal, downloads[0])
+
+    def test_signal_checksum_still_rejects_unknown_names_paths_and_duplicates(self):
+        name = 'eclipse-signal-linux-x86_64-' + self.revision[:12] + '.tar.gz'
+        for candidate in ('../' + name, 'directory/' + name, name.replace('.tar.gz', '.zip'),
+                          name.replace('linux-x86_64', 'windows-x64'), 'unknown-' + name):
+            with self.subTest(name=candidate), self.assertRaisesRegex(ValueError, 'Unsafe'):
+                download.checksums('a' * 64 + '  ' + candidate + '\n')
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            download.checksums(('a' * 64 + '  ' + name + '\n') * 2)
 
     def test_source_manifest_must_match_tag_before_publishing(self):
         self.revision = 'b' * 40
