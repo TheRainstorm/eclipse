@@ -1,4 +1,5 @@
 {
+  "连接服务接入码的设备组无效或缺失，请向管理员获取新接入码": "The invitation has an invalid or missing device group. Ask your administrator for a new invitation.",
   "已加入连接服务。保持应用运行，空闲后自动启用；关闭后下次打开继续。": "Joined the connection service. Keep Eclipse running to enable sharing when idle. If closed, activation resumes when Eclipse next opens.",
   "已加入连接服务。保持应用运行，空闲后自动启用本机共享。": "Joined the connection service. Keep Eclipse running to enable sharing when this host is idle.",
   "未能读取待启用状态，请在服务管理中确认配置": "Could not read the pending activation. Confirm the configuration in Service Management",

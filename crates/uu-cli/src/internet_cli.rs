@@ -24,7 +24,7 @@ pub enum Command {
         #[arg(long)]
         private_key: PathBuf,
         #[arg(long)]
-        token_file: PathBuf,
+        groups_file: PathBuf,
         #[arg(long)]
         stun: Vec<String>,
         #[arg(long, requires = "turn_secret_file")]
@@ -93,7 +93,7 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             bind,
             certificate,
             private_key,
-            token_file,
+            groups_file,
             stun,
             turn_url,
             turn_secret_file,
@@ -105,7 +105,7 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
                     bind,
                     certificate,
                     private_key,
-                    token_file,
+                    groups_file,
                     stun,
                     turn: if turn_url.is_empty() {None} else {Some(internet::server::TurnConfig {
                         urls:turn_url,secret_file:turn_secret_file.context("--turn-url requires --turn-secret-file")?,

@@ -51,14 +51,18 @@ async fn owned_coturn_credentials_from_wss_choose_direct_then_relay_and_decode_v
     let cert=fixture.root.join("cert.pem");let key=fixture.root.join("key.pem");let token=fixture.root.join("token");
     crate::private_file::write_atomic(&cert,certificate.cert.pem().as_bytes()).unwrap();
     crate::private_file::write_atomic(&key,certificate.key_pair.serialize_pem().as_bytes()).unwrap();
-    crate::private_file::write_atomic(&token,hex::encode(uuid::Uuid::new_v4().as_bytes()).repeat(2).as_bytes()).unwrap();
+    let group = crate::internet::server::groups::Group::new("Generated TURN group".into()).unwrap();
+    let group_id = group.id;
+    crate::private_file::write_atomic(&token, group.token.as_bytes()).unwrap();
+    let groups_file = fixture.root.join("groups.json");
+    crate::internet::server::groups::Groups { version: 1, groups: vec![group] }.save(&groups_file).unwrap();
     let reservation=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=reservation.local_addr().unwrap();drop(reservation);
     let (stop,rx)=tokio::sync::watch::channel(false);
     let serving=tokio::spawn(crate::internet::server::serve(crate::internet::server::Config {
-        bind:address,certificate:cert.clone(),private_key:key,token_file:token.clone(),stun:vec![format!("stun:{turn_address}")],
+        bind:address,certificate:cert.clone(),private_key:key,groups_file,stun:vec![format!("stun:{turn_address}")],
         turn:Some(crate::internet::server::TurnConfig{urls:vec![format!("turn:{turn_address}?transport=udp")],secret_file,credential_lifetime:Duration::from_secs(3600)}),
     },rx));
-    let endpoint=crate::internet::self_hosted::Config{url:format!("wss://{address}/v1/signal"),token_file:token,ca_file:Some(cert)};
+    let endpoint=crate::internet::self_hosted::Config{url:crate::internet::enrollment::group_url(&format!("wss://{address}/v1/signal"), &group_id).unwrap(),token_file:token,ca_file:Some(cert)};
     let mut listener=timeout(Duration::from_secs(4),async {
         loop {match crate::internet::self_hosted::Listener::online_named(&endpoint,"owned-host","Owned host").await {
             Ok(listener)=>break listener,Err(_)=>tokio::time::sleep(Duration::from_millis(10)).await,

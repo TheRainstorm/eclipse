@@ -199,7 +199,11 @@ async fn unified_device_wss_listener_republishes_and_reconnects_with_the_same_gr
     let token = root.join("token");
     std::fs::write(&cert, certificate.cert.pem()).unwrap();
     std::fs::write(&key, certificate.key_pair.serialize_pem()).unwrap();
-    internet::AccessKey::create(&token).unwrap();
+    let group = internet::server::groups::Group::new("Generated device group".into()).unwrap();
+    let group_id = group.id;
+    std::fs::write(&token, group.token.as_bytes()).unwrap();
+    let groups_file = root.join("groups.json");
+    internet::server::groups::Groups { version: 1, groups: vec![group] }.save(&groups_file).unwrap();
     let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = reserved.local_addr().unwrap();
     drop(reserved);
@@ -210,7 +214,7 @@ async fn unified_device_wss_listener_republishes_and_reconnects_with_the_same_gr
             bind: address,
             certificate: cert.clone(),
             private_key: key,
-            token_file: token.clone(),
+            groups_file,
             stun: vec![],
         },
         service_rx,
@@ -218,7 +222,7 @@ async fn unified_device_wss_listener_republishes_and_reconnects_with_the_same_gr
     let settings = Settings {
         provider: Provider::SelfHosted,
         device_auth: true,
-        server: format!("localhost:{}", address.port()),
+        server: internet::enrollment::group_url(&format!("wss://localhost:{}/v1/signal", address.port()), &group_id).unwrap(),
         server_ca: Some(cert),
         server_token: token,
         device: "generated-host".into(),

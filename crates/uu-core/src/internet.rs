@@ -597,7 +597,11 @@ mod tests {
         let token = root.0.join("token");
         std::fs::write(&cert, certificate.cert.pem()).unwrap();
         std::fs::write(&key, certificate.key_pair.serialize_pem()).unwrap();
-        AccessKey::create(&token).unwrap();
+        let group = server::groups::Group::new("Generated media group".into()).unwrap();
+        let group_id = group.id;
+        std::fs::write(&token, group.token.as_bytes()).unwrap();
+        let groups_file = root.0.join("groups.json");
+        server::groups::Groups { version: 1, groups: vec![group] }.save(&groups_file).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
@@ -608,13 +612,13 @@ mod tests {
                 bind: address,
                 certificate: cert.clone(),
                 private_key: key,
-                token_file: token.clone(),
+                groups_file,
                 stun: vec![],
             },
             stop_rx,
         ));
         let config = self_hosted::Config {
-            url: format!("wss://localhost:{}/v1/signal", address.port()),
+            url: enrollment::group_url(&format!("wss://localhost:{}/v1/signal", address.port()), &group_id).unwrap(),
             token_file: token,
             ca_file: Some(cert),
         };

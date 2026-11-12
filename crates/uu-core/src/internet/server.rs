@@ -8,10 +8,9 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
-use subtle::ConstantTimeEq;
 use tokio::{
     sync::{mpsc, watch, Semaphore},
     time::{interval, timeout},
@@ -25,6 +24,8 @@ use tokio_tungstenite::{
         Message,
     },
 };
+#[path = "groups.rs"]
+pub mod groups;
 pub use super::turn::Config as TurnConfig;
 use super::turn::Credentials;
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -63,7 +64,7 @@ pub struct Config {
     pub bind: SocketAddr,
     pub certificate: PathBuf,
     pub private_key: PathBuf,
-    pub token_file: PathBuf,
+    pub groups_file: PathBuf,
     pub stun: Vec<String>,
     pub turn: Option<TurnConfig>,
 }
@@ -90,6 +91,27 @@ struct State {
     rooms: Arc<Mutex<Rooms>>,
     stun: Vec<String>,
     turn: Option<Arc<Credentials>>,
+}
+// Authentication chooses a namespace once. Every operation on the socket then
+// uses its independent Rooms, including directory, presence and media routing.
+// Weak entries retain an active group's identity across credential reloads
+// without keeping removed, idle groups alive forever.
+struct GroupStates {
+    stun: Vec<String>,
+    turn: Option<Arc<Credentials>>,
+    rooms: Mutex<HashMap<uuid::Uuid, Weak<Mutex<Rooms>>>>,
+}
+impl GroupStates {
+    fn state(&self, group: uuid::Uuid) -> State {
+        let mut groups = self.rooms.lock().unwrap();
+        groups.retain(|_, rooms| rooms.strong_count() != 0);
+        let rooms = groups.get(&group).and_then(Weak::upgrade).unwrap_or_else(|| {
+            let rooms = Arc::new(Mutex::new(Rooms::default()));
+            groups.insert(group, Arc::downgrade(&rooms));
+            rooms
+        });
+        State { rooms, stun: self.stun.clone(), turn: self.turn.clone() }
+    }
 }
 enum Membership {
     Host {
@@ -296,7 +318,7 @@ pub async fn serve(config: Config, mut stop: watch::Receiver<bool>) -> Result<()
         .urls()
         .to_vec();
     let turn=config.turn.map(Credentials::load).transpose()?.map(Arc::new);
-    let token = Arc::new(read_token(&config.token_file)?);
+    let access = Arc::new(groups::Access::new(groups::Groups::load(&config.groups_file)?)?);
     let chain = CertificateDer::pem_file_iter(&config.certificate)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let key = PrivateKeyDer::from_pem_file(&config.private_key)?;
@@ -307,31 +329,31 @@ pub async fn serve(config: Config, mut stop: watch::Receiver<bool>) -> Result<()
     let listener = crate::listen_socket::tcp(config.bind)
         .context("cannot bind signaling service")?;
     tracing::info!(address=%listener.local_addr()?,turn_configured=turn.is_some(),"native connection signaling listening");
-    let state = State {
-        rooms: Arc::default(),
-        stun,
-        turn,
-    };
+    let states = Arc::new(GroupStates {
+        stun, turn,
+        rooms: Mutex::default(),
+    });
     let slots = Arc::new(Semaphore::new(256));
     let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(access.clone().reload(config.groups_file, stop.clone()));
     loop {
         tokio::select! {
             _=stop.changed()=>if *stop.borrow()||stop.has_changed().is_err(){break;},
             accepted=listener.accept()=>{
                 let (tcp,_)=accepted?;
                 let Ok(permit)=slots.clone().try_acquire_owned() else {continue};
-                let acceptor=acceptor.clone();let token=token.clone();let state=state.clone();
+                let acceptor=acceptor.clone();let access=access.clone();let states=states.clone();
                 tasks.spawn(async move {
                     let _permit=permit;
                     let result=async {
                         let tls=timeout(Duration::from_secs(10),acceptor.accept(tcp)).await??;
-                        let ws=timeout(Duration::from_secs(10),accept_hdr_async_with_config(tls,move |req:&HttpRequest,response:Response| {
-                            let expected=format!("Bearer {}",token);
-                            let valid=req.uri().path()=="/v1/signal" && req.headers().get("authorization")
-                                .is_some_and(|v|v.as_bytes().ct_eq(expected.as_bytes()).into());
-                            if valid {Ok(response)} else {Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                        let mut group = None;
+                        let ws=timeout(Duration::from_secs(10),accept_hdr_async_with_config(tls, |req:&HttpRequest,response:Response| {
+                            group = access.authenticate(req);
+                            if group.is_some() {Ok(response)} else {Err(tokio_tungstenite::tungstenite::http::Response::builder()
                                 .status(401).body(Some("unauthorized".into())).unwrap())}
                         },Some(ws_config()))).await??;
+                        let state = states.state(group.context("missing authenticated private group")?);
                         handle(ws,state).await
                     }.await;
                     if result.is_err(){tracing::debug!("signaling connection ended");}
@@ -418,6 +440,128 @@ async fn handle<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn identical_device_ids_and_guessed_sessions_stay_inside_the_authenticated_group() {
+        let states = GroupStates { stun: Vec::new(), turn: None, rooms: Mutex::default() };
+        let a = states.state(uuid::Uuid::new_v4());
+        let b = states.state(uuid::Uuid::new_v4());
+        let mut hosts = Vec::new();
+        let mut viewers = Vec::new();
+        let mut receiving = Vec::new();
+        let mut host_events = Vec::new();
+        for state in [&a, &b] {
+            let (send, mut receive) = mpsc::channel(16);
+            let host = state.register(Request::Host { version: 3, device: "same-device".into() }, send).unwrap();
+            receive.recv().await.unwrap();
+            let (send, mut viewer_receive) = mpsc::channel(16);
+            let viewer = state.register(Request::Join { version: 2, device: "same-device".into() }, send).unwrap();
+            viewer_receive.recv().await.unwrap(); receive.recv().await.unwrap();
+            hosts.push(host); viewers.push(viewer); receiving.push(viewer_receive); host_events.push(receive);
+        }
+        let session = |member: &Membership| match member { Membership::Viewer { session, .. } => session.clone(), _ => unreachable!() };
+        let guessed = session(&viewers[1]);
+        a.route(&hosts[0], Request::Signal { session: guessed.clone(), body: serde_json::json!({"cross_group":true}) }).unwrap();
+        assert!(a.route(&viewers[0], Request::Signal { session: guessed, body: serde_json::json!({}) }).is_err());
+        assert!(receiving[1].try_recv().is_err());
+        assert!(host_events[1].try_recv().is_err());
+        a.remove(&hosts[1]);
+        assert_eq!(a.directory(1).unwrap().len(), 1, "foreign cleanup cannot retire this group's host");
+        b.route(&hosts[1], Request::Signal { session: session(&viewers[1]), body: serde_json::json!({"same_group":true}) }).unwrap();
+        assert!(matches!(receiving[1].recv().await, Some(Event::Signal { body, .. }) if body["same_group"] == true));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn real_wss_groups_hide_devices_and_reload_credentials_without_interrupting_existing_routes() {
+        use super::super::{enrollment::group_url, self_hosted};
+        crate::install_crypto_provider();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+        let root = Cleanup(std::env::temp_dir().join(format!("eclipse-group-wss-{}", uuid::Uuid::new_v4())));
+        std::fs::create_dir(&root.0).unwrap();
+        let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+        let cert = root.0.join("cert.pem"); let key = root.0.join("key.pem"); let registry = root.0.join("groups.json");
+        crate::private_file::write_atomic(&cert, certificate.cert.pem().as_bytes()).unwrap();
+        crate::private_file::write_atomic(&key, certificate.key_pair.serialize_pem().as_bytes()).unwrap();
+        let first = groups::Group::new("Generated first group".into()).unwrap();
+        let second = groups::Group::new("Generated second group".into()).unwrap();
+        groups::Groups { version: 1, groups: vec![first.clone(), second.clone()] }.save(&registry).unwrap();
+        let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap(); let address = reserved.local_addr().unwrap(); drop(reserved);
+        let base = format!("wss://{address}/v1/signal");
+        let endpoint = |group: &groups::Group, suffix: &str| {
+            let token_file = root.0.join(format!("token-{suffix}"));
+            crate::private_file::write_atomic(&token_file, group.token.as_bytes()).unwrap();
+            self_hosted::Config { url: group_url(&base, &group.id).unwrap(), token_file, ca_file: Some(cert.clone()) }
+        };
+        let a = endpoint(&first, "first"); let b = endpoint(&second, "second");
+        let (stop, receiver) = watch::channel(false);
+        let server = tokio::spawn(serve(Config { bind: address, certificate: cert.clone(), private_key: key, groups_file: registry.clone(), stun: Vec::new(), turn: None }, receiver));
+        let mut host_a = timeout(Duration::from_secs(4), async {
+            loop { match self_hosted::Listener::online_named(&a, "same-device", "Generated A").await {
+                Ok(host) => break host, Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }}
+        }).await.unwrap();
+        let mut host_b = self_hosted::Listener::online_named(&b, "same-device", "Generated B").await.unwrap();
+        let mut private_b = self_hosted::Listener::online_named(&b, "only-second", "Generated B private").await.unwrap();
+        async fn named(config: &self_hosted::Config, name: &str) -> Vec<Device> {
+            timeout(Duration::from_secs(4), async {
+                loop {
+                    if let Ok(devices) = self_hosted::directory(config).await {
+                        if devices.iter().any(|device| device.name == name) { break devices; }
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }).await.unwrap()
+        }
+        assert_eq!(named(&a, "Generated A").await.len(), 1);
+        assert_eq!(named(&b, "Generated B private").await.len(), 2);
+        let probe = vec!["same-device".into(), "only-second".into()];
+        assert_eq!(self_hosted::presence(&a, &probe).await.unwrap(), vec!["same-device"]);
+        assert_eq!(self_hosted::presence(&b, &probe).await.unwrap().len(), 2);
+        assert!(self_hosted::join(&a, "only-second").await.is_err());
+        let missing = self_hosted::Config { url: base.clone(), ..a.clone() };
+        let wrong = self_hosted::Config { url: b.url.clone(), ..a.clone() };
+        assert!(self_hosted::directory(&missing).await.is_err());
+        assert!(self_hosted::directory(&wrong).await.is_err());
+        let mut viewer_a = self_hosted::join(&a, "same-device").await.unwrap();
+        let mut at_a = host_a.accept().await.unwrap();
+        let mut viewer_b = self_hosted::join(&b, "same-device").await.unwrap();
+        let mut at_b = host_b.accept().await.unwrap();
+        for (viewer, host, marker) in [(&mut viewer_a, &mut at_a, "first"), (&mut viewer_b, &mut at_b, "second")] {
+            viewer.transport.send(serde_json::json!({"group":marker})).await.unwrap();
+            assert_eq!(host.transport.receive().await.unwrap()["group"], marker);
+        }
+        let mut rotated = first.clone();
+        rotated.token = groups::Group::new("Generated rotated credential".into()).unwrap().token;
+        let new_a = endpoint(&rotated, "rotated");
+        groups::Groups::edit(&registry, |groups| {
+            groups.groups.iter_mut().find(|group| group.id == first.id).unwrap().token = rotated.token.clone();
+            Ok(())
+        }).unwrap();
+        timeout(Duration::from_secs(4), async {
+            while self_hosted::directory(&a).await.is_ok() { tokio::time::sleep(Duration::from_millis(20)).await; }
+        }).await.unwrap();
+        assert_eq!(named(&new_a, "Generated A").await.len(), 1, "credential rotation retains the active group's Rooms");
+        viewer_a.transport.send(serde_json::json!({"after_rotation":true})).await.unwrap();
+        assert_eq!(at_a.transport.receive().await.unwrap()["after_rotation"], true);
+        let third = groups::Group::new("Generated added group".into()).unwrap();
+        let c = endpoint(&third, "third");
+        groups::Groups::edit(&registry, |groups| { groups.groups.push(third); Ok(()) }).unwrap();
+        // A newly added group must become usable without restarting the broker.
+        timeout(Duration::from_secs(4), async {
+            while self_hosted::directory(&c).await.is_err() { tokio::time::sleep(Duration::from_millis(20)).await; }
+        }).await.unwrap();
+        assert!(self_hosted::directory(&c).await.unwrap().is_empty());
+        crate::private_file::write_atomic(&registry, b"invalid generated registry").unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert_eq!(named(&new_a, "Generated A").await.len(), 1);
+        assert_eq!(named(&b, "Generated B private").await.len(), 2);
+        viewer_b.transport.send(serde_json::json!({"after_reload_error":true})).await.unwrap();
+        assert_eq!(at_b.transport.receive().await.unwrap()["after_reload_error"], true);
+        for connection in [&mut viewer_a, &mut at_a, &mut viewer_b, &mut at_b] { connection.transport.close().await; }
+        host_a.close().await; host_b.close().await; private_b.close().await;
+        stop.send_replace(true); server.await.unwrap().unwrap();
+    }
+
     #[tokio::test]
     async fn relay_capability_is_negotiated_per_pair_and_directory_names_do_not_authorize_sessions() {
         for (host_version,viewer_version,modern) in [(1,1,false),(2,2,false),(3,1,false),(3,2,true)] {

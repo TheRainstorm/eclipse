@@ -192,7 +192,11 @@ mod tests {
     fn entry() -> Entry {
         Entry {
             name: "Generated host".into(),
-            address: "wss://signal.example/v1/signal".into(),
+            address: crate::internet::enrollment::group_url(
+                "wss://signal.example/v1/signal",
+                &uuid::Uuid::from_u128(1),
+            )
+            .unwrap(),
             published_name: "generated-host".into(),
             host_enabled: true,
             ..Default::default()
@@ -337,7 +341,11 @@ mod tests {
         let fixture = Fixture::new();
         let invitation = crate::internet::enrollment::Enrollment::new(
             "Fixture service".into(),
-            "wss://signal.example/v1/signal".into(),
+            crate::internet::enrollment::group_url(
+                "wss://signal.example/v1/signal",
+                &uuid::Uuid::from_u128(1),
+            )
+            .unwrap(),
             Zeroizing::new("ab".repeat(32)),
             None,
         )
@@ -380,7 +388,7 @@ mod tests {
                 save(
                     fixture.initial().revision,
                     Entry {
-                        published_name: "legacy-room".into(),
+                        published_name: "custom-room".into(),
                         ..entry()
                     },
                     Some("ab".repeat(32)),
@@ -390,7 +398,7 @@ mod tests {
             .unwrap();
         let invitation = crate::internet::enrollment::Enrollment::new(
             "Fixture".into(),
-            "wss://signal.example/v1/signal/".into(),
+            entry().address,
             Zeroizing::new("ab".repeat(32)),
             None,
         )
@@ -402,6 +410,6 @@ mod tests {
             .unwrap();
         assert_eq!(imported.entries.len(), 1);
         assert_eq!(imported.entries[0].id, saved.entries[0].id);
-        assert_eq!(imported.imported.unwrap().device, "legacy-room");
+        assert_eq!(imported.imported.unwrap().device, "custom-room");
     }
 }

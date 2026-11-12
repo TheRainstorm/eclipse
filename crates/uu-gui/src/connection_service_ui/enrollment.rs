@@ -482,7 +482,11 @@ mod tests {
         };
         let invitation = Enrollment::new(
             "Fixture service".into(),
-            "wss://signal.example/v1/signal".into(),
+            uu_core::internet::enrollment::group_url(
+                "wss://signal.example/v1/signal",
+                &uuid::Uuid::new_v4(),
+            )
+            .unwrap(),
             Zeroizing::new("ab".repeat(32)),
             None,
         )

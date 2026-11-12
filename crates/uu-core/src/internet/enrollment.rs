@@ -10,6 +10,7 @@ use zeroize::Zeroizing;
 
 const PREFIX: &str = "eclipse://connect/";
 const MAX_CODE: usize = 128 * 1024;
+const GROUP_ERROR: &str = "连接服务接入码的设备组无效或缺失，请向管理员获取新接入码";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,7 +75,8 @@ impl Enrollment {
                 && !self.name.chars().any(char::is_control),
             "连接服务名称应为1至64个字符"
         );
-        normalize_url(&self.url)?;
+        let url = url::Url::parse(&normalize_url(&self.url)?)?;
+        super::server::groups::query_group(url.query().unwrap_or("")).context(GROUP_ERROR)?;
         ensure!(
             self.token.len() == 64 && self.token.bytes().all(|b| b.is_ascii_hexdigit()),
             "连接服务访问令牌无效"
@@ -91,7 +93,7 @@ impl Enrollment {
     }
 }
 fn normalize_url(address: &str) -> Result<String> {
-    let address = address.trim().trim_end_matches('/');
+    let address = address.trim();
     ensure!(
         !address.is_empty() && address.len() <= 2048,
         "连接服务地址无效"
@@ -101,7 +103,7 @@ fn normalize_url(address: &str) -> Result<String> {
     } else {
         format!("wss://{address}/v1/signal")
     };
-    let url = url::Url::parse(&value).context("连接服务地址无效")?;
+    let mut url = url::Url::parse(&value).context("连接服务地址无效")?;
     ensure!(
         url.scheme() == "wss"
             && url.host_str().is_some()
@@ -111,7 +113,51 @@ fn normalize_url(address: &str) -> Result<String> {
             && url.port() != Some(0),
         "连接服务需要有效的 WSS 地址，凭据须由接入码单独提供"
     );
+    normalize_group(&mut url)?;
     Ok(url.into())
+}
+
+/// Build a stable group endpoint without putting the rotating credential in
+/// its identity. Other query bytes and their relative order remain unchanged.
+/// An already scoped base must refer to the same group.
+pub fn group_url(base: &str, group: &uuid::Uuid) -> Result<String> {
+    let mut url = url::Url::parse(&normalize_url(base)?)?;
+    match normalize_group(&mut url)? {
+        Some(existing) => ensure!(existing == *group, "连接服务地址无效"),
+        None => {
+            let query = match url.query() {
+                Some(query) => format!("{query}&group={group}"),
+                None => format!("group={group}"),
+            };
+            url.set_query(Some(&query));
+        }
+    }
+    normalize_group(&mut url)?;
+    Ok(url.into())
+}
+
+fn normalize_group(url: &mut url::Url) -> Result<Option<uuid::Uuid>> {
+    let Some(query) = url.query() else {
+        return Ok(None);
+    };
+    if !url.query_pairs().any(|(key, _)| key == "group") {
+        return Ok(None);
+    }
+    let group = super::server::groups::query_group(query).context(GROUP_ERROR)?;
+    let mut other = Vec::new();
+    for field in query.split('&') {
+        let pair = url::form_urlencoded::parse(field.as_bytes()).next();
+        if !pair.is_some_and(|(key, _)| key == "group") {
+            other.push(field);
+        }
+    }
+    // Only the owned group parameter moves. Sorting or decoding unrelated
+    // parameters could alter repeated values or invalidate signed URLs.
+    let group_field = format!("group={group}");
+    other.push(&group_field);
+    let canonical = other.join("&");
+    url.set_query(Some(&canonical));
+    Ok(Some(group))
 }
 
 /// Re-import updates the same server entry and keeps device routes valid.
@@ -218,7 +264,7 @@ mod tests {
     fn enrollment() -> Enrollment {
         Enrollment::new(
             "Generated service".into(),
-            "SIGNAL.example:443".into(),
+            group_url("SIGNAL.example:443", &uuid::Uuid::new_v4()).unwrap(),
             Zeroizing::new("ab".repeat(32)),
             None,
         )
@@ -230,7 +276,10 @@ mod tests {
         let encoded = invitation.encode().unwrap();
         let decoded = Enrollment::decode(&encoded).unwrap();
         assert_eq!(decoded.name, invitation.name);
-        assert_eq!(decoded.url, "wss://signal.example/v1/signal");
+        assert_eq!(decoded.url, invitation.url);
+        assert!(decoded
+            .url
+            .starts_with("wss://signal.example/v1/signal?group="));
         assert_eq!(decoded.token.as_str(), invitation.token.as_str());
         assert!(decoded.ca.is_none());
         assert!(!encoded.contains("ab".repeat(32).as_str()));
@@ -331,7 +380,7 @@ mod tests {
         .unwrap();
         let equivalent = Enrollment::new(
             invitation.name.clone(),
-            format!("{}/", invitation.url),
+            invitation.url.replace("group=", "%67roup="),
             invitation.token.clone(),
             None,
         )
@@ -366,5 +415,218 @@ mod tests {
         assert_eq!(mirrored.id, previous.id);
         assert_eq!(mirrored.published_name, "custom-room");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn group_endpoints_canonicalize_only_the_owned_parameter_and_reject_ambiguous_scopes() {
+        let group = uuid::Uuid::new_v4();
+        let base = "wss://signal.example/v1/signal";
+        let canonical = group_url(base, &group).unwrap();
+        assert_eq!(canonical, format!("{base}?group={group}"));
+        assert_eq!(group_url(&canonical, &group).unwrap(), canonical);
+        assert_ne!(group_url(&format!("{base}/"), &group).unwrap(), canonical);
+        let scoped = normalize_url(&format!(
+            "{base}?%67roup={}&signed=%2f+%20&item=2&item=1",
+            group.to_string().to_uppercase()
+        ))
+        .unwrap();
+        assert_eq!(
+            scoped,
+            format!("{base}?signed=%2f+%20&item=2&item=1&group={group}")
+        );
+        assert_eq!(
+            group_url(&format!("{base}?signed=%2f+%20&item=2&item=1"), &group).unwrap(),
+            scoped
+        );
+        assert_ne!(
+            normalize_url(&format!("{base}/?group={group}")).unwrap(),
+            canonical,
+            "a different HTTP path must not silently reuse a service identity"
+        );
+        assert_ne!(
+            normalize_url(&format!("{base}?item=1&item=2&group={group}")).unwrap(),
+            normalize_url(&format!("{base}?item=2&item=1&group={group}")).unwrap(),
+            "unrelated repeated query parameters keep their original order"
+        );
+        assert_eq!(
+            normalize_url("wss://signal.example/v1/signal?signature=raw%2f/").unwrap(),
+            "wss://signal.example/v1/signal?signature=raw%2f/"
+        );
+        assert!(group_url(&canonical, &uuid::Uuid::new_v4()).is_err());
+        assert!(group_url(base, &uuid::Uuid::nil()).is_err());
+        for query in [
+            format!("group={group}&group={group}"),
+            "group=invalid".into(),
+            "group=".into(),
+            format!("group={}", uuid::Uuid::nil()),
+        ] {
+            assert!(normalize_url(&format!("{base}?{query}")).is_err());
+        }
+    }
+
+    #[test]
+    fn private_groups_keep_routes_launches_and_device_trust_separate_while_credentials_rotate() {
+        use crate::{
+            device_book::{Destination, Launch, Profile},
+            device_trust::{Permissions, PublicDevice, TrustStore},
+        };
+        let root =
+            std::env::temp_dir().join(format!("eclipse-group-import-{}", uuid::Uuid::new_v4()));
+        let store = Store::open(&root).unwrap();
+        let trust = TrustStore::open(&root).unwrap();
+        let peer = PublicDevice {
+            name: "Paired device".into(),
+            public_key: "12".repeat(32),
+        };
+        trust
+            .authorize(
+                peer.clone(),
+                Permissions {
+                    view: true,
+                    control: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let peers_before = std::fs::read(root.join("peers.json")).unwrap();
+        let local_identity = trust.card("Local device").id();
+        let original = enrollment();
+        let group_a = uuid::Uuid::new_v4();
+        let group_b = uuid::Uuid::new_v4();
+        let a = Enrollment::new(
+            "Group A".into(),
+            group_url("wss://signal.example/v1/signal", &group_a).unwrap(),
+            original.token.clone(),
+            None,
+        )
+        .unwrap();
+        let first = import(
+            &root,
+            &a,
+            Publication::PreserveOrDefault("custom-room-a"),
+            true,
+        )
+        .unwrap();
+        let mut profile = Profile::new(
+            "Saved paired device",
+            Destination::Vps {
+                service: first.id.clone(),
+                device: "shared-room".into(),
+            },
+        );
+        profile.peer = Some(peer.id());
+        store
+            .edit(|book| {
+                book.devices.push(profile.clone());
+                Ok(())
+            })
+            .unwrap();
+        let profiles_before = serde_json::to_value(store.read().unwrap().devices).unwrap();
+        let frozen_path = store.publish_launch(&profile.id).unwrap();
+        let frozen_before = std::fs::read(&frozen_path).unwrap();
+
+        let b = Enrollment::new(
+            "Group B".into(),
+            group_url("wss://signal.example/v1/signal", &group_b).unwrap(),
+            Zeroizing::new("cd".repeat(32)),
+            None,
+        )
+        .unwrap();
+        let second = import(
+            &root,
+            &b,
+            Publication::PreserveOrDefault("new-host-id"),
+            true,
+        )
+        .unwrap();
+        assert_ne!(first.id, second.id);
+        assert_eq!(
+            second.published_name, "new-host-id",
+            "a new group never inherits another group's custom room"
+        );
+        assert_eq!(store.read().unwrap().services.len(), 2);
+        assert_eq!(store.launch(&profile.id).unwrap().service.unwrap(), first);
+
+        let rotated =
+            Enrollment::new(a.name, a.url, Zeroizing::new("ef".repeat(32)), None).unwrap();
+        let refreshed = import(
+            &root,
+            &rotated,
+            Publication::PreserveOrDefault("changed-default-id"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(refreshed.id, first.id);
+        assert_eq!(refreshed.published_name, "custom-room-a");
+        assert_ne!(refreshed.token_file, first.token_file);
+        assert_eq!(store.read().unwrap().service(&second.id).unwrap(), &second);
+        assert_eq!(
+            store.launch(&profile.id).unwrap().service.unwrap(),
+            refreshed
+        );
+        assert_eq!(std::fs::read(&frozen_path).unwrap(), frozen_before);
+        let frozen = Launch::read(&frozen_path).unwrap();
+        assert_eq!(frozen.service.unwrap(), first);
+        assert_eq!(frozen.expected_peer.as_deref(), Some(peer.id().as_str()));
+        assert_eq!(
+            std::fs::read_to_string(&first.token_file).unwrap(),
+            "ab".repeat(32)
+        );
+        assert_eq!(
+            serde_json::to_value(store.read().unwrap().devices).unwrap(),
+            profiles_before
+        );
+        assert_eq!(
+            std::fs::read(root.join("peers.json")).unwrap(),
+            peers_before
+        );
+        assert_eq!(trust.card("Local device").id(), local_identity);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invitations_without_a_private_group_are_rejected_before_any_import_write() {
+        let mut unscoped = enrollment();
+        unscoped.url = "wss://signal.example/v1/signal".into();
+        assert!(Enrollment::new(
+            unscoped.name.clone(),
+            unscoped.url.clone(),
+            unscoped.token.clone(),
+            None
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("设备组无效或缺失"));
+        let raw = format!(
+            "{PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&unscoped).unwrap())
+        );
+        assert!(Enrollment::decode(&raw)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("设备组无效或缺失"));
+        assert!(unscoped
+            .encode()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("设备组无效或缺失"));
+        let directory =
+            std::env::temp_dir().join(format!("eclipse-reject-unscoped-{}", uuid::Uuid::new_v4()));
+        assert!(import(
+            &directory,
+            &unscoped,
+            Publication::PreserveOrDefault("host-room"),
+            true
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("设备组无效或缺失"));
+        assert!(!directory.exists());
     }
 }

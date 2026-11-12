@@ -419,13 +419,17 @@ mod tests {
         let ca_file=root.join("ca.pem");let key_file=root.join("key.pem");let token_file=root.join("token");
         std::fs::write(&ca_file,certificate.cert.pem()).unwrap();
         std::fs::write(&key_file,certificate.key_pair.serialize_pem()).unwrap();
-        std::fs::write(&token_file,"00".repeat(32)).unwrap();
+        let group = super::super::server::groups::Group::new("Generated bidirectional group".into()).unwrap();
+        let group_id = group.id;
+        std::fs::write(&token_file, group.token.as_bytes()).unwrap();
+        let groups_file = root.join("groups.json");
+        super::super::server::groups::Groups { version: 1, groups: vec![group] }.save(&groups_file).unwrap();
         let reservation=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=reservation.local_addr().unwrap();drop(reservation);
         let (stop,rx)=tokio::sync::watch::channel(false);
         let serving=tokio::spawn(super::super::server::serve(super::super::server::Config {
-            bind:address,certificate:ca_file.clone(),private_key:key_file,token_file:token_file.clone(),stun:vec![],turn:None,
+            bind:address,certificate:ca_file.clone(),private_key:key_file,groups_file,stun:vec![],turn:None,
         },rx));
-        let config=Config{url:format!("wss://{address}/v1/signal"),token_file,ca_file:Some(ca_file)};
+        let config=Config{url:super::super::enrollment::group_url(&format!("wss://{address}/v1/signal"), &group_id).unwrap(),token_file,ca_file:Some(ca_file)};
         let mut a=timeout(Duration::from_secs(3),async {
             loop {match Listener::online_named(&config,"device-a","Generated A").await {
                 Ok(listener)=>break listener,Err(_)=>tokio::time::sleep(Duration::from_millis(10)).await,

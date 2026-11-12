@@ -329,7 +329,7 @@ mod tests {
             };
             let invitation = Enrollment::new(
                 "Fixture service".into(),
-                "wss://signal.example/v1/signal".into(),
+                enrollment::group_url("wss://signal.example/v1/signal", &uuid::Uuid::new_v4()).unwrap(),
                 zeroize::Zeroizing::new("ab".repeat(32)),
                 None,
             )
@@ -337,7 +337,7 @@ mod tests {
             let service = enrollment::import(
                 &config.at("device-trust"),
                 &invitation,
-                enrollment::Publication::PreserveOrDefault("legacy-custom-room"),
+                enrollment::Publication::PreserveOrDefault("custom-room"),
                 true,
             )
             .unwrap();
@@ -369,7 +369,7 @@ mod tests {
             fixture.service.id.clone(),
             Ok(vec![
                 uu_core::internet::self_hosted::Device {
-                    device: "legacy-custom-room".into(),
+                    device: "custom-room".into(),
                     name: "Own host".into(),
                 },
                 uu_core::internet::self_hosted::Device {
