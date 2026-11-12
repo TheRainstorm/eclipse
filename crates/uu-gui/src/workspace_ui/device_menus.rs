@@ -134,16 +134,17 @@ impl Workspace {
                 ui.horizontal_wrapped(|ui| {
                     ui.strong(&value.name);
                     muted(ui, format!("{} FPS · {}", value.settings.fps, value.settings.codec.label()));
-                    if ui.add(theme::secondary_button(uu_i18n::text("编辑")).small()).clicked() { self.edit_client_config(profile, Some(value.clone()), false); }
-                    if ui.add(theme::secondary_button(uu_i18n::text("复制")).small()).clicked() { self.edit_client_config(profile, Some(value.clone()), true); }
-                    if ui.add(theme::secondary_button(uu_i18n::text("删除")).small()).clicked() {
-                        if let Some(store) = &self.store {
-                            match store.remove_client_config(&profile.id, &value.id) {
-                                Ok(()) => self.refresh(),
-                                Err(error) => self.feedback.error(self.device_scope(), uu_i18n::format!("无法删除配置：{e:#}", e=error)),
-                            }
+                    ui.menu_button("⋯",|ui| {
+                        if theme::menu_action(ui,true,uu_i18n::text("编辑配置")).clicked(){self.edit_client_config(profile,Some(value.clone()),false);ui.close_menu();}
+                        if theme::menu_action(ui,true,uu_i18n::text("复制")).clicked(){self.edit_client_config(profile,Some(value.clone()),true);ui.close_menu();}
+                        if theme::menu_action(ui,true,uu_i18n::text("删除")).clicked(){
+                            if let Some(store)=&self.store {match store.remove_client_config(&profile.id,&value.id){
+                                Ok(())=>self.refresh(),
+                                Err(error)=>self.feedback.error(self.device_scope(),uu_i18n::format!("无法删除配置：{e:#}",e=error)),
+                            }}
+                            ui.close_menu();
                         }
-                    }
+                    });
                 });
             });
         }

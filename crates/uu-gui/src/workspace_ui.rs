@@ -3,6 +3,7 @@
 use super::theme;
 mod device_management;
 mod device_menus;
+mod device_details;
 mod connection_settings;
 use eframe::egui::{self, RichText};
 use std::{
@@ -343,7 +344,7 @@ mod tests {
         }
         fn submenu(&mut self, label:&str) {
             self.frame(Vec::new());
-            let point=self.texts.iter().find(|(text,_)|text==label).unwrap_or_else(||panic!("missing submenu {label}")).1;
+            let point=self.texts.iter().rfind(|(text,_)|text==label).unwrap_or_else(||panic!("missing submenu {label}")).1;
             self.frame(vec![egui::Event::PointerMoved(point)]);
             for _ in 0..3 {self.frame(Vec::new());}
         }
@@ -431,8 +432,8 @@ mod tests {
         h.click("设备详情…");
         h.frame(vec![]);
         assert_eq!(h.workspace.route.device, DeviceView::Details(id));
-        assert!(h.texts.iter().any(|(text, _)| text == "编辑"));
-        assert!(h.texts.iter().any(|(text, _)| text == "移除本地设备记录"));
+        assert!(h.texts.iter().any(|(text, _)| text == "编辑配置"));
+        assert!(h.texts.iter().any(|(text, _)| text == "移除此设备…"));
     }
 
     #[test]
@@ -756,7 +757,9 @@ mod tests {
         assert_eq!(h.workspace.client_defaults.fps,120);
         assert_eq!(book.sharing.fps,60);
         h.workspace.route.device = DeviceView::Details(id);
-        h.click("复制");
+        for _ in 0..3 {h.frame(Vec::new());}
+        let more=h.texts.iter().rfind(|(text,_)|text=="⋯").unwrap().1;
+        h.click_at(more);h.click("复制");
         assert!(h.workspace.client_editor.as_ref().unwrap().value.name.contains("副本"));
     }
     #[test]
@@ -1618,127 +1621,9 @@ impl Workspace {
                     }
                 }
             }
-            if ui.add(crate::theme::secondary_button(uu_i18n::text("配置…")).small()).clicked() {
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("编辑配置")).small()).clicked() {
                 self.edit_selected_client_config(profile);
             }
-            if ui.add(crate::theme::secondary_button(uu_i18n::text("编辑全局默认")).small()).clicked(){self.edit_global_client_config();}
-        });
-    }
-    fn device_details(&mut self, ui: &mut egui::Ui, id: &str, actions: &mut Vec<Action>) {
-        let profile = match self.book.device(id) {
-            Ok(p) => p.clone(),
-            Err(e) => {
-                self.feedback.error(super::ui_feedback::Scope::Devices, e.to_string());
-                self.route.device = DeviceView::List;
-                return;
-            }
-        };
-        ui.scope(|ui| {
-            ui.set_max_width(880.0);
-            self.feedback.show(
-                ui,
-                super::ui_feedback::Scope::DeviceDetails(id.to_owned()),
-            );
-            ui.horizontal_top(|ui| {
-                let picture_width = (ui.available_width() * 0.30).clamp(220.0, 300.0);
-                self.device_picture(ui, &profile, picture_width);
-                ui.add_space(22.0);
-                ui.vertical(|ui| {
-                    ui.heading(&profile.name);
-                    ui.add_space(4.0);
-                    muted(ui, last_connection(profile.last_connected));
-                    let mut pinned=profile.preview.as_ref().is_some_and(|p|p.pinned);
-                    if ui.add_enabled_ui(profile.preview.is_some(),|ui|crate::theme::switch(ui,&mut pinned,uu_i18n::text("固定当前截图"))).inner.on_hover_text(uu_i18n::text("固定后保留这张截图；取消固定后，下次串流结束时自动更新")).changed() {
-                        if let (Some(store),Some(preview))=(&self.store,&profile.preview) {
-                            if let Err(error)=store.pin_preview(&profile.id,&preview.id,pinned) {
-                                self.feedback.error(super::ui_feedback::Scope::DeviceDetails(id.to_owned()),uu_i18n::format!("无法保存截图设置：{error:#}"));
-                            }
-                            self.refresh();
-                        }
-                    }
-                    let route = profile.route().ok().filter(|route|self.route_visible(route)).map(|route| {
-                        self.route_label(route)
-                    }).unwrap_or_else(|| uu_i18n::text("请选择可用连接方式").into());
-                    muted(ui, route);
-                    if profile.peer.is_some() {
-                        ui.label(RichText::new(uu_i18n::text("已完成设备配对")).color(theme::palette(ui.visuals()).success));
-                    } else {
-                        ui.label(RichText::new(uu_i18n::text("首次连接需要配对")).color(theme::palette(ui.visuals()).muted));
-                    }
-                    ui.add_space(8.0);
-                    if primary(ui, uu_i18n::text("连接此设备")).clicked() {
-                        actions.push(Action::Open(profile.id.clone()));
-                    }
-                });
-            });
-            ui.add_space(18.0);
-            card(ui, |ui| {
-                ui.strong(uu_i18n::text("设备身份"));
-                ui.add_space(8.0);
-                if let Some(peer) = &profile.peer {
-                    ui.label(RichText::new(uu_i18n::text("已完成配对")).color(theme::palette(ui.visuals()).success));
-                    muted(ui,uu_i18n::text("设备公钥指纹"));
-                    ui.monospace(peer);
-                    if ui.add(crate::theme::secondary_button(uu_i18n::text("复制指纹")).small()).clicked() {
-                        ui.ctx().copy_text(peer.clone());
-                    }
-                } else {
-                    ui.label(uu_i18n::text("首次连接时，被控端输入控制端显示的短码即可保存授权。"));
-                }
-            });
-        card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.strong(uu_i18n::text("连接地址"));
-                if ui.add(crate::theme::secondary_button(uu_i18n::text("添加地址"))).clicked() {
-                    self.new_device(Some(profile.id.clone()), None);
-                }
-            });
-            ui.add_space(8.);
-            let mut remove = None;
-            let visible_routes:Vec<_>=profile.routes.iter().filter(|route|self.route_visible(route)).collect();
-            if visible_routes.is_empty() {ui.weak(uu_i18n::text("请选择可用连接方式"));}
-            for route in visible_routes {
-                ui.push_id(&route.id, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(self.route_label(route));
-                        if ui.add(crate::theme::secondary_button(uu_i18n::text("编辑")).small()).clicked() {
-                            self.new_device(Some(profile.id.clone()), Some(route.id.clone()));
-                        }
-                        if ui
-                            .add_enabled(
-                                profile.routes.len() > 1,
-                                crate::theme::secondary_button(uu_i18n::text("移除")).small(),
-                            )
-                            .clicked()
-                        {
-                            remove = Some(route.id.clone());
-                        }
-                    });
-                });
-            }
-            if let Some(id) = remove {
-                let mut updated = profile.clone();
-                updated.routes.retain(|r| r.id != id);
-                if updated.selected_route == id {
-                    updated.selected_route = updated.routes[0].id.clone();
-                }
-                if let Some(store) = &self.store {
-                    match store.save_device(updated) {
-                        Ok(()) => self.refresh(),
-                        Err(e) => self.feedback.error(self.device_scope(), uu_i18n::format!("无法移除地址：{e}")),
-                    }
-                }
-            }
-        });
-        card(ui,|ui| {
-            ui.strong(uu_i18n::text("客户端配置"));
-            self.client_config_list(ui, &profile);
-        });
-        ui.add_space(12.);
-        if ui.add(crate::theme::secondary_button(uu_i18n::text("移除本地设备记录"))).clicked() {
-            self.confirm_device_removal(&profile);
-        }
-        muted(ui,uu_i18n::text("移除本地记录不会撤销被控端已授予的权限。授权在被控端的“共享本机”中管理。"));
         });
     }
     fn refresh_monitors(&mut self) {
