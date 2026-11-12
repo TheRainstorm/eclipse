@@ -98,6 +98,9 @@ impl App {
     pub(super) fn native_input_available(&self)->bool {
         self.uses_engine_controls()&&self.controller.as_ref().is_some_and(|h|h.stats.native_input_available.load(std::sync::atomic::Ordering::Acquire))
     }
+    pub(super) fn server_managed_media(&self)->bool {
+        self.uses_engine_controls()&&self.controller.as_ref().is_some_and(|h|h.stats.server_managed.load(std::sync::atomic::Ordering::Acquire))
+    }
     /// Local input controls remain configurable while a menu, lost focus or
     /// view-only policy temporarily relinquishes the remote control grant.
     pub(super) fn input_controls_available(&self) -> bool {

@@ -589,6 +589,9 @@ async fn send_video(
     let cancel_open = capture_cancel.0.clone();
     let preparation=tokio::task::spawn_blocking(move || -> Result<_> {
             let started=Instant::now();
+            #[cfg(windows)]
+            let mut capture=crate::shared_capture::open_with_options(&config.source,capture_options)?;
+            #[cfg(not(windows))]
             let mut capture=uu_capture::open_with_options(&config.source,capture_options)?;
             ensure!(!cancel_open.load(Ordering::Acquire),"capture preparation cancelled");
             capture.set_frame_rate(fps)?;
@@ -647,6 +650,11 @@ async fn send_video(
     controls.frame_trace(frame_trace);
     controls.video_e2e(video_e2e);
     controls.set_session(config.session.clone());
+    if let Some(session)=&config.session {
+        if let Some(id)=&session.session_id {
+            session.access.sessions.attach_control(id,controls.clone());
+        }
+    }
     let cursor=capture.cursor().filter(|_|cursor_requested);
     let cursor_available=cursor.is_some();
     controls.set_cursor(cursor);
@@ -709,7 +717,8 @@ async fn send_video(
     let mut producer = CaptureWorker::start(capture, encoder_settings, refresh, encoder,controls.timing());
     peer.diagnostics.capture_counter(&producer.captured,&producer.progress);
     peer.diagnostics.record(serde_json::json!({"event":"native_media_started","width":width,"height":height,"fps":config.fps,"codec":codec}));
-    if dynamic {controls.set_quality(producer.quality.clone());}
+    if dynamic || config.session.is_some() {controls.set_quality(producer.quality.clone());}
+    controls.set_quality_state(producer.quality_state.clone());
     let mut encoder_label=producer.encoder.borrow().clone();
     let mut encoder_state=Some(producer.encoder.clone());
     let mut audio_label=if config.audio.is_none(){String::new()}else if audio_sender.is_none(){uu_i18n::text("控制端未接收声音").into()}else{uu_i18n::text("声音准备中").into()};
@@ -1247,7 +1256,7 @@ mod tests {
         assert!(!stats.capabilities.allows(crate::capabilities::Capability::Quality));
     }
     #[tokio::test]
-    async fn encrypted_control_reads_saves_and_acknowledges_host_restart() {
+    async fn encrypted_control_is_read_only_and_local_manager_saves() {
         use crate::{device_auth::PairingControl,device_trust::{Permissions,TrustStore},host_admin::{Request,Response,Service},shared_host::{Access,SessionContext,SessionGate}};
         let root=std::env::temp_dir().join(format!("eclipse-admin-stream-{}",uuid::Uuid::new_v4()));
         let trust=TrustStore::open(root.join("host")).unwrap();
@@ -1258,8 +1267,8 @@ mod tests {
         let store=crate::device_book::Store::open(root.join("host")).unwrap();
         let (sender,_)=mpsc::unbounded_channel();
         let access=Arc::new(Access{store:trust,name:"Generated host".into(),pairing:Arc::new(PairingControl::new(sender)),sessions:Arc::new(SessionGate::default())});
-        let restarted=Arc::new(AtomicBool::new(false));let invoked=restarted.clone();
-        *access.sessions.administration.lock().unwrap()=Some(Arc::new(Service::new(store.clone(),Default::default(),move||{invoked.store(true,Ordering::Release);Ok(())})));
+        *access.sessions.administration.lock().unwrap()=Some(Arc::new(Service::new(store.clone(),Default::default(),||Ok(()))));
+        let local_access=access.clone();
         let _lease=access.claim(&client.id()).unwrap();
         let (mut config,file)=config();
         config.session=Some(SessionContext{access,peer:client.id(),permissions,session_id:None});
@@ -1278,8 +1287,13 @@ mod tests {
             let mut settings=server.saved;settings.audio=false;
             let id=stats.host_admin.request(Request::Save{revision:server.revision,settings,restart:true})?;
             while stats.host_admin.response.lock().unwrap().as_ref().is_none_or(|(received,_)|*received!=id) {tokio::time::sleep(Duration::from_millis(10)).await;}
-            ensure!(matches!(stats.host_admin.response.lock().unwrap().as_ref(),Some((_,Response::Saved{restart:true}))),"save failed");
-            while !restarted.load(Ordering::Acquire){tokio::time::sleep(Duration::from_millis(10)).await;}
+            ensure!(matches!(stats.host_admin.response.lock().unwrap().as_ref(),Some((_,Response::Error{message})) if message.contains("客户端只能查看")),"remote save was not rejected");
+            let service=local_access.sessions.administration.lock().unwrap().clone().context("missing local manager")?;
+            let settings=service.execute_local_manager(&local_access,Request::Inspect)?;
+            let Response::Snapshot{snapshot}=settings else{anyhow::bail!("missing local snapshot")};
+            let server=snapshot.server.context("missing local manager settings")?;
+            let mut settings=server.saved;settings.audio=false;
+            ensure!(matches!(service.execute_local_manager(&local_access,Request::Save{revision:server.revision,settings,restart:false})?,Response::Saved{..}),"local save failed");
             ensure!(!store.read()?.sharing.audio,"settings were not saved");
             Ok::<_,anyhow::Error>(())
         }).await;

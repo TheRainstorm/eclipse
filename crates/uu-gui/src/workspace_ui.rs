@@ -1815,25 +1815,64 @@ impl Workspace {
                 return;
             }
             ui.label(uu_i18n::format!("已连接 {} 个会话",sessions.len()));
-            muted(ui,uu_i18n::text("多台设备可同时观看；键鼠由当前取得控制权的一台设备操作，释放或离线后交接。"));
+            muted(ui,uu_i18n::text("多台设备可同时观看同一屏幕；每台会话由本机单独控制键盘、鼠标、手柄、显示器和画质，键鼠仍由当前取得控制权的一台设备操作。"));
             for session in sessions {
                     ui.horizontal_wrapped(|ui| {
                         ui.strong(&session.name);
-                        let mut permissions=session.permissions;
-                        if super::sharing_ui::permissions(ui,&mut permissions) {
-                            match self.host.set_session_permissions(&session.peer_id,permissions) {
+                        let mut input=session.input;
+                        if super::sharing_ui::input_permissions(ui,&mut input,session.max_input) {
+                            match self.host.set_session_input(&session.id,input) {
                                 Ok(())=>self.feedback.success(
                                     super::ui_feedback::Scope::Services(5),
-                                    uu_i18n::text("已更新设备控制权限；该设备需要重新连接"),
+                                    uu_i18n::text("已更新此会话的键盘、鼠标和手柄权限"),
                                 ),
                                 Err(error)=>self.feedback.error(
                                     super::ui_feedback::Scope::Services(5),
-                                    uu_i18n::format!("无法更新设备控制权限：{error:#}"),
+                                    uu_i18n::format!("无法更新会话输入权限：{error:#}"),
                                 ),
                             }
                         }
                         if ui.add(crate::theme::secondary_button(uu_i18n::text("断开此会话")).small()).clicked(){self.host.disconnect_session(&session.id);}
                     });
+                    if matches!(session.status,HostStatus::Streaming{..}) {
+                        ui.horizontal_wrapped(|ui| {
+                            if !session.displays.is_empty() {
+                                let mut selected=session.display;
+                                let label=session.display.and_then(|id|session.displays.iter().find(|s|s.id==id).map(|s|s.display_name.clone())).unwrap_or_else(||uu_i18n::text("当前显示器").into());
+                                crate::theme::Select::from_id_salt(("host-session-display",session.id.clone())).selected_text(label).show_ui(ui,|ui|{
+                                    for screen in &session.displays {
+                                        crate::theme::selectable_value(ui,&mut selected,Some(screen.id),screen.display_name.clone());
+                                    }
+                                });
+                                if selected!=session.display {
+                                    if let Some(id)=selected {
+                                        if let Err(error)=self.host.set_session_display(&session.id,id) {
+                                            self.feedback.error(super::ui_feedback::Scope::Services(5),uu_i18n::format!("无法切换显示器：{error:#}"));
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        if session.fps>0 && session.bitrate_kbps>0 {
+                            let draft_id=egui::Id::new(("host-session-quality",&session.id));
+                            let (mut fps,mut bitrate)=ui.data_mut(|data|data.get_temp::<(u32,u32)>(draft_id)).unwrap_or((session.fps,session.bitrate_kbps));
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(uu_i18n::text("帧率"));
+                                crate::theme::number_input(ui,egui::DragValue::new(&mut fps).range(5..=240).suffix(" FPS"));
+                                ui.label(uu_i18n::text("码率"));
+                                crate::theme::number_input(ui,egui::DragValue::new(&mut bitrate).range(64..=1_000_000).suffix(" kbps"));
+                                if ui.add(crate::theme::secondary_button(uu_i18n::text("应用此会话画质")).small()).clicked() {
+                                    ui.data_mut(|data|data.insert_temp(draft_id,(fps,bitrate)));
+                                    let update=uu_core::native_quality::Update{fps,bitrate_kbps:Some(bitrate),rate_control:None};
+                                    match self.host.set_session_quality(&session.id,update) {
+                                        Ok(())=>self.feedback.success(super::ui_feedback::Scope::Services(5),uu_i18n::text("已提交此会话画质更新")),
+                                        Err(error)=>self.feedback.error(super::ui_feedback::Scope::Services(5),uu_i18n::format!("无法更新会话画质：{error:#}")),
+                                    }
+                                }
+                            });
+                            ui.data_mut(|data|data.insert_temp(draft_id,(fps,bitrate)));
+                        }
+                    }
                     muted(ui,match session.status {
                         HostStatus::Starting|HostStatus::Preparing=>uu_i18n::text("正在准备串流…").into(),
                         HostStatus::Waiting{..}=>uu_i18n::text("等待控制端建立媒体连接…").into(),

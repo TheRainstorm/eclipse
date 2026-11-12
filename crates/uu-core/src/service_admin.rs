@@ -68,24 +68,21 @@ impl Request {
     /// an unknown result; disconnecting its frontend never cancels the work.
     pub fn is_mutation(&self) -> bool {
         if let Self::Scoped { request, .. } = self { return request.is_mutation(); }
-        !matches!(
-            self,
+        match self {
             Self::Status
-                | Self::ConnectionHistory { .. }
-                | Self::Trust {
-                    request: TrustRequest::Inspect
+            | Self::ConnectionHistory { .. }
+            | Self::Trust { request: TrustRequest::Inspect }
+            | Self::Firewall { repair: false }
+            | Self::Connections { request: connections::Request::Inspect }
+            | Self::Plugins { request: PluginRequest::Inspect } => false,
+            Self::Admin { request } => request.is_mutation(),
+            Self::VirtualDisplay {
+                request: crate::native_virtual_display::LocalRequest::Manage {
+                    request: crate::native_virtual_display::Request::Inspect
                 }
-                | Self::Firewall { repair: false }
-                | Self::Connections {
-                    request: connections::Request::Inspect
-                }
-                | Self::Plugins { request: PluginRequest::Inspect }
-                | Self::VirtualDisplay {
-                    request: crate::native_virtual_display::LocalRequest::Manage {
-                        request: crate::native_virtual_display::Request::Inspect
-                    }
-                }
-        )
+            } => false,
+            _ => true,
+        }
     }
     pub fn for_profile(self, profile: Option<&str>) -> Result<Self> {
         match self {
@@ -281,5 +278,8 @@ mod tests {
         let save=Request::Plugins{request:PluginRequest::Save{id:"fixture".into(),expected:Default::default(),value:Default::default()}};
         assert!(save.is_mutation());
         let wire=serde_json::to_vec(&save).unwrap();assert!(serde_json::from_slice::<Request>(&wire).is_ok());
+        assert!(!Request::Admin{request:host_admin::Request::Inspect}.is_mutation());
+        assert!(!Request::Admin{request:host_admin::Request::SessionControls}.is_mutation());
+        assert!(Request::Admin{request:host_admin::Request::SessionPermissions{session:"fixture".into(),input:crate::device_trust::InputPermissions::NONE}}.is_mutation());
     }
 }

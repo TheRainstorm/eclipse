@@ -11,7 +11,7 @@ use uu_core::{
     device_auth::{PairApproval, PairRequest, PairStatus},
     device_book::Book,
     device_internet::EndpointStatus,
-    device_trust::{Permissions, TrustStore},
+    device_trust::{InputPermissions, Permissions, TrustStore},
     native::HostStatus,
     native_lan as lan,
     shared_host::Access,
@@ -35,6 +35,19 @@ pub(super) fn permissions(ui:&mut egui::Ui,value:&mut Permissions)->bool {
     changed|=crate::theme::switch(ui,&mut details.clipboard,uu_i18n::text("剪贴板")).changed();
     changed|=crate::theme::switch(ui,&mut details.manage_server,uu_i18n::text("管理服务和连接权限")).changed();
     if changed {*value=value.with_details(details);}
+    changed
+}
+
+pub(super) fn input_permissions(ui:&mut egui::Ui,value:&mut InputPermissions,max:InputPermissions)->bool {
+    let mut changed=false;
+    for (enabled,label,field) in [
+        (max.keyboard,uu_i18n::text("键盘"),&mut value.keyboard),
+        (max.mouse,uu_i18n::text("鼠标"),&mut value.mouse),
+        (max.gamepad,uu_i18n::text("手柄"),&mut value.gamepad),
+    ] {
+        let response=ui.add_enabled_ui(enabled,|ui|crate::theme::switch(ui,field,label)).inner;
+        changed|=response.changed();
+    }
     changed
 }
 
@@ -276,10 +289,14 @@ struct LegacyPending {
 
 pub(super) struct SessionView {
     pub id:String,
-    pub peer_id:String,
     pub name:String,
     pub status:HostStatus,
-    pub permissions:Permissions,
+    pub input:InputPermissions,
+    pub max_input:InputPermissions,
+    pub fps:u32,
+    pub bitrate_kbps:u32,
+    pub display:Option<i32>,
+    pub displays:Vec<uu_core::screen_control::RemoteScreen>,
 }
 
 #[derive(Default)]
@@ -356,13 +373,27 @@ impl HostUi {
             let record=access.peer_permissions(&peer).ok().flatten();
             let name=record.as_ref().map(|(d,_)|d.name.clone()).unwrap_or_else(||uu_i18n::text("已授权设备").into());
             let permissions=record.map(|(_,p)|p).unwrap_or(Permissions::VIEW);
-            SessionView{id,peer_id:peer,name,status,permissions}
+            let control=access.sessions.session_control_snapshot(&id);
+            let input=control.as_ref().map_or_else(||permissions.input_permissions(),|c|c.input);
+            let max_input=control.as_ref().map_or_else(||permissions.input_permissions(),|c|c.max_input);
+            let fps=control.as_ref().map_or(0,|c|c.fps);
+            let bitrate_kbps=control.as_ref().map_or(0,|c|c.bitrate_kbps);
+            let display=control.as_ref().and_then(|c|c.display);
+            let displays=control.map_or_else(Vec::new,|c|c.displays);
+            SessionView{id,name,status,input,max_input,fps,bitrate_kbps,display,displays}
         }).collect()
     }
-    pub fn set_session_permissions(&self, peer_id:&str, permissions:Permissions) -> anyhow::Result<()> {
+    pub fn set_session_input(&self, session:&str, input:InputPermissions) -> anyhow::Result<()> {
         let access=self.access.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("本机共享未运行")))?;
-        access.set_permissions(peer_id,permissions)?;
-        Ok(())
+        access.sessions.set_session_input(session,input)
+    }
+    pub fn set_session_quality(&self, session:&str, update:uu_core::native_quality::Update) -> anyhow::Result<()> {
+        let access=self.access.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("本机共享未运行")))?;
+        access.sessions.set_session_quality(session,update)
+    }
+    pub fn set_session_display(&self, session:&str, id:i32) -> anyhow::Result<()> {
+        let access=self.access.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("本机共享未运行")))?;
+        access.sessions.set_session_display(session,id)
     }
     pub fn disconnect_session(&self, id:&str) {
         if let Some(access)=&self.access {access.sessions.disconnect_session(id);}

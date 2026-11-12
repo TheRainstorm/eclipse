@@ -118,6 +118,31 @@ pub struct PermissionDetails {
     pub clipboard:bool,
     pub manage_server:bool,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InputPermissions {
+    pub keyboard: bool,
+    pub mouse: bool,
+    pub gamepad: bool,
+}
+impl InputPermissions {
+    pub const NONE: Self = Self { keyboard: false, mouse: false, gamepad: false };
+    pub const ALL: Self = Self { keyboard: true, mouse: true, gamepad: true };
+    pub fn from_details(details: PermissionDetails) -> Self {
+        Self { keyboard: details.keyboard, mouse: details.mouse, gamepad: details.gamepad }
+    }
+    pub fn from_mask(mask: u8) -> Self {
+        Self { keyboard: mask & 1 != 0, mouse: mask & 2 != 0, gamepad: mask & 4 != 0 }
+    }
+    pub fn is_empty(self) -> bool { self.mask() == 0 }
+    pub fn any(self) -> bool { !self.is_empty() }
+    pub(crate) fn mask(self) -> u8 {
+        u8::from(self.keyboard) | (u8::from(self.mouse) << 1) | (u8::from(self.gamepad) << 2)
+    }
+    pub fn intersection(self, other: Self) -> Self {
+        Self { keyboard: self.keyboard && other.keyboard, mouse: self.mouse && other.mouse, gamepad: self.gamepad && other.gamepad }
+    }
+}
 impl Permissions {
     pub const VIEW: Self = Self {
         view: true,
@@ -132,15 +157,24 @@ impl Permissions {
     pub fn details(self)->PermissionDetails {
         self.details.unwrap_or(PermissionDetails {keyboard:self.control,mouse:self.control,gamepad:self.control,clipboard:self.control,manage_server:false})
     }
+    pub fn input_permissions(self) -> InputPermissions {
+        if !self.view || !self.control { return InputPermissions::NONE; }
+        InputPermissions::from_details(self.details())
+    }
+    pub fn with_input_permissions(self, input: InputPermissions) -> Self {
+        let mut details = self.details();
+        details.keyboard = input.keyboard;
+        details.mouse = input.mouse;
+        details.gamepad = input.gamepad;
+        self.with_details(details)
+    }
     pub fn with_details(mut self,details:PermissionDetails)->Self {
         self.control=details.keyboard||details.mouse||details.gamepad;
         self.details=Some(details);
         self
     }
     pub(crate) fn input_mask(self)->u8 {
-        let d=self.details();
-        if !self.view || !self.control {return 0;}
-        u8::from(d.keyboard)|(u8::from(d.mouse)<<1)|(u8::from(d.gamepad)<<2)
+        self.input_permissions().mask()
     }
     pub fn validate(self) -> Result<()> {
         if let Some(d)=self.details {
@@ -404,6 +438,11 @@ mod tests {
         permission.validate().unwrap();
         assert_eq!(permission.input_mask(),5);
         assert_eq!(serde_json::from_slice::<Permissions>(&serde_json::to_vec(&permission).unwrap()).unwrap(),permission);
+        let keyboard=InputPermissions{keyboard:true,mouse:false,gamepad:false};
+        let capped=Permissions::CONTROL.with_input_permissions(keyboard);
+        assert_eq!(capped.input_permissions(),keyboard);
+        assert_eq!(keyboard.intersection(InputPermissions::ALL),keyboard);
+        assert_eq!(capped.with_input_permissions(InputPermissions::ALL).input_permissions(),InputPermissions::ALL,"the session value is stored separately and must be rechecked against the current device grant at runtime");
     }
     #[test]
     fn persistent_identity_and_independent_grants_survive_concurrent_windows_and_revocation() {
