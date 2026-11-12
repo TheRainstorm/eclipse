@@ -193,7 +193,8 @@ pub fn install_with_policy(source: PathBuf, independent: bool, defer_if_busy: bo
     }
     Ok(())
 }
-fn console_owner(session: u32) -> Result<String> {
+fn interactive_owner(session: u32) -> Result<String> {
+    ensure!(session != 0 && session != u32::MAX, "请从已登录的 Windows 用户桌面安装或管理后台服务");
     fn field(session: u32, kind: WTS_INFO_CLASS) -> Result<Vec<u16>> {
         let mut value = ptr::null_mut();
         let mut bytes = 0;
@@ -206,7 +207,7 @@ fn console_owner(session: u32) -> Result<String> {
                 &mut bytes,
             )
         })
-        .context("读取控制台用户身份失败")?;
+        .context("读取登录用户身份失败")?;
         struct Buffer(*mut u16);
         impl Drop for Buffer {
             fn drop(&mut self) {
@@ -218,14 +219,14 @@ fn console_owner(session: u32) -> Result<String> {
         let value = Buffer(value);
         ensure!(
             !value.0.is_null() && bytes >= 2 && bytes <= 65536 && bytes % 2 == 0,
-            "控制台用户身份无效"
+            "登录用户身份无效"
         );
         let data = unsafe { std::slice::from_raw_parts(value.0, bytes as usize / 2) };
-        ensure!(data.last() == Some(&0), "控制台用户身份缺少结尾");
+        ensure!(data.last() == Some(&0), "登录用户身份缺少结尾");
         Ok(data[..data.len() - 1].to_vec())
     }
     let user = field(session, WTSUserName)?;
-    ensure!(!user.is_empty(), "请先登录需要共享的 Windows 控制台用户");
+    ensure!(!user.is_empty(), "请先登录需要共享的 Windows 用户");
     let mut name = field(session, WTSDomainName)?;
     if !name.is_empty() {
         name.push(b'\\' as u16);
@@ -246,7 +247,7 @@ fn console_owner(session: u32) -> Result<String> {
     }
     ensure!(
         size > 0 && size < 65536 && domain_length < 32768,
-        "无法解析控制台用户 SID"
+        "无法解析登录用户 SID"
     );
     let mut sid = vec![
         0usize;
@@ -265,12 +266,12 @@ fn console_owner(session: u32) -> Result<String> {
             &mut kind,
         )
     })
-    .context("解析控制台用户 SID 失败")?;
-    ensure!(kind == SidTypeUser, "控制台身份不是 Windows 用户");
+    .context("解析登录用户 SID 失败")?;
+    ensure!(kind == SidTypeUser, "登录身份不是 Windows 用户");
     sid_string(sid.as_mut_ptr().cast())
 }
-fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Result<()> {
-    install_from_profile(source, package, enforce_console, false, false)
+fn install_from(source: PathBuf, package: PathBuf, require_interactive: bool) -> Result<()> {
+    install_from_profile(source, package, require_interactive, false, false)
 }
 /// Import user-writable configuration with that user's token. In particular a
 /// junction raced into the source must never turn installation into a reader
@@ -363,25 +364,22 @@ impl Drop for IdleReservation {
         }
     }
 }
-fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool, independent: bool, defer_if_busy: bool) -> Result<()> {
+fn install_from_profile(source: PathBuf, package: PathBuf, require_interactive: bool, independent: bool, defer_if_busy: bool) -> Result<()> {
     let _lock = installation_lock()?;
-    install_from_profile_locked(source, package, enforce_console, independent, defer_if_busy).map(|_| ())
+    install_from_profile_locked(source, package, require_interactive, independent, defer_if_busy).map(|_| ())
 }
-fn install_from_profile_locked(source: PathBuf, package: PathBuf, enforce_console: bool, independent: bool, defer_if_busy: bool) -> Result<bool> {
+fn install_from_profile_locked(source: PathBuf, package: PathBuf, require_interactive: bool, independent: bool, defer_if_busy: bool) -> Result<bool> {
     let mut session = 0;
     winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) })?;
-    ensure!(
-        !enforce_console || session == unsafe { WTSGetActiveConsoleSessionId() },
-        "请在需要共享的 Windows 控制台用户中安装后台服务"
-    );
     // UAC may use a different administrator's credentials. The service belongs
-    // to the logged-in console user whose desktop was selected by the caller.
-    let owner = if enforce_console {
-        console_owner(session)?
+    // to the caller's logged-in desktop user, including RDP. Installation
+    // identity is independent of the physical console the service captures.
+    let owner = if require_interactive {
+        interactive_owner(session)?
     } else {
         process_user(unsafe { GetCurrentProcess() })?
     };
-    ensure!(owner != "S-1-5-18", "安装需要从当前控制台用户发起");
+    ensure!(owner != "S-1-5-18", "安装需要从已登录的 Windows 用户发起");
     let paths = Paths::discover()?;
     directory(&paths.programs)?;
     directory(&paths.root)?;
@@ -804,12 +802,11 @@ fn import_plugins_locked(source: PathBuf) -> Result<()> {
     require_data_profile(&source)?;
     let paths = Paths::discover()?;
     let installed = paths.manifest()?;
-    let session = unsafe { WTSGetActiveConsoleSessionId() };
     let mut caller_session = 0;
     winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut caller_session) })?;
     ensure!(
-        caller_session == session && console_owner(session)? == installed.owner_sid,
-        "请在后台服务所属的 Windows 控制台用户中同步插件"
+        interactive_owner(caller_session)? == installed.owner_sid,
+        "请在后台服务所属的 Windows 用户桌面中同步插件"
     );
     let target_program=paths.binary_directory(&installed);
     let package:serde_json::Value=serde_json::from_slice(&regular(&target_program.join("version.json"),1024*1024)?)?;
@@ -877,6 +874,24 @@ fn import_plugins_locked(source: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn service_and_unassigned_sessions_cannot_supply_an_installation_owner() {
+        assert!(interactive_owner(0).is_err());
+        assert!(interactive_owner(u32::MAX).is_err());
+    }
+    #[test]
+    #[ignore = "explicit logged-in desktop fixture; validates identity without changing services or configuration"]
+    fn installation_owner_comes_from_the_callers_interactive_desktop() {
+        let expected_session: u32 = std::env::var("ECLIPSE_TEST_INSTALL_SESSION").expect("explicit session ID").parse().unwrap();
+        let expected_owner = std::env::var("ECLIPSE_TEST_INSTALL_OWNER").expect("explicit desktop owner SID");
+        let mut session = 0;
+        winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) }).unwrap();
+        assert_eq!(session, expected_session);
+        assert_eq!(interactive_owner(session).unwrap(), expected_owner);
+        if std::env::var_os("ECLIPSE_TEST_INSTALL_RDP").is_some() {
+            assert_ne!(session, unsafe { WTSGetActiveConsoleSessionId() });
+        }
+    }
     #[test]
     fn installation_wait_and_supersession_are_normal_helper_results() {
         use uu_core::service_admin::deployment::*;
@@ -971,7 +986,7 @@ mod tests {
     async fn protected_service_migrates_authorization_restarts_and_releases_owned_child() {
         administrator_file_owner().unwrap();
         assert_eq!(
-            console_owner(unsafe { WTSGetActiveConsoleSessionId() }).unwrap(),
+            interactive_owner(unsafe { WTSGetActiveConsoleSessionId() }).unwrap(),
             process_user(unsafe { GetCurrentProcess() }).unwrap(),
             "fixture requires the logged-in console owner's identity"
         );
