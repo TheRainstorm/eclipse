@@ -207,6 +207,7 @@ mod tests {
         ctx: egui::Context,
         root: PathBuf,
         time: f64,
+        focused: bool,
         texts: Vec<(String, egui::Pos2)>,
         text_lefts: Vec<(String, f32)>,
 
@@ -266,6 +267,7 @@ mod tests {
                 ctx,
                 root,
                 time: 0.,
+                focused: true,
                 texts: Vec::new(),
                 text_lefts: Vec::new(),
 
@@ -280,7 +282,7 @@ mod tests {
             let output = self.ctx.run(
                 egui::RawInput {
                     time: Some(self.time),
-                    focused: true,
+                    focused: self.focused,
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
                         egui::vec2(1200., 1000.),
@@ -443,6 +445,15 @@ mod tests {
         }
         h.submenu("壁纸");
         assert!(matches!(&h.click("刷新壁纸")[..],[Action::RefreshWallpaper]));
+    }
+
+    #[test]
+    fn f5_refreshes_only_the_focused_device_list() {
+        let mut h=Harness::new();
+        let key=|pressed|egui::Event::Key{key:egui::Key::F5,physical_key:Some(egui::Key::F5),pressed,repeat:false,modifiers:Default::default()};
+        h.focused=false;assert!(h.frame(vec![key(true)]).is_empty());h.frame(vec![key(false)]);
+        h.focused=true;assert!(matches!(&h.frame(vec![key(true)])[..],[Action::RefreshWallpaper]));h.frame(vec![key(false)]);
+        h.workspace.route.page=Page::Settings;assert!(h.frame(vec![key(true)]).is_empty());
     }
 
     #[test]
@@ -1386,6 +1397,10 @@ impl Workspace {
         if let DeviceView::Details(id) = self.route.device.clone() {
             self.device_details(ui, &id, actions);
             return;
+        }
+        if ui.ctx().input(|input|input.focused) && !ui.ctx().wants_keyboard_input()
+            && ui.ctx().input_mut(|input|input.consume_key(egui::Modifiers::NONE,egui::Key::F5)) {
+            actions.push(Action::RefreshWallpaper);
         }
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
         blank.context_menu(|ui| self.library_menu(ui, info, actions));
