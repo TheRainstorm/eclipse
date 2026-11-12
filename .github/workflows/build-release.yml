@@ -517,6 +517,9 @@ jobs:
             echo 'Published packages match this tag and their checksums; retaining immutable release assets.'
             exit 0
           fi
+          # A shallow checkout by SHA has no local tag ref. Fetch only the
+          # requested tag so asset preparation can verify its source binding.
+          git fetch --no-tags --depth=1 origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           python3 tools/release/prepare_assets.py --tag "$RELEASE_TAG" --revision "$(git rev-parse HEAD)" \
             --input-dir release-assets --output-dir tagged-release-assets
           cd tagged-release-assets
