@@ -174,11 +174,29 @@ impl Owner {
         }
     }
     fn set_gpu(&self, enabled: bool, vendor: Option<u16>) {
+        let current = self.gpu.load(Ordering::Acquire);
+        if (!enabled && current != GPU_UNSET)
+            || (enabled && current == GPU_ON && vendor.is_none_or(|value| value == self.gpu_vendor.load(Ordering::Acquire))) {
+            return;
+        }
+        let _ready = self.ready.lock().unwrap();
         if enabled {
-            self.gpu.store(GPU_ON, Ordering::Release);
             if let Some(vendor) = vendor { self.gpu_vendor.store(vendor, Ordering::Release); }
+            self.gpu.store(GPU_ON, Ordering::Release);
         } else if self.gpu.load(Ordering::Acquire) == GPU_UNSET {
             self.gpu.store(GPU_OFF, Ordering::Release);
+        }
+        self.ready_changed.notify_all();
+    }
+    fn default_input_format(&self) {
+        // Callers that do not select an encoder still receive CPU frames. The
+        // encoder startup path chooses its format before requesting a frame.
+        self.set_gpu(false, None);
+    }
+    fn wait_input_format(&self) {
+        let mut ready = self.ready.lock().unwrap();
+        while self.gpu.load(Ordering::Acquire) == GPU_UNSET && !self.stop.load(Ordering::Acquire) {
+            ready = self.ready_changed.wait(ready).unwrap();
         }
     }
     fn publish(&self, frame: &RawFrame) {
@@ -228,8 +246,11 @@ impl Owner {
         Ok(())
     }
     fn stop_and_join(&self) {
-        self.stop.store(true, Ordering::Release);
-        self.ready_changed.notify_all();
+        {
+            let _ready = self.ready.lock().unwrap();
+            self.stop.store(true, Ordering::Release);
+            self.ready_changed.notify_all();
+        }
         if let Some(thread) = self.thread.lock().unwrap().take() {
             let _ = thread.join();
         }
@@ -282,6 +303,11 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
         ready.error = None;
     }
     initial.ready_changed.notify_all();
+    // Capturing a CPU picture before the encoder selects GPU input causes the
+    // later format switch to clear the only image of an idle sign-in desktop.
+    // Publish device metadata first, then acquire the first image in the chosen
+    // format; an ordinary consumer chooses CPU on its first read.
+    initial.wait_input_format();
     drop(initial);
 
     let mut configured_fps = configured_fps;
@@ -392,6 +418,7 @@ impl Capture for SharedCapture {
     fn cursor(&self) -> Option<uu_capture::cursor::Stream> { self.metadata().cursor.clone() }
     fn enable_overlap(&mut self) -> Result<(), CaptureError> { Ok(()) }
     fn wait_updated_frame(&mut self, wait: Duration) -> Result<Option<RawFrame>, CaptureError> {
+        self.owner.default_input_format();
         self.subscriber.take(Some(wait))
     }
     fn frame_info(&self) -> Option<uu_capture::frame_info::FrameInfo> { self.metadata().frame_info }
@@ -407,6 +434,7 @@ impl Capture for SharedCapture {
     fn desktop_rect(&self) -> Option<DesktopRect> { self.desktop_mapping().and_then(|mapping| mapping.get()) }
     fn desktop_mapping(&self) -> Option<DesktopMapping> { self.metadata().mapping.clone() }
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
+        self.owner.default_input_format();
         self.subscriber.take(None)?.ok_or_else(|| CaptureError::Suspended(uu_i18n::text("共享采集源暂无新画面").into()))
     }
 }
@@ -503,6 +531,7 @@ mod tests {
         let owner = Owner::new(Key::new(&source), source, options(60));
         let first = owner.subscribe(60);
         let second = owner.subscribe(60);
+        owner.default_input_format();
         let (send, receive) = std::sync::mpsc::channel();
         let weak = Arc::downgrade(&owner);
         *owner.thread.lock().unwrap() = Some(std::thread::spawn(move || run_capture(weak, Box::new(Source(receive)), 60)));
@@ -528,5 +557,32 @@ mod tests {
         send.send(Err(CaptureError::Backend("device removed".into()))).unwrap();
         assert!(matches!(first.take(Some(Duration::from_secs(1))), Err(CaptureError::Backend(reason)) if reason.contains("device removed")));
         owner.stop_and_join();
+    }
+
+    #[test]
+    fn first_capture_waits_for_input_format_and_pending_source_can_stop() {
+        struct Source(std::sync::mpsc::Sender<(bool, Option<u16>)>, bool, Option<u16>);
+        impl Capture for Source {
+            fn resolution(&self) -> (u32, u32) { (2, 2) }
+            fn prefer_gpu(&mut self, gpu: bool, vendor: Option<u16>) { self.1 = gpu; self.2 = vendor; }
+            fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
+                let _ = self.0.send((self.1, self.2));
+                Err(CaptureError::Suspended("idle desktop".into()))
+            }
+        }
+        for select_gpu in [true, false] {
+            let owner = Owner::new(Key::new(&CaptureSource::Primary), CaptureSource::Primary, options(60));
+            let _subscriber = owner.subscribe(60);
+            let (sent, received) = std::sync::mpsc::channel();
+            let weak = Arc::downgrade(&owner);
+            *owner.thread.lock().unwrap() = Some(std::thread::spawn(move || run_capture(weak, Box::new(Source(sent, false, None)), 60)));
+            owner.wait_ready().unwrap();
+            assert!(received.try_recv().is_err(), "device readiness must not capture in an unselected format");
+            if select_gpu {
+                owner.set_gpu(true, Some(0x8086));
+                assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), (true, Some(0x8086)));
+            }
+            owner.stop_and_join();
+        }
     }
 }
