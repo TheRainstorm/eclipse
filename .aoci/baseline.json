@@ -1,13 +1,13 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-12T21:06:02Z",
+  "updated_at": "2026-11-12T21:54:42Z",
   "files": {
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "e2944ca6e09fd5e3b63b0f36ef783373339ec12619545b70afe4021aaefb0cf9",
-      "size": 124719,
-      "normalized_sha256": "e2944ca6e09fd5e3b63b0f36ef783373339ec12619545b70afe4021aaefb0cf9"
+      "sha256": "748131ae295dfb02dbd283d9b0e318f7bde4cff5631488b69fdbb911b916c1ac",
+      "size": 125462,
+      "normalized_sha256": "748131ae295dfb02dbd283d9b0e318f7bde4cff5631488b69fdbb911b916c1ac"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -119,9 +119,9 @@
     },
     "crates/uu-capture/src/windows.rs": {
       "role": "index",
-      "sha256": "f4c822474e225fe9e004b37ea787b071c4280258e674b0d5b6212775cdf90cc7",
-      "size": 41046,
-      "normalized_sha256": "f4c822474e225fe9e004b37ea787b071c4280258e674b0d5b6212775cdf90cc7"
+      "sha256": "267840d94d5354891bd3fa9b4a157fbc079f93a2a44edec665f6718e7084b18c",
+      "size": 44157,
+      "normalized_sha256": "267840d94d5354891bd3fa9b4a157fbc079f93a2a44edec665f6718e7084b18c"
     },
     "crates/uu-capture/src/x11.rs": {
       "role": "index",
@@ -1277,9 +1277,9 @@
     },
     "crates/uu-input/src/windows_desktop.rs": {
       "role": "index",
-      "sha256": "b15ab8df34db5be71dbb4ef2c1adeb6205ff539342cb1b79b15f2c40ace7991c",
-      "size": 10431,
-      "normalized_sha256": "b15ab8df34db5be71dbb4ef2c1adeb6205ff539342cb1b79b15f2c40ace7991c"
+      "sha256": "50f6d9c0de211d6b48dfa8dad1d965e228bed5e53105fb09d5a5df9861600fbd",
+      "size": 10570,
+      "normalized_sha256": "50f6d9c0de211d6b48dfa8dad1d965e228bed5e53105fb09d5a5df9861600fbd"
     },
     "crates/uu-media/src/audio.rs": {
       "role": "index",
@@ -1616,6 +1616,12 @@
       "sha256": "7560556231afc13f90331b912481eb019f431329b450e7cbd02369eb7dd1ad21",
       "size": 33698,
       "normalized_sha256": "7560556231afc13f90331b912481eb019f431329b450e7cbd02369eb7dd1ad21"
+    },
+    "crates/uu-capture/src/windows_gdi.rs": {
+      "role": "index",
+      "sha256": "d3ada75469be1ee45672570b77490a51cb1967946209487e8c9b702f4ed0c070",
+      "size": 13379,
+      "normalized_sha256": "d3ada75469be1ee45672570b77490a51cb1967946209487e8c9b702f4ed0c070"
     }
   },
   "managed_scope": {
