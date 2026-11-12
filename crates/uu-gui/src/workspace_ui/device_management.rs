@@ -33,37 +33,41 @@ impl Workspace {
     pub(super) fn device_management_toolbar(&mut self, ui: &mut egui::Ui, profiles: &[Profile]) {
         if !self.management.active { return; }
         self.management.selected.retain(|id| profiles.iter().any(|p| &p.id == id));
-        theme::card(ui.visuals()).show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(uu_i18n::text("设备管理"));
-                ui.label(uu_i18n::format!("已选择 {} 台设备", self.management.selected.len()));
-                if ui.add(theme::secondary_button(uu_i18n::text("全选"))).clicked() {
-                    self.management.selected = profiles.iter().map(|p| p.id.clone()).collect();
+        let bounds=ui.clip_rect().intersect(ui.ctx().screen_rect());
+        egui::Area::new(ui.id().with("device-management-controls"))
+            .order(egui::Order::Foreground).movable(false).pivot(egui::Align2::RIGHT_BOTTOM)
+            .fixed_pos(bounds.right_bottom()-egui::vec2(16.,16.)).constrain_to(bounds)
+            .show(ui.ctx(),|ui| {
+                ui.set_width(if self.management.confirm_delete && !self.management.selected.is_empty(){280.}else{140.});
+                if self.management.confirm_delete && !self.management.selected.is_empty() {
+                    egui::Frame::popup(ui.style()).show(ui,|ui| {
+                        ui.set_max_width(280.);
+                        ui.label(uu_i18n::format!("删除选中的 {} 台设备？",self.management.selected.len()));
+                        ui.horizontal(|ui| {
+                            if ui.add(theme::secondary_button(uu_i18n::text("取消"))).clicked(){self.management.confirm_delete=false;}
+                            if ui.add(theme::danger_button(uu_i18n::text("确认删除"))).clicked(){self.management.delete=true;}
+                        });
+                    });
+                    ui.add_space(10.);
                 }
-                if ui.add(theme::secondary_button(uu_i18n::text("取消选择"))).clicked() {
-                    self.management.selected.clear();
-                }
-                if ui.add_enabled(!self.management.selected.is_empty(), theme::danger_button(uu_i18n::text("删除所选"))).clicked() {
-                    self.management.confirm_delete = true;
-                }
-                if ui.add(theme::primary_button(uu_i18n::text("完成"))).clicked() {
-                    self.management = State::default();
-                }
-            });
-            ui.weak(uu_i18n::text("点击设备进行选择，拖动设备调整顺序。"));
-            if self.management.confirm_delete && !self.management.selected.is_empty() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(uu_i18n::format!("删除所选 {} 台设备？仅移除本地记录，现有串流继续运行。", self.management.selected.len()));
-                    if ui.add(theme::danger_button(uu_i18n::text("确认删除"))).clicked() {
-                        self.management.delete = true;
+                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),40.),egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                    ui.spacing_mut().item_spacing.x=10.;
+                    if floating_button(ui,crate::ui::Icon::Close,uu_i18n::text("结束管理"),true,false).clicked(){self.management=State::default();}
+                    let count=self.management.selected.len();
+                    let remove=floating_button(ui,crate::ui::Icon::Trash,uu_i18n::text("删除所选"),count>0,true);
+                    if remove.clicked(){self.management.confirm_delete=true;}
+                    if count>0 {
+                        let center=remove.rect.right_top()+egui::vec2(-2.,2.);
+                        ui.painter().circle_filled(center,9.,theme::palette(ui.visuals()).danger);
+                        ui.painter().text(center,egui::Align2::CENTER_CENTER,count.to_string(),egui::FontId::proportional(11.),egui::Color32::WHITE);
                     }
-                    if ui.add(theme::secondary_button(uu_i18n::text("取消"))).clicked() {
-                        self.management.confirm_delete = false;
+                    let all=count==profiles.len() && !profiles.is_empty();
+                    if floating_button(ui,crate::ui::Icon::SelectAll,uu_i18n::text(if all {"取消选择"}else{"全选"}),!profiles.is_empty(),false).clicked(){
+                        self.management.selected=if all {BTreeSet::new()}else{profiles.iter().map(|p|p.id.clone()).collect()};
+                        self.management.confirm_delete=false;
                     }
                 });
-            }
-        });
-        ui.add_space(16.);
+            });
     }
 
     pub(super) fn device_management_drag(&mut self, ui: &egui::Ui, response: &egui::Response, id: &str) {
@@ -100,4 +104,21 @@ impl Workspace {
             Err(error) => self.feedback.error(crate::ui_feedback::Scope::Devices, uu_i18n::format!("设备管理操作失败：{error:#}")),
         }
     }
+}
+
+fn floating_button(ui:&mut egui::Ui,icon:crate::ui::Icon,label:&str,enabled:bool,danger:bool)->egui::Response {
+    ui.add_enabled_ui(enabled,|ui| {
+        let (rect,response)=ui.allocate_exact_size(egui::Vec2::splat(40.),egui::Sense::click());
+        response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),label));
+        let palette=theme::palette(ui.visuals());
+        let hovered=response.hovered()||response.has_focus();
+        let fill=if response.is_pointer_button_down_on(){palette.pressed}else if hovered{palette.hover}else{palette.overlay.linear_multiply(0.94)};
+        ui.painter().circle_filled(rect.center()+egui::vec2(0.,2.),20.,egui::Color32::from_black_alpha(25));
+        ui.painter().circle_filled(rect.center(),20.,fill);
+        ui.painter().circle_stroke(rect.center(),20.,egui::Stroke::new(1.,if hovered{palette.primary}else{palette.border}));
+        crate::ui::icon(ui.painter(),rect,icon,if !ui.is_enabled(){palette.muted}else if danger{palette.danger}else{palette.text});
+        #[cfg(test)]
+        ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(("batch-button",label)),rect));
+        response.on_hover_text(label)
+    }).inner
 }

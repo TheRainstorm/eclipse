@@ -158,8 +158,10 @@ mod tests {
         h.workspace.refresh();h.workspace.management.active=true;
         assert!(h.click("Device 1").is_empty());
         assert_eq!(h.workspace.management.selected.len(),1);
-        h.click("全选");assert_eq!(h.workspace.management.selected.len(),2);
-        h.click("删除所选");h.click("确认删除");
+        h.batch("全选");assert_eq!(h.workspace.management.selected.len(),2);
+        let rect=h.ctx.data(|data|data.get_temp::<egui::Rect>(egui::Id::new(("batch-button","删除所选")))).unwrap();
+        assert!(rect.center().x>1000.&&rect.center().y>900.,"floating controls must stay at the bottom right: {rect:?}");
+        h.batch("删除所选");h.click("确认删除");
         assert!(h.workspace.store.as_ref().unwrap().read().unwrap().devices.is_empty());
     }
     #[test]
@@ -341,6 +343,11 @@ mod tests {
             let point=self.texts.iter().find(|(text,_)|text==label).unwrap_or_else(||panic!("missing submenu {label}")).1;
             self.frame(vec![egui::Event::PointerMoved(point)]);
             for _ in 0..3 {self.frame(Vec::new());}
+        }
+        fn batch(&mut self,label:&str) {
+            for _ in 0..3 {self.frame(Vec::new());}
+            let rect=self.ctx.data(|data|data.get_temp::<egui::Rect>(egui::Id::new(("batch-button",label)))).expect("floating management button");
+            self.click_at(rect.center());
         }
         fn choose_preset(&mut self,label:&str) {
             for _ in 0..3 {self.frame(Vec::new());}
@@ -1424,6 +1431,7 @@ impl Workspace {
             });
             ui.add_space(22.);
         }
+        if self.management.active {ui.add_space(70.);}
         self.finish_device_management();
     }
     fn device_tile(&mut self,ui:&mut egui::Ui,profile:&Profile,actions:&mut Vec<Action>)->egui::Response {
@@ -1449,7 +1457,12 @@ impl Workspace {
             }
             ui.painter().galley(pos,text,color);
             if self.management.active && self.management.selected.contains(&profile.id) {
-                ui.painter().rect_stroke(rect.expand(4.),theme::RADIUS,egui::Stroke::new(3.,theme::palette(ui.visuals()).primary));
+                let primary=theme::palette(ui.visuals()).primary;
+                ui.painter().rect_stroke(rect.expand(4.),theme::RADIUS,egui::Stroke::new(2.,primary));
+                let center=picture.right_top()+egui::vec2(-10.,10.);
+                ui.painter().circle_filled(center,10.,primary);
+                ui.painter().line_segment([center+egui::vec2(-4.,0.),center+egui::vec2(-1.,3.)],egui::Stroke::new(2.,egui::Color32::WHITE));
+                ui.painter().line_segment([center+egui::vec2(-1.,3.),center+egui::vec2(5.,-4.)],egui::Stroke::new(2.,egui::Color32::WHITE));
             }
             if response.clicked(){
                 if self.management.active {

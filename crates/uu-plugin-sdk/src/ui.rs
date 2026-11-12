@@ -34,6 +34,8 @@ pub enum Icon {
     Muted,
     Keyboard,
     Encoding,
+    SelectAll,
+    Trash,
 }
 pub fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
     let r = Rect::from_center_size(rect.center(), Vec2::splat(18.0));
@@ -43,6 +45,16 @@ pub fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
         p.line_segment([pt(a.0, a.1), pt(b.0, b.1)], stroke);
     };
     match kind {
+        Icon::SelectAll => {
+            p.rect_stroke(Rect::from_min_max(pt(2., 2.), pt(16., 16.)), 3., stroke);
+            line((5., 9.), (8., 12.));
+            line((8., 12.), (13., 6.));
+        }
+        Icon::Trash => {
+            line((3., 5.), (15., 5.)); line((6., 2.), (12., 2.));
+            p.rect_stroke(Rect::from_min_max(pt(5., 5.), pt(13., 16.)), 2., stroke);
+            line((8., 8.), (8., 13.)); line((10., 8.), (10., 13.));
+        }
         Icon::Image { id, bytes } => {
             let key = egui::Id::new(("extension-icon", id));
             let ctx = p.ctx();

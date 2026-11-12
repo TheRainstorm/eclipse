@@ -2237,5 +2237,7 @@
   "管理串流配置": "Manage streaming profiles",
   "移除设备“{}”？": "Remove device “{}”?",
   "仅移除本地记录，现有串流和被控端授权不受影响。": "Only the local record is removed. Existing streams and host permissions are kept.",
-  "确认移除": "Confirm removal"
+  "确认移除": "Confirm removal",
+  "删除选中的 {} 台设备？": "Delete the {} selected devices?",
+  "结束管理": "Finish managing devices"
 }
