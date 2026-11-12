@@ -83,7 +83,9 @@ impl Entry {
             ui.weak(uu_i18n::text("启动主机服务后，可在这里管理连接。")); return;
         }
         if !manager.owns_profile() {
-            ui.weak(uu_i18n::text("本机服务正在使用其它配置，请在对应的程序中管理会话。")); return;
+            ui.weak(uu_i18n::text(if manager.has_other_profile() {
+                "本机服务正在使用其它配置，请在对应的程序中管理会话。"
+            } else { "后台服务未启动或尚未就绪" })); return;
         }
         manager.feedback.show(ui, manager.section.scope());
         manager.current_connections(ui);
@@ -267,13 +269,15 @@ impl Entry {
             if !manager.checked {
                 return;
             }
+            if manager.state == 0 {
+                self.deployment = Some(Deployment::Install);
+                return;
+            }
             if !manager.owns_profile() {
                 if manager.switch_ready() { manager.request_action(Confirmation::Update); }
                 return;
             }
-            if manager.state == 0 {
-                self.deployment = Some(Deployment::Install);
-            } else if manager.state == SERVICE_RUNNING {
+            if manager.state == SERVICE_RUNNING {
                 manager.request_action(Confirmation::Stop);
             } else if manager.state == SERVICE_STOPPED {
                 manager.submit(Job::Start);
@@ -337,6 +341,8 @@ impl Entry {
                         uu_i18n::text("正在更新服务")
                     } else if online {
                         uu_i18n::text("在线")
+                    } else if self.manager.as_ref().is_some_and(|manager|manager.checked && manager.state == 0) {
+                        uu_i18n::text("未安装")
                     } else {
                         uu_i18n::text("后台服务未启动或尚未就绪")
                     },
@@ -352,7 +358,8 @@ impl Entry {
             if let Some(manager) = &mut self.manager {
                 let outdated = manager.update_needed();
                 let own_profile = manager.owns_profile();
-                if !own_profile {
+                let other_profile = manager.has_other_profile();
+                if other_profile {
                     ui.colored_label(crate::theme::palette(ui.visuals()).warning, uu_i18n::text("本机服务正在使用其它配置；切换后才会使用本目录的服务端设置和配对。"));
                     if !manager.switch_ready() { ui.weak(uu_i18n::text("请先结束当前服务的串流，再切换配置。")); }
                 }
@@ -375,7 +382,7 @@ impl Entry {
                         if ui
                             .add_enabled(
                                 !busy && (own_profile || manager.switch_ready()),
-                                crate::theme::secondary_button(if !own_profile {
+                                crate::theme::secondary_button(if other_profile {
                                     uu_i18n::text("切换到此配置")
                                 } else if outdated {
                                     uu_i18n::text("完成更新")
@@ -860,6 +867,11 @@ impl Manager {
             Some(active) => active == expected,
             None => self.allow_legacy_profile,
         }
+    }
+    fn has_other_profile(&self) -> bool {
+        self.state != 0 && self.expected_profile.as_ref().zip(
+            self.build.as_ref().and_then(|build|build.profile.as_ref())
+        ).is_some_and(|(expected, active)| expected != active)
     }
     fn switch_ready(&self) -> bool {
         self.state == SERVICE_STOPPED || self.snapshot.as_ref().is_some_and(|s|s.connections.is_empty())
@@ -2201,6 +2213,40 @@ mod tests {
         entry.schedule_automatic_sync();assert!(entry.deployment.is_none(),"a historical service must be activated explicitly");
         entry.manager.as_mut().unwrap().build.as_mut().unwrap().profile=Some("a".repeat(64));
         assert!(entry.online());assert_eq!(entry.keep_displays(),Some(true));
+    }
+    #[test]
+    fn first_install_toggle_works_before_a_service_profile_exists() {
+        let (mut manager, _send, jobs, _stop) = fixture();
+        manager.checked = true;
+        manager.state = 0;
+        manager.expected_profile = Some("a".repeat(64));
+        manager.allow_legacy_profile = false;
+        manager.build = None;
+        assert!(!manager.owns_profile());
+        assert!(!manager.has_other_profile());
+        let mut entry = Entry { manager: Some(manager), ..Default::default() };
+        entry.toggle();
+        assert!(matches!(entry.deployment, Some(Deployment::Install)));
+        assert!(jobs.try_recv().is_err(), "first installation must use the package deployment path");
+    }
+    #[test]
+    fn configuration_conflict_requires_an_installed_service_and_a_different_known_profile() {
+        let (mut manager, _send, _jobs, _stop) = fixture();
+        manager.expected_profile = Some("a".repeat(64));
+        manager.allow_legacy_profile = false;
+        for state in [0, SERVICE_STOPPED, SERVICE_RUNNING] {
+            manager.state = state;
+            manager.build = None;
+            assert!(!manager.has_other_profile());
+            manager.build = Some(BuildStatus { state, process_id: 0, installed: None,
+                running: None, running_error: None, profile: None });
+            assert!(!manager.has_other_profile());
+            manager.build.as_mut().unwrap().profile = Some("b".repeat(64));
+            assert_eq!(manager.has_other_profile(), state != 0);
+            manager.build.as_mut().unwrap().profile = Some("a".repeat(64));
+            assert!(!manager.has_other_profile());
+            assert!(manager.owns_profile());
+        }
     }
     #[test]
     fn automatic_update_preserves_temporary_displays_and_unfinished_preparation() {

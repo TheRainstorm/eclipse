@@ -2095,6 +2095,7 @@
   "Eclipse 服务": "Eclipse service",
   "后台服务管理未就绪": "Background service management is not ready",
   "后台服务未启动或尚未就绪": "The background service is stopped or not ready",
+  "未安装": "Not installed",
   "启用服务": "Enable service",
   "应用程序更新": "Apply application update",
   "重新部署服务": "Redeploy service",
