@@ -45,7 +45,8 @@ pub(super) struct Entry {
     manager: Option<Manager>,
     requested_section: Option<Section>,
     deployment: Option<Deployment>,
-    job: Option<mpsc::Receiver<Result<DeploymentOutcome, String>>>,
+    job: Option<mpsc::Receiver<deployment::Event>>,
+    deployment_stage: deployment::Stage,
     feedback: super::ui_feedback::Feedback,
     loaded_plugins: Vec<uu_plugin_sdk::Manifest>,
     plugin_preferences: Option<uu_core::plugins::Preferences>,
@@ -88,10 +89,12 @@ impl Entry {
         }
         let mut installed = false;
         if let Some(job) = &self.job {
-            let completed=match job.try_recv() {
-                Ok(result)=>Some(result),
-                Err(mpsc::TryRecvError::Empty)=>None,
-                Err(mpsc::TryRecvError::Disconnected)=>Some(Err("Eclipse update worker exited without a completion result".into())),
+            let completed=loop { match job.try_recv() {
+                Ok(deployment::Event::Stage(stage))=>self.deployment_stage=stage,
+                Ok(deployment::Event::Done(result))=>break Some(result),
+                Err(mpsc::TryRecvError::Empty)=>break None,
+                Err(mpsc::TryRecvError::Disconnected)=>break Some(Err("Eclipse update worker exited without a completion result".into())),
+            }
             };
             if let Some(result) = completed {
                 self.job = None;
@@ -118,6 +121,18 @@ impl Entry {
                         self.feedback.report(super::ui_feedback::Scope::Services(0),super::ui_feedback::Kind::Progress,
                             uu_i18n::text("更新正在等待串流结束或临时显示器关闭；未完成的显示器操作也需要先处理。"));
                     }
+                    Ok(DeploymentOutcome::WaitingForInstallation) => {
+                        // A legacy helper may not participate in the frontend
+                        // owner. Keep observing it; never reprompt UAC in a loop.
+                        self.feedback.report(super::ui_feedback::Scope::Services(0),super::ui_feedback::Kind::Info,
+                            uu_i18n::text("另一个服务更新仍在进行；完成后会刷新状态，必要时请手动继续。"));
+                        if let Some(manager)=&mut self.manager { manager.submit(Job::Refresh); }
+                    }
+                    Ok(DeploymentOutcome::Superseded) => {
+                        self.feedback.report(super::ui_feedback::Scope::Services(0),super::ui_feedback::Kind::Info,
+                            uu_i18n::text("已保留正在使用的服务版本；当前窗口不会自动替换较新或无法确认顺序的程序包。"));
+                        if let Some(manager)=&mut self.manager { manager.submit(Job::Refresh); }
+                    }
                     Err(error) => {
                         self.deployment_error=error;
                         self.feedback.error(super::ui_feedback::Scope::Services(0),uu_i18n::text("更新尚未完成，请重试或查看诊断详情。"));
@@ -125,18 +140,23 @@ impl Entry {
                 }
             }
         }
-        if let Some(deployment) = self.deployment.take() {
+        if self.job.is_none() { if let Some(deployment) = self.deployment.take() {
             let automatic=std::mem::take(&mut self.automatic_job);
             if matches!(deployment,Deployment::Install) {self.automatic_update_attempted=true;}
             let (send, receive) = mpsc::channel();
             self.job = Some(receive);
+            self.deployment_stage=deployment::Stage::Applying;
+            self.feedback.clear_scope(&super::ui_feedback::Scope::Services(0));
+            self.deployment_error.clear();
             let ctx = ctx.clone();
             std::thread::spawn(move || {
-                let result = deployment::execute(deployment, automatic);
-                let _ = send.send(result);
+                let result = deployment::execute(deployment, automatic, |stage| {
+                    let _=send.send(deployment::Event::Stage(stage)); ctx.request_repaint();
+                });
+                let _ = send.send(deployment::Event::Done(result));
                 ctx.request_repaint();
             });
-        }
+        } }
         self.feedback.tick(ctx);
         ctx.request_repaint_after(Duration::from_millis(500));
         installed
@@ -145,6 +165,9 @@ impl Entry {
         self.manager.as_ref().filter(|m| m.owns_profile()).and_then(|m| m.keep_displays)
     }
     fn schedule_automatic_sync(&mut self) {
+        self.schedule_automatic_sync_for(deployment::package());
+    }
+    fn schedule_automatic_sync_for(&mut self, package: Option<&uu_core::service_admin::deployment::Package>) {
         if !self.automatic_sync_enabled {return;}
         let Some(manager)=&self.manager else{return;};
         if !manager.owns_profile() { return; }
@@ -152,6 +175,7 @@ impl Entry {
         let idle=manager.state==SERVICE_STOPPED || manager.snapshot.as_ref().is_some_and(|s|s.connections.is_empty());
         if !idle {return;}
         if manager.update_needed() {
+            if !deployment::automatic_update_needed(manager.build.as_ref(), package) { return; }
             if !self.automatic_update_attempted {
                 self.automatic_update_attempted=true;
                 self.automatic_job=true;
@@ -199,6 +223,7 @@ impl Entry {
         self.manager.as_ref().is_some_and(|m| m.ready && m.owns_profile())
     }
     pub fn toggle(&mut self) {
+        if self.job.is_some() || self.deployment.is_some() { return; }
         if let Some(manager) = &mut self.manager {
             if !manager.checked {
                 return;
@@ -237,7 +262,8 @@ impl Entry {
                 self.show_status_card(ui, available);
                 return installed;
             }
-            if self.job.is_some() {ui.horizontal(|ui|{ui.spinner();ui.label(uu_i18n::text("正在完成更新…"));});}
+            if self.job.is_some() {ui.horizontal(|ui|{ui.spinner();ui.label(uu_i18n::text(
+                if self.deployment_stage==deployment::Stage::Waiting {"正在等待另一个服务更新完成…"} else {"正在完成更新…"}));});}
             manager.show_tabs(ui);
         }
         let section = self.manager.as_ref().map_or(Section::Management, |manager| manager.section);
@@ -270,13 +296,15 @@ impl Entry {
                     } else {
                         crate::theme::palette(ui.visuals()).warning
                     },
-                    if online {
+                    if self.job.is_some() && self.deployment_stage==deployment::Stage::Applying {
+                        uu_i18n::text("正在更新服务")
+                    } else if online {
                         uu_i18n::text("在线")
                     } else {
                         uu_i18n::text("后台服务未启动或尚未就绪")
                     },
                 );
-                if busy {
+                if busy && self.job.is_none() {
                     ui.spinner();
                 }
             });
@@ -345,11 +373,12 @@ impl Entry {
                         }
                     }
                 });
-                if outdated && own_profile {
+                if outdated && own_profile && self.job.is_none() {
                     ui.colored_label(
                         crate::theme::palette(ui.visuals()).warning,
-                        uu_i18n::text(if self.automatic_sync_enabled {
+                        uu_i18n::text(if self.automatic_sync_enabled && !self.automatic_update_attempted && deployment::automatic_update_needed(manager.build.as_ref(), deployment::package()) {
                             "Eclipse 更新尚未完成；空闲时会自动继续，Windows 可能请求系统授权。"
+                        }else if self.automatic_sync_enabled {"后台服务与当前窗口版本不同；已保留正在使用的服务，需要切换时请手动部署。"
                         }else {"本机服务与当前便携版本不同；需要使用此版本提供共享时，请手动更新服务。"}),
                     );
                 }
@@ -357,7 +386,7 @@ impl Entry {
             self.feedback
                 .show(ui, super::ui_feedback::Scope::Services(0));
             if let Some(manager) = &self.manager {
-                if !manager.connection_error.is_empty() {
+                if !manager.connection_error.is_empty() && self.job.is_none() {
                     ui.colored_label(
                         crate::theme::palette(ui.visuals()).danger,
                         &manager.connection_error,
@@ -1474,7 +1503,10 @@ pub(super) fn dispatch() -> Option<eframe::Result> {
                 .arg(&args[3]);
             if defer_if_busy && action == "install" { command.arg("--defer-if-busy"); }
             let output = command.creation_flags(0x08000000).output()?;
-            if defer_if_busy && output.status.code() == Some(10) { std::process::exit(10); }
+            if let Some(code) = output.status.code() {
+                use uu_core::service_admin::deployment::{DEFERRED_HOST, DEFERRED_INSTALLATION, SUPERSEDED};
+                if [DEFERRED_HOST, DEFERRED_INSTALLATION, SUPERSEDED].contains(&code) { std::process::exit(code); }
+            }
             anyhow::ensure!(
                 output.status.success(),
                 "{}",
@@ -2056,19 +2088,20 @@ mod tests {
     #[test]
     fn automatic_update_waits_for_idle_and_never_repeats_an_authorization_attempt() {
         let (mut manager,send,_jobs,_stop)=fixture();send.send(state(true,Sharing::default())).unwrap();manager.poll();
-        manager.build=Some(BuildStatus{state:SERVICE_RUNNING,process_id:42,installed:Some(BuildVersion{revision:"a".repeat(40)}),running:None,running_error:None,profile:None});
+        manager.build=Some(BuildStatus{state:SERVICE_RUNNING,process_id:42,installed:Some(BuildVersion{revision:"a".repeat(40),built_at_utc:Some("2000-01-01T00:00:00Z".into())}),running:None,running_error:None,profile:None});
         active_stream(&mut manager);
         let mut entry=Entry{manager:Some(manager),automatic_sync_enabled:true,..Default::default()};
-        entry.schedule_automatic_sync();assert!(entry.deployment.is_none());
+        let package=update_package();
+        entry.schedule_automatic_sync_for(Some(&package));assert!(entry.deployment.is_none());
         entry.manager.as_mut().unwrap().snapshot.as_mut().unwrap().connections.clear();
-        entry.schedule_automatic_sync();assert!(matches!(entry.deployment.take(),Some(Deployment::Install)));
-        entry.schedule_automatic_sync();assert!(entry.deployment.is_none());
+        entry.schedule_automatic_sync_for(Some(&package));assert!(matches!(entry.deployment.take(),Some(Deployment::Install)));
+        entry.schedule_automatic_sync_for(Some(&package));assert!(entry.deployment.is_none());
     }
     #[test]
     fn another_configuration_is_read_only_and_never_automatically_redeployed() {
         let (mut manager,send,jobs,_stop)=fixture();send.send(state(true,Sharing::default())).unwrap();manager.poll();
         manager.expected_profile=Some("a".repeat(64));manager.allow_legacy_profile=false;
-        manager.build=Some(BuildStatus{state:SERVICE_RUNNING,process_id:42,installed:Some(BuildVersion{revision:"b".repeat(40)}),running:None,running_error:None,profile:Some("c".repeat(64))});
+        manager.build=Some(BuildStatus{state:SERVICE_RUNNING,process_id:42,installed:Some(BuildVersion{revision:"b".repeat(40),..Default::default()}),running:None,running_error:None,profile:Some("c".repeat(64))});
         let mut entry=Entry{manager:Some(manager),automatic_sync_enabled:true,..Default::default()};
         assert!(!entry.online());assert_eq!(entry.keep_displays(),None);
         entry.schedule_automatic_sync();assert!(entry.deployment.is_none());assert!(jobs.try_recv().is_err());
@@ -2113,15 +2146,60 @@ mod tests {
         send.send(state(true, Sharing::default())).unwrap();
         manager.poll();
         manager.build = Some(BuildStatus { state:SERVICE_RUNNING, process_id:42,
-            installed:Some(BuildVersion { revision:"a".repeat(40) }), running:None, running_error:None, profile:None });
+            installed:Some(BuildVersion { revision:"a".repeat(40), built_at_utc:Some("2000-01-01T00:00:00Z".into()) }), running:None, running_error:None, profile:None });
         let mut entry = Entry { manager:Some(manager), ..Default::default() };
         entry.set_loaded_plugins(vec![generated_plugin()], Some(Default::default()), false);
-        entry.schedule_automatic_sync();
+        entry.schedule_automatic_sync_for(Some(&update_package()));
         assert!(entry.deployment.is_none());
         assert!(!matches!(jobs.try_recv(), Ok(Job::Rpc(Request::Plugins { .. }))));
         entry.set_loaded_plugins(vec![], None, true);
-        entry.schedule_automatic_sync();
+        entry.schedule_automatic_sync_for(Some(&update_package()));
         assert!(matches!(entry.deployment, Some(Deployment::Install)));
+    }
+
+    fn update_package() -> uu_core::service_admin::deployment::Package {
+        uu_core::service_admin::deployment::Package { revision:env!("UU_BUILD_COMMIT").into(), build:"f".repeat(64), built_at_utc:Some("2099-01-01T00:00:00Z".into()) }
+    }
+    #[test]
+    fn automatic_update_keeps_newer_services_and_stops_after_a_superseded_candidate() {
+        let (mut manager, send, _jobs, _stop)=fixture();
+        send.send(state(true, Sharing::default())).unwrap(); manager.poll();
+        manager.build=Some(BuildStatus { state:SERVICE_RUNNING, process_id:42,
+            installed:Some(BuildVersion { revision:"a".repeat(40),built_at_utc:Some("2099-02-01T00:00:00Z".into()) }),
+            running:None,running_error:None,profile:None });
+        let mut entry=Entry { manager:Some(manager),automatic_sync_enabled:true,..Default::default() };
+        let package=update_package();
+        entry.schedule_automatic_sync_for(Some(&package)); assert!(entry.deployment.is_none());
+        entry.manager.as_mut().unwrap().build.as_mut().unwrap().installed.as_mut().unwrap().built_at_utc=None;
+        entry.schedule_automatic_sync_for(Some(&package)); assert!(matches!(entry.deployment.take(),Some(Deployment::Install)));
+        // The ordinary frontend cannot read protected package time. One
+        // candidate is allowed, but the elevated policy rejects unknown order.
+        assert!(!package.is_later_than(&"a".repeat(40),None));
+        let (send, receive)=mpsc::channel(); entry.job=Some(receive);
+        send.send(deployment::Event::Done(Ok(DeploymentOutcome::Superseded))).unwrap();
+        entry.poll(&egui::Context::default(), &mut super::super::sharing_ui::HostUi::default());
+        entry.schedule_automatic_sync_for(Some(&package));
+        assert!(entry.job.is_none() && entry.deployment.is_none());
+        assert!(entry.feedback.text().contains("已保留正在使用的服务版本"));
+        entry.automatic_update_attempted=false;
+        entry.manager.as_mut().unwrap().build.as_mut().unwrap().installed.as_mut().unwrap().built_at_utc=Some("2000-01-01T00:00:00Z".into());
+        entry.schedule_automatic_sync_for(Some(&package)); assert!(matches!(entry.deployment,Some(Deployment::Install)));
+    }
+    #[test]
+    fn update_ownership_blocks_duplicate_actions_and_completion_retires_progress() {
+        let (manager, _send, jobs, _stop)=fixture();
+        let (send, receive)=mpsc::channel();
+        let mut entry=Entry { manager:Some(manager),job:Some(receive),automatic_update_attempted:true,..Default::default() };
+        entry.toggle(); assert!(entry.deployment.is_none()); assert!(jobs.try_recv().is_err());
+        let ctx=egui::Context::default(); let mut host=super::super::sharing_ui::HostUi::default();
+        send.send(deployment::Event::Stage(deployment::Stage::Waiting)).unwrap();
+        entry.poll(&ctx,&mut host);
+        assert!(entry.job.is_some()); assert_eq!(entry.deployment_stage,deployment::Stage::Waiting);
+        send.send(deployment::Event::Done(Ok(DeploymentOutcome::WaitingForInstallation))).unwrap();
+        entry.poll(&ctx,&mut host);
+        assert!(entry.job.is_none()); assert!(entry.automatic_update_attempted);
+        assert!(entry.feedback.text().contains("另一个服务更新"));
+        assert!(matches!(jobs.try_recv(),Ok(Job::Refresh)));
     }
 
 }

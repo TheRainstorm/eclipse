@@ -205,6 +205,8 @@ elseif (!$SkipServiceUpdate -and (Test-Path -LiteralPath (Join-Path $env:Program
         $update = Start-Process -FilePath (Join-Path $InstallDir $guiName) -ArgumentList $arguments -Verb RunAs -Wait -PassThru
         if ($update.ExitCode -eq 0) { $serviceUpdate = 'updated' }
         elseif ($update.ExitCode -eq 10) { $serviceUpdate = 'deferred-until-idle' }
+        elseif ($update.ExitCode -eq 11) { $serviceUpdate = 'deferred-for-installation' }
+        elseif ($update.ExitCode -eq 12) { $serviceUpdate = 'kept-current-service' }
         elseif ($update.ExitCode -eq 1223) { $serviceUpdate = 'cancelled' }
         else { $serviceUpdate = 'failed:' + $update.ExitCode }
     } catch {

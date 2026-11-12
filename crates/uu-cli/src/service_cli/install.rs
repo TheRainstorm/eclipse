@@ -4,6 +4,25 @@ use sha2::{Digest, Sha256};
 use std::{fs, io::Read, os::windows::fs::MetadataExt, path::Path};
 use windows_sys::Win32::Security::Authorization::*;
 struct InstallationLock(Handle);
+#[derive(Debug)]
+pub(super) struct InstallationPending;
+impl std::fmt::Display for InstallationPending {
+    fn fmt(&self, f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { f.write_str("another service installation is still in progress") }
+}
+impl std::error::Error for InstallationPending {}
+#[derive(Debug)]
+pub(super) struct Superseded;
+impl std::fmt::Display for Superseded {
+    fn fmt(&self, f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { f.write_str("automatic replacement was superseded by the installed service") }
+}
+impl std::error::Error for Superseded {}
+pub(super) fn deferred_exit_code(error:&anyhow::Error, automatic:bool)->Option<i32> {
+    use uu_core::service_admin::deployment::*;
+    if error.is::<InstallationPending>() { Some(DEFERRED_INSTALLATION) }
+    else if automatic && error.is::<Superseded>() { Some(SUPERSEDED) }
+    else if automatic && error.is::<DeferredBusy>() { Some(DEFERRED_HOST) }
+    else { None }
+}
 impl Drop for InstallationLock {
     fn drop(&mut self) {
         unsafe {
@@ -22,10 +41,13 @@ fn installation_lock() -> Result<InstallationLock> {
         )
     });
     ensure!(!handle.0.is_null(), "无法锁定服务安装状态");
-    let result = unsafe { WaitForSingleObject(handle.0, 0) };
+    // A real owner may be staging or stopping its host. Wait for that same
+    // transaction rather than treating an ordinary concurrent update as error.
+    let result = unsafe { WaitForSingleObject(handle.0, 30_000) };
+    if result == WAIT_TIMEOUT { return Err(InstallationPending.into()); }
     ensure!(
         result == WAIT_OBJECT_0 || result == WAIT_ABANDONED,
-        "另一个服务安装操作正在进行"
+        "无法取得服务安装所有权：{}", std::io::Error::last_os_error()
     );
     Ok(InstallationLock(handle))
 }
@@ -156,17 +178,18 @@ pub fn install_profile(source: PathBuf, independent: bool) -> Result<()> {
 }
 pub fn install_with_policy(source: PathBuf, independent: bool, defer_if_busy: bool) -> Result<()> {
     administrator_file_owner()?;
+    let _lock = installation_lock()?;
     let package = std::env::current_exe()?
         .parent()
         .context("无法确定安装包目录")?
         .to_path_buf();
-    install_from_profile(source.clone(), package, true, independent, defer_if_busy)?;
+    if !install_from_profile_locked(source.clone(), package, true, independent, defer_if_busy)? { return Ok(()); }
     // The package installer is one product update. Reuse the exact, bounded
     // import transaction for extensions the console owner already enabled.
     // An import failure leaves the updated core running and reports the
     // remaining step instead of claiming that every component was updated.
     if source.join(uu_core::plugins::Preferences::FILE).try_exists()? {
-        import_plugins(source).context("Eclipse 已更新，插件同步尚未完成")?;
+        import_plugins_locked(source).context("Eclipse 已更新，插件同步尚未完成")?;
     }
     Ok(())
 }
@@ -342,6 +365,9 @@ impl Drop for IdleReservation {
 }
 fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool, independent: bool, defer_if_busy: bool) -> Result<()> {
     let _lock = installation_lock()?;
+    install_from_profile_locked(source, package, enforce_console, independent, defer_if_busy).map(|_| ())
+}
+fn install_from_profile_locked(source: PathBuf, package: PathBuf, enforce_console: bool, independent: bool, defer_if_busy: bool) -> Result<bool> {
     let mut session = 0;
     winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) })?;
     ensure!(
@@ -394,6 +420,34 @@ fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool
     let profile = if manifest["service_profiles"].as_u64() == Some(1) {
         Some(uu_core::service_profile::Binding::new(source.clone(), installed.revision.clone(), installed.build.clone())?)
     } else { None };
+    if defer_if_busy {
+        // Re-read only after acquiring installation ownership: another GUI
+        // may already have installed this source or a newer complete package.
+        if previous.is_some() && previous_profile.as_ref().map(|p| &p.info.id) != profile.as_ref().map(|p| &p.info.id) {
+            return Err(Superseded.into());
+        }
+        if let Some(previous) = &previous {
+            let candidate = uu_core::service_admin::deployment::Package::from_manifest(&manifest)?;
+            let observed = if before.is_some() { Some(build_status()?) } else { None };
+            if before == Some(SERVICE_RUNNING) && observed.as_ref().is_none_or(|b|b.running.is_none()) { return Err(Superseded.into()); }
+            for version in observed.iter().flat_map(|b|b.installed.iter().chain(b.running.iter())) {
+                if version.revision != installed.revision && !candidate.is_later_than(&version.revision, version.built_at_utc.as_deref()) {
+                    return Err(Superseded.into());
+                }
+            }
+            if previous.revision == installed.revision {
+                if before == Some(SERVICE_RUNNING) && observed.as_ref().and_then(|b|b.running.as_ref()).is_some_and(|r| r.revision == installed.revision) {
+                    return Ok(false);
+                }
+            } else {
+                let current = uu_core::service_admin::deployment::Package::read(&paths.binary_directory(previous)).ok()
+                    .filter(|package| package.revision == previous.revision && package.build == previous.build);
+                if !candidate.is_later_than(&previous.revision, current.as_ref().and_then(|p| p.built_at_utc.as_deref())) {
+                    return Err(Superseded.into());
+                }
+            }
+        }
+    }
     let hashes = manifest["sha256"]
         .as_object()
         .context("安装包缺少完整性记录")?;
@@ -564,7 +618,9 @@ fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool
         configure_owner_control(&service, &installed)?;
         paths.save_manifest(&installed)?;
         protect(&paths.root.join("service.json"))?;
-        super::start()?;
+        // migrate above already prepared this exact program and port policy.
+        // Avoid a second full NetSecurity pass while holding installation.
+        super::start_registered()?;
         as_source_user(&installed.owner_sid,||uu_core::device_book::Store::open(source.join("device-trust"))?.edit(|book| {
             book.sharing.auto_start = false;
             Ok(())
@@ -610,7 +666,7 @@ fn install_from_profile(source: PathBuf, package: PathBuf, enforce_console: bool
             )),
         };
     }
-    Ok(())
+    Ok(true)
 }
 fn service_state() -> Result<Option<u32>> {
     match status() {
@@ -742,6 +798,10 @@ fn configure_recovery(service: &ServiceHandle) -> Result<()> {
 pub fn import_plugins(source: PathBuf) -> Result<()> {
     administrator_file_owner()?;
     let _lock = installation_lock()?;
+    import_plugins_locked(source)
+}
+fn import_plugins_locked(source: PathBuf) -> Result<()> {
+    require_data_profile(&source)?;
     let paths = Paths::discover()?;
     let installed = paths.manifest()?;
     let session = unsafe { WTSGetActiveConsoleSessionId() };
@@ -791,6 +851,9 @@ pub fn import_plugins(source: PathBuf) -> Result<()> {
     // Validate every source before stopping a running host. Preserve old files
     // so a failed synchronization can restore its exact previous contents.
     let before=writes.iter().map(|(path,_)|Ok((path.clone(),if path.try_exists()? {Some(regular(path,256*1024*1024)?)}else{None}))).collect::<Result<Vec<_>>>()?;
+    if writes.iter().zip(&before).all(|((_,planned),(_,previous))|previous.as_ref()==Some(planned)) {
+        return Ok(());
+    }
     let was_running = status()? == SERVICE_RUNNING;
     if was_running {
         super::stop()?;
@@ -814,6 +877,15 @@ pub fn import_plugins(source: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn installation_wait_and_supersession_are_normal_helper_results() {
+        use uu_core::service_admin::deployment::*;
+        assert_eq!(deferred_exit_code(&InstallationPending.into(), false), Some(DEFERRED_INSTALLATION));
+        assert_eq!(deferred_exit_code(&Superseded.into(), true), Some(SUPERSEDED));
+        assert_eq!(deferred_exit_code(&Superseded.into(), false), None);
+        assert_eq!(deferred_exit_code(&DeferredBusy.into(), true), Some(DEFERRED_HOST));
+        assert_eq!(deferred_exit_code(&anyhow::anyhow!("generated validation failure"), true), None);
+    }
     #[test]
     fn explicit_update_can_restart_its_profile_but_background_update_and_switch_wait_for_idle() {
         assert!(!needs_idle(Some("a"), Some("a"), false));

@@ -10,6 +10,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub mod connections;
 pub mod package;
+pub mod deployment;
 
 pub const MAX_MESSAGE: usize = 256 * 1024;
 /// The server may have completed a non-idempotent operation before its reply

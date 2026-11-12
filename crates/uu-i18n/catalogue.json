@@ -1,4 +1,9 @@
 {
+  "正在等待另一个服务更新完成…": "Waiting for another service update to finish…",
+  "正在更新服务": "Updating the service",
+  "另一个服务更新仍在进行；完成后会刷新状态，必要时请手动继续。": "Another service update is still running. Status will refresh when it finishes; continue manually if needed.",
+  "已保留正在使用的服务版本；当前窗口不会自动替换较新或无法确认顺序的程序包。": "The current service version was kept. This window will not automatically replace a newer package or one whose order is unknown.",
+  "后台服务与当前窗口版本不同；已保留正在使用的服务，需要切换时请手动部署。": "The service and this window use different versions. The current service was kept; deploy manually to switch versions.",
   "连接服务接入码的设备组无效或缺失，请向管理员获取新接入码": "The invitation has an invalid or missing device group. Ask your administrator for a new invitation.",
   "已加入连接服务。保持应用运行，空闲后自动启用；关闭后下次打开继续。": "Joined the connection service. Keep Eclipse running to enable sharing when idle. If closed, activation resumes when Eclipse next opens.",
   "已加入连接服务。保持应用运行，空闲后自动启用本机共享。": "Joined the connection service. Keep Eclipse running to enable sharing when this host is idle.",

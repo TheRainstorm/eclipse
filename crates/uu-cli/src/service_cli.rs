@@ -147,8 +147,8 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
             let independent = independent_profile || config.profile_dir().is_some()
                 || source.file_name().is_some_and(|name|name=="data");
             let result = tokio::task::spawn_blocking(move || install::install_with_policy(source, independent, defer_if_busy)).await?;
-            if defer_if_busy && result.as_ref().is_err_and(|error| error.is::<install::DeferredBusy>()) {
-                std::process::exit(10);
+            if let Err(error) = &result {
+                if let Some(code) = install::deferred_exit_code(error, defer_if_busy) { std::process::exit(code); }
             }
             result?;
             if open_manager {
@@ -168,7 +168,11 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
         Command::ImportPlugins { source_data } => {
             let source = source_data.unwrap_or(config.data_dir);
             require_data_profile(&source)?;
-            tokio::task::spawn_blocking(move || install::import_plugins(source)).await?
+            let result = tokio::task::spawn_blocking(move || install::import_plugins(source)).await?;
+            if let Err(error) = &result {
+                if let Some(code) = install::deferred_exit_code(error, false) { std::process::exit(code); }
+            }
+            result
         }
         Command::Stop => { require_selected_profile()?; stop() },
         Command::Restart => {

@@ -515,9 +515,10 @@ pub fn require_data_profile(data: &std::path::Path) -> Result<()> {
 }
 /// Read-only display metadata from SCM and the running supervisor image. This
 /// is not an authorization check and never relaxes the protected file ACLs.
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Default, serde::Serialize)]
 pub struct BuildVersion {
     pub revision:String,
+    pub built_at_utc:Option<String>,
 }
 impl BuildVersion {
     pub fn label(&self)->String {
@@ -541,7 +542,9 @@ fn image_build(paths:&Paths,image:&Path)->Option<BuildVersion> {
     let value=relative.to_str()?;
     let (revision,build)=value.split_once('-')?;
     if revision.len()!=40 || build.len()!=64 || !revision.bytes().chain(build.bytes()).all(|c|c.is_ascii_hexdigit()) {return None;}
-    Some(BuildVersion{revision:revision.into()})
+    let metadata = super::deployment::Package::read(directory).ok()
+        .filter(|package| package.revision == revision && package.build == build);
+    Some(BuildVersion{revision:revision.into(), built_at_utc:metadata.and_then(|package|package.built_at_utc)})
 }
 fn service_process(service:SC_HANDLE)->Result<SERVICE_STATUS_PROCESS> {
     let mut value:SERVICE_STATUS_PROCESS=unsafe{std::mem::zeroed()};
