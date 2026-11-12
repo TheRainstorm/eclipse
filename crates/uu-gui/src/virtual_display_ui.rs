@@ -459,6 +459,13 @@ impl State {
         });
     }
     fn remote(&mut self, client: &Client, request: Request) {
+        if matches!(request, Request::Inspect) && client.availability()!=uu_core::native_virtual_display::Availability::Ready {
+            // Waiting for SCTP is not a failed driver operation. Retry only
+            // this passive read once the negotiated channel can be opened.
+            self.next_inventory_check=(client.availability()==uu_core::native_virtual_display::Availability::Connecting)
+                .then(||Instant::now()+Duration::from_millis(200));
+            return;
+        }
         if self.busy() && self.inspect_inflight && !matches!(&request, Request::Inspect) {
             self.deferred_request.get_or_insert(request.into());
             return;
@@ -809,7 +816,8 @@ impl State {
         embedded: bool,
     ) {
         let busy = (self.busy() && !self.inspect_inflight) || self.deferred_request.is_some();
-        let can_edit=!busy;
+        let remote_ready=client.is_none_or(|client|client.availability()==uu_core::native_virtual_display::Availability::Ready);
+        let can_edit=!busy&&remote_ready;
         let mutations_blocked = self.driver_install_prompt || if client.is_some() {
             self.remote_inventory_uncertain
         } else {
@@ -831,7 +839,7 @@ impl State {
                 if ui.add_enabled(can_edit&&!mutations_blocked&&supports_catalog&&self.displays.len()<16,crate::theme::primary_button("＋")).on_hover_text(uu_i18n::text("添加显示器配置；启用后才连接到 Windows")).clicked() {
                     command=Some(Request::Add);
                 }
-                if ui.add_enabled(!busy, crate::theme::secondary_button(uu_i18n::text("刷新"))).clicked() {
+                if ui.add_enabled(!busy&&remote_ready, crate::theme::secondary_button(uu_i18n::text("刷新"))).clicked() {
                     command = Some(Request::Inspect);
                 }
                 if busy {
@@ -841,6 +849,7 @@ impl State {
             });
         });
         ui.add_space(8.);
+        if let Some(message)=client.and_then(|client|client.availability().message()) {ui.weak(message);}
         if client.is_none() && self.local_selector && !embedded {
             ui.strong(uu_i18n::text("选择管理对象"));
             ui.horizontal_wrapped(|ui| {
@@ -861,7 +870,7 @@ impl State {
         ui.add_space(8.);
         ui.separator();
         ui.add_space(8.);
-        if self.displays.is_empty() {
+        if self.displays.is_empty() && remote_ready {
             ui.weak(uu_i18n::text("点击右上角加号添加显示器配置，编辑后点击启用。"));
         }
         let displays=self.displays.clone();
@@ -1204,6 +1213,15 @@ mod tests {
         );
         state.receive(snapshot(vec![]), Some(LocalOwner::Background));
         assert!(!state.local_mutations_blocked());
+    }
+    #[test]
+    fn opening_before_management_is_ready_waits_without_a_sticky_driver_error() {
+        let mut state=State::default();let client=Client::default();
+        state.open_remote(&client);
+        assert!(state.open && state.pending.is_none());
+        assert!(state.next_inventory_check.is_some());
+        assert!(!state.remote_inventory_uncertain);
+        assert!(state.feedback.current(&Scope::VirtualDisplays).is_none());
     }
     #[test]
     fn remote_errors_invalidate_old_ready_inventory_until_one_read_only_refresh_confirms_it() {
@@ -1877,14 +1895,12 @@ impl crate::App {
             self.displays.notice = uu_i18n::text("虚拟副屏操作未完成，请刷新确认当前状态。").into();
             return;
         }
-        if !self
-            .controller
-            .as_ref()
-            .is_some_and(|handle| handle.stats.native_displays.initial_supported())
-        {
-            self.displays.notice =
-                uu_i18n::text("远端未提供虚拟副屏管理，请更新后台并授予管理服务权限").into();
-            return;
+        let Some(handle)=self.controller.as_ref() else{return;};
+        if let Some(message)=handle.stats.virtual_displays.availability().message() {
+            self.displays.notice=message.into();return;
+        }
+        if !handle.stats.native_displays.initial_supported() {
+            self.displays.notice=uu_i18n::text("远端暂不支持在新标签中连接虚拟显示器，请更新远端后台。").into();return;
         }
         self.release_all_keys();
         self.stream_menu.open = false;

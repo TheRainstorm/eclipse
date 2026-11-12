@@ -680,6 +680,7 @@ async fn send_video(
     if frame_trace && controls.timing().trace.enabled() {crate::frame_trace::advertise(&mut description);}
     if video_e2e {crate::video_e2e::advertise(&mut description);}
     if virtuals_available {crate::native_virtual_display::advertise(&mut description);}
+    crate::native_virtual_display::advertise_status(&mut description,display_lifetime.is_some(),virtuals_available);
     startup.ice_us=elapsed_us(ice_started);startup.total_us=elapsed_us(preparation_started);
     startup.add(&mut description)?;
     if encoder_settings.hdr {
@@ -1001,7 +1002,8 @@ async fn receive_session(
     peer.prepare_video(answer.width, answer.height, answer.codec,&stats).await?;
     stats.configured_fps.store(answer.fps,Ordering::Release);
     *stats.native_quality_current.lock().unwrap()=quality_request.as_ref().map(|request|crate::native_quality::Update{fps:answer.fps,bitrate_kbps:request.bitrate_kbps,rate_control:rate.map(|r|r.applied)});
-    let virtual_displays_available=crate::native_virtual_display::offered(&answer.sdp);
+    let virtual_displays_available=stats.virtual_displays.negotiated(&answer.sdp);
+    stats.diagnostics.record(serde_json::json!({"event":"virtual_display_management_negotiated","status":format!("{:?}",stats.virtual_displays.availability())}));
     match stream.lan_peer() {
         Some(ip) => peer.remote(answer.sdp, ip).await?,
         None => peer.remote_direct(answer.sdp).await?,

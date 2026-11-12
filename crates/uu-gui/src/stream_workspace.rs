@@ -965,8 +965,9 @@ impl State {
     fn fork_virtual_display(&mut self,session:u64,spec:Option<uu_core::virtual_display::Spec>,persistent:bool) {
         let Some(index)=self.windows.iter().position(|w|!w.closing&&w.views.iter().any(|v|v.id==session)) else{return;};
         let Some(source)=self.windows[index].sessions.iter_mut().find(|s|s.id==session&&!s.app.exit_requested&&!s.app.controller.closing()) else{return;};
-        if !source.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)) {
-            source.app.displays.notice=uu_i18n::text("远端未提供虚拟显示器管理，请更新后台并授予管理服务权限").into();return;
+        let Some(handle)=source.app.controller.as_ref() else{return;};
+        if let Some(message)=handle.stats.virtual_displays.availability().message() {
+            source.app.displays.notice=message.into();return;
         }
         let target=source.app.stream_target.as_ref().unwrap();
         match virtual_launch(target,spec.unwrap_or_else(||source.app.preferences.virtual_display_presets.default_spec())) {

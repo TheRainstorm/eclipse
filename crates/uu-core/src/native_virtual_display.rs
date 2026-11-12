@@ -22,6 +22,7 @@ use webrtc::{
 };
 
 const ATTRIBUTE: &str = "a=x-eclipse-virtual-display:1";
+const STATUS_ATTRIBUTE: &str = "a=x-eclipse-virtual-display-status:";
 const LABEL: &str = "eclipse-virtual-display-v1";
 const MAX_JSON: usize = 16 * 1024;
 /// A UI notice deadline, not permission to cancel or repeat a submitted
@@ -247,6 +248,47 @@ pub(crate) fn advertise(description: &mut RTCSessionDescription) {
     description.sdp.push_str(ATTRIBUTE);
     description.sdp.push_str("\r\n");
 }
+// Capability, authorization and channel readiness are independent. The old
+// capability remains permission-gated for existing peers; the optional status
+// explains why it was omitted without changing the strict v1 JSON envelope.
+pub(crate) fn advertise_status(description: &mut RTCSessionDescription, supported: bool, permitted: bool) {
+    let value = if !supported { "unsupported" } else if permitted { "allowed" } else { "denied" };
+    description.sdp.push_str(&format!("{STATUS_ATTRIBUTE}1 {value}\r\n"));
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Availability {
+    #[default]
+    Connecting,
+    Ready,
+    PermissionRequired,
+    Unsupported,
+    Unknown,
+    Disconnected,
+}
+impl Availability {
+    pub fn message(self) -> Option<&'static str> {
+        Some(uu_i18n::text(match self {
+            Self::Ready => return None,
+            Self::Connecting => "正在连接远端虚拟显示器管理通道，请稍候。",
+            Self::PermissionRequired => "远端支持虚拟显示器，但未授予本设备管理权限。请在远端“服务管理 → 配对设置 → 已授权设备”中开启本设备的“管理服务和连接权限”，然后重新连接。",
+            Self::Unsupported => "此远端未提供 Windows 桌面虚拟显示器管理。",
+            Self::Unknown => "远端未报告虚拟显示器管理状态。请检查远端是否为 Windows 桌面主机、后台版本及本设备的管理授权。",
+            Self::Disconnected => "虚拟显示器管理通道已断开，请重新连接串流后重试。",
+        }))
+    }
+}
+fn negotiated_availability(description: &RTCSessionDescription) -> Availability {
+    let mut values = description.sdp.lines().filter_map(|line|line.strip_prefix(STATUS_ATTRIBUTE));
+    let value = values.next();
+    if values.next().is_none() {
+        match value {
+            Some("1 denied") => return Availability::PermissionRequired,
+            Some("1 unsupported") => return Availability::Unsupported,
+            _ => {},
+        }
+    }
+    if offered(description) { Availability::Connecting } else { Availability::Unknown }
+}
 pub(crate) fn accepts(channel: &RTCDataChannel) -> bool {
     channel.label() == LABEL
         && channel.ordered()
@@ -267,6 +309,7 @@ pub struct Client {
 #[derive(Default)]
 struct ClientState {
     epoch: u64,
+    availability: Availability,
     sender: Option<mpsc::Sender<Command>>,
     responses: std::collections::VecDeque<(u64, Response)>,
     catalog: Option<(Status,Vec<Display>)>,
@@ -274,6 +317,21 @@ struct ClientState {
     slots:Vec<Slot>,
 }
 impl Client {
+    pub fn availability(&self) -> Availability { self.state.lock().unwrap().availability }
+    pub(crate) fn negotiated(&self, description: &RTCSessionDescription) -> bool {
+        let mut state = self.state.lock().unwrap();
+        // Retire callbacks from the previous media epoch even when this answer
+        // has no management channel at all.
+        state.epoch += 1;
+        self.available.store(false, Ordering::Release);
+        state.sender.take();
+        state.responses.clear();
+        state.catalog = None;
+        state.catalog_updated = None;
+        state.slots.clear();
+        state.availability = negotiated_availability(description);
+        state.availability == Availability::Connecting
+    }
     pub fn snapshot(&self)->Option<(Status,Vec<Display>)> {self.state.lock().unwrap().catalog.clone()}
     pub fn catalog_updated(&self)->Option<std::time::Instant> {self.state.lock().unwrap().catalog_updated}
     pub fn slots(&self)->Vec<Slot> {self.state.lock().unwrap().slots.clone()}
@@ -282,7 +340,7 @@ impl Client {
         ensure!(
             self.available.load(Ordering::Acquire),
             "{}",
-            uu_i18n::text("远端未提供虚拟显示器管理，请更新后台并授予管理服务权限")
+            state.availability.message().unwrap_or_else(||uu_i18n::text("虚拟显示器管理通道已断开，请重新连接串流后重试。"))
         );
         let id = self
             .next
@@ -306,6 +364,7 @@ impl Client {
     fn attach(&self) -> (u64, mpsc::Receiver<Command>) {
         let mut state = self.state.lock().unwrap();
         self.available.store(false, Ordering::Release);
+        state.availability = Availability::Connecting;
         state.responses.clear();
         state.catalog=None;
         state.catalog_updated=None;
@@ -316,8 +375,9 @@ impl Client {
         (state.epoch, receiver)
     }
     fn opened(&self, epoch: u64) {
-        let state = self.state.lock().unwrap();
-        if state.epoch == epoch {
+        let mut state = self.state.lock().unwrap();
+        if state.epoch == epoch && state.sender.is_some() {
+            state.availability = Availability::Ready;
             self.available.store(true, Ordering::Release);
             let id=self.next.fetch_add(1,Ordering::Relaxed)+1;
             if let Some(sender)=&state.sender {let _=sender.try_send(Command{id,request:Request::Inspect});}
@@ -327,6 +387,7 @@ impl Client {
         let mut state = self.state.lock().unwrap();
         if state.epoch == epoch {
             self.available.store(false, Ordering::Release);
+            state.availability = Availability::Disconnected;
             state.sender.take();
             state.catalog=None;
             state.catalog_updated=None;
@@ -335,7 +396,7 @@ impl Client {
     }
     fn receive(&self, epoch: u64, id: u64, response: Response) {
         let mut state = self.state.lock().unwrap();
-        if state.epoch != epoch {
+        if state.epoch != epoch || state.sender.is_none() {
             return;
         }
         match &response {
@@ -416,7 +477,7 @@ impl Host {
         ensure!(
             Self::permitted(&self.context),
             "{}",
-            uu_i18n::text("本机未授予管理服务和连接权限")
+            Availability::PermissionRequired.message().unwrap()
         );
         Ok(())
     }
@@ -687,6 +748,7 @@ pub(crate) async fn viewer_channel(
                 break;
             }
         }
+        stats.virtual_displays.disconnect(epoch);
     });
     Ok(Viewer {
         _channel: channel,
@@ -805,5 +867,46 @@ mod tests {
         );
         assert!(client.available.load(Ordering::Acquire));
         assert!(client.take_response(12).is_none());
+    }
+    #[test]
+    fn management_status_distinguishes_support_permission_and_legacy_answers() {
+        let mut description=RTCSessionDescription::default();
+        assert_eq!(negotiated_availability(&description),Availability::Unknown);
+        advertise_status(&mut description,true,false);
+        assert_eq!(negotiated_availability(&description),Availability::PermissionRequired);
+        let mut supported=RTCSessionDescription::default();
+        advertise(&mut supported);advertise_status(&mut supported,true,true);
+        assert_eq!(negotiated_availability(&supported),Availability::Connecting);
+        let mut unsupported=RTCSessionDescription::default();
+        advertise_status(&mut unsupported,false,false);
+        assert_eq!(negotiated_availability(&unsupported),Availability::Unsupported);
+        let mut legacy=RTCSessionDescription::default();advertise(&mut legacy);
+        assert_eq!(negotiated_availability(&legacy),Availability::Connecting);
+        let mut future=RTCSessionDescription::default();future.sdp.push_str(&format!("{STATUS_ATTRIBUTE}2 denied\r\n"));
+        assert_eq!(negotiated_availability(&future),Availability::Unknown);
+        advertise_status(&mut description,true,false);
+        assert_eq!(negotiated_availability(&description),Availability::Unknown,"ambiguous status must not masquerade as a known authorization result");
+    }
+    #[test]
+    fn media_renegotiation_retires_old_callbacks_even_without_a_new_channel() {
+        let client=Client::default();
+        let (old,mut commands)=client.attach();client.opened(old);commands.try_recv().unwrap();
+        assert_eq!(client.availability(),Availability::Ready);
+        let mut denied=RTCSessionDescription::default();advertise_status(&mut denied,true,false);
+        assert!(!client.negotiated(&denied));
+        client.disconnect(old);client.opened(old);
+        assert_eq!(client.availability(),Availability::PermissionRequired);
+        let error=client.request(Request::Inspect).unwrap_err().to_string();
+        assert_eq!(error,Availability::PermissionRequired.message().unwrap());
+        assert!(!error.contains("更新后台"));
+        let mut allowed=RTCSessionDescription::default();advertise(&mut allowed);advertise_status(&mut allowed,true,true);
+        assert!(client.negotiated(&allowed));
+        assert_eq!(client.availability(),Availability::Connecting);
+        assert!(client.request(Request::Add).is_err());
+        let (current,mut commands)=client.attach();client.opened(current);commands.try_recv().unwrap();
+        assert_eq!(client.availability(),Availability::Ready);
+        assert!(client.request(Request::Inspect).is_ok());
+        client.disconnect(current);client.opened(current);
+        assert_eq!(client.availability(),Availability::Disconnected,"late on_open must not resurrect a closed channel");
     }
 }
