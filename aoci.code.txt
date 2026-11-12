@@ -682,7 +682,7 @@ generate.py[OV5T]: F:根据指定锁定Cargo清单向指定输出目录生成依
 
 ===/home/yfy/Repo/uu_remote/tools/linux/===
 .gitignore[FV2T]: F:忽略Linux工具Python字节码缓存 | R:- | A:- | S:-
-README.txt[SV4T]: F:指导Linux安装、启动兼容别名、Eclipse配置迁移、便携使用和串流能力 | R:code:tools/linux/install.py,code:docs/configuration-storage.md | A:- | S:默认目录复制旧uu-remote且不覆盖新配置；便携取实际exe旁目录；更新切换链接不搬便携数据，须重开
+README.txt[SV4T]: F:指导Linux安装、启动兼容别名、Eclipse配置迁移、便携使用和原生多会话串流能力 | R:code:tools/linux/install.py,code:docs/configuration-storage.md,code:docs/device-connection-and-trust.md | A:- | S:默认目录复制旧uu-remote且不覆盖新配置；便携取实际exe旁目录；更新切换链接不搬便携数据，须重开；原生会话无固定四条上限，并发受固定端口池和资源限制，Windows同屏共享采集而Linux按各自后端授权生命周期处理
 audio_smoke.py[TH5T]: F:在自有PipeWire空输出上确认Opus播放信号 | R:code:crates/uu-media/examples/audio_probe.rs | A:main | S:只记录自有测试音，不录工作桌面声音
 install.py[OV7M]: F:核验Linux完整包及匹配插件后安装版本目录，切换桌面入口和兼容命令 | R:code:tools/linux/package.py | A:verify_package,verify_installation,release_name,desktop_entry,main | S:开发合包按主程序与插件提交分目录，完整载荷先入库再切current；复用核摘要且保旧版本；旧桌面项隐藏，Exec独立转义不经shell
 package.py[OV7S]: F:构建含VAAPI、PyroWave和共享SDK的eclipse前缀Linux包并核验归档缓存 | R:code:tools/linux/install.py,code:tools/release/plugin_sdk.py,code:tools/release/source.py | A:main,source_revision | S:format4收齐新命名程序与SDK标准库；源码须干净且不需具体插件；缓存恢复复核全部载荷和来源及执行权限

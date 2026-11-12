@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-12T04:58:27Z",
+  "updated_at": "2026-11-12T05:05:29Z",
   "files": {
     ".cargo/config.toml": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "6c4b2ebb6e7b1448a7bd14da116a2a1ebea72da8f3af001b4a8520abb1856bcd",
-      "size": 242592,
-      "normalized_sha256": "6c4b2ebb6e7b1448a7bd14da116a2a1ebea72da8f3af001b4a8520abb1856bcd"
+      "sha256": "e87be0206ec099661f455b1b1d0bbe492f7d4910e6cb45c1ac75c78c7165341d",
+      "size": 242801,
+      "normalized_sha256": "e87be0206ec099661f455b1b1d0bbe492f7d4910e6cb45c1ac75c78c7165341d"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -3946,9 +3946,9 @@
     },
     "tools/linux/README.txt": {
       "role": "index",
-      "sha256": "8d7424e06d3a8d5124fc6620de4083d406238c15c7df4fe13e00f872efd0b6b5",
-      "size": 3437,
-      "normalized_sha256": "8d7424e06d3a8d5124fc6620de4083d406238c15c7df4fe13e00f872efd0b6b5"
+      "sha256": "63105ee2bb2eba8be26706021f7f1803f45aec632d8fc8831fcdb13d2284940d",
+      "size": 3610,
+      "normalized_sha256": "63105ee2bb2eba8be26706021f7f1803f45aec632d8fc8831fcdb13d2284940d"
     },
     "tools/linux/audio_smoke.py": {
       "role": "index",
