@@ -1299,6 +1299,18 @@ impl RTCPeerConnection {
             }
         }
 
+        self.gather_ice_candidates().await
+    }
+
+    /// Starts candidate gathering without creating or applying a description.
+    /// Gathering remains owned by this connection and is stopped by `close`.
+    /// This permits discovery to overlap application preparation when signaling
+    /// needs a complete SDP. Call serially with description updates; subsequent
+    /// updates reuse the same gathering operation and ICE credentials.
+    pub async fn gather_ice_candidates(&self) -> Result<()> {
+        if self.internal.is_closed.load(Ordering::SeqCst) {
+            return Err(Error::ErrConnectionClosed);
+        }
         if self.internal.ice_gatherer.state() == RTCIceGathererState::New {
             self.internal.ice_gatherer.gather().await
         } else {

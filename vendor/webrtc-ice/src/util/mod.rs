@@ -73,25 +73,44 @@ pub async fn stun_request(
     let mut request = Message::new();
     request.build(&[Box::new(BINDING_REQUEST), Box::new(TransactionId::new())])?;
 
-    conn.send_to(&request.raw, server_addr).await?;
-    let mut bs = vec![0_u8; MAX_MESSAGE_SIZE];
-    let (n, _) = if deadline > Duration::from_secs(0) {
-        match tokio::time::timeout(deadline, conn.recv_from(&mut bs)).await {
-            Ok(result) => match result {
-                Ok((n, addr)) => (n, addr),
-                Err(err) => return Err(Error::Other(err.to_string())),
-            },
-            Err(err) => return Err(Error::Other(err.to_string())),
+    let exchange = async {
+        conn.send_to(&request.raw, server_addr).await?;
+        // RFC 8489 §6.2.1: retry the same transaction with exponential
+        // backoff. The caller's total gathering budget still bounds all I/O.
+        let mut rto = Duration::from_millis(500);
+        let mut retry_at = tokio::time::Instant::now() + rto;
+        let mut attempts = 1;
+        let mut bs = vec![0_u8; MAX_MESSAGE_SIZE];
+        loop {
+            tokio::select! {
+                received = conn.recv_from(&mut bs) => {
+                    let (n, source) = received?;
+                    if source != server_addr { continue; }
+                    let mut response = Message::new();
+                    response.raw = bs[..n].to_vec();
+                    if response.decode().is_ok()
+                        && response.transaction_id == request.transaction_id
+                        && (response.typ == BINDING_SUCCESS || response.typ == BINDING_ERROR)
+                    {
+                        return Ok(response);
+                    }
+                }
+                _ = tokio::time::sleep_until(retry_at), if attempts < 7 => {
+                    conn.send_to(&request.raw, server_addr).await?;
+                    attempts += 1;
+                    rto *= 2;
+                    retry_at = tokio::time::Instant::now() + rto;
+                }
+            }
         }
-    } else {
-        conn.recv_from(&mut bs).await?
     };
-
-    let mut res = Message::new();
-    res.raw = bs[..n].to_vec();
-    res.decode()?;
-
-    Ok(res)
+    if deadline.is_zero() {
+        exchange.await
+    } else {
+        tokio::time::timeout(deadline, exchange)
+            .await
+            .map_err(|err| Error::Other(err.to_string()))?
+    }
 }
 
 pub async fn local_interfaces(

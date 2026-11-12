@@ -13,3 +13,10 @@ inserted after `close` has drained the maps. Per-ufrag close observers retain a
 mux/connection shutdown retention cycle. Socket routing and packet buffering
 remain unchanged. Real concurrent close/create, retained-connection weak-release,
 and loopback encode/decode shutdown regressions live in the engine tests.
+
+STUN Binding discovery retransmits the same transaction from 500ms with
+exponential backoff (RFC 8489 §6.2.1), up to seven sends within the caller's
+unchanged total deadline. A zero deadline retains the existing unbounded receive
+contract. Responses must match the server, transaction ID and Binding response
+type; unrelated datagrams do not complete or restart the transaction. Owned
+loopback tests cover an initially lost request, unrelated responses and expiry.

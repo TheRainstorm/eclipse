@@ -45,6 +45,8 @@ pub(crate) mod socket_lifetime_test;
 mod forwarded_test;
 #[cfg(all(test,target_os="linux"))]
 mod turn_test;
+#[cfg(test)]
+mod ice_startup_test;
 
 // ICMP port-unreachable replies during ICE probing are not a teardown of this
 // connectionless socket. Otherwise Windows reports 10054 to the mux, whose
@@ -405,6 +407,13 @@ impl NativePeer {
         let diagnostics=crate::native_diagnostics::Diagnostics::new(stats.as_ref(),sender);
         let mut peer=Self::build(settings, None, ice.configuration(), stats, sender,diagnostics).await?;
         peer.development_relay=ice.development_relay();
+        // Discovery uses network resources only. Start it before waiting for
+        // the remote offer or opening capture/encoding; description() still
+        // sends a complete candidate set after media preparation succeeds.
+        if let Err(error) = peer.pc.gather_ice_candidates().await {
+            peer.close().await;
+            return Err(error.into());
+        }
         Ok(peer)
     }
 
