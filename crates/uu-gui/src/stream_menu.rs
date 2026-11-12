@@ -1044,7 +1044,7 @@ mod tests {
             "sky_blue"=>super::super::theme::ColorTheme::SkyBlue,
             _=>panic!("explicit supported preview theme required"),
         };
-        assert!(matches!(surface.as_str(),"menus"|"device-config"|"virtual-displays"|"connections"|"add-server"|"add-device"));
+        assert!(matches!(surface.as_str(),"menus"|"device-config"|"device-details"|"virtual-displays"|"connections"|"add-server"|"add-device"));
         struct Preview {app:super::super::App,virtual_displays:crate::virtual_display_ui::State,output:PathBuf,surface:String,frames:u32,saved:Arc<AtomicBool>}
         impl eframe::App for Preview {
             fn update(&mut self,ctx:&egui::Context,_:&mut eframe::Frame){
@@ -1054,7 +1054,7 @@ mod tests {
                     self.saved.store(true,Ordering::Release);ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 self.app.preview_title_bar(ctx);
-                if matches!(self.surface.as_str(),"device-config"|"connections"|"add-server"|"add-device") {
+                if matches!(self.surface.as_str(),"device-config"|"device-details"|"connections"|"add-server"|"add-device") {
                     self.app.workspace_home(ctx);
                     self.app.workspace_dialogs(ctx);
                 } else if self.surface=="virtual-displays" {
@@ -1081,7 +1081,9 @@ mod tests {
             }
         }
         let saved=Arc::new(AtomicBool::new(false));let check=saved.clone();
-        let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([1100.,800.]),vsync:false,
+        let width=std::env::var("ECLIPSE_UI_PREVIEW_WIDTH").ok().map(|value|value.parse::<u32>().unwrap()).unwrap_or(1100);
+        assert!((800..=1240).contains(&width));
+        let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([width as f32,800.]),vsync:false,
             event_loop_builder:Some(Box::new(|builder|{use winit::platform::x11::EventLoopBuilderExtX11;builder.with_any_thread(true);})),..Default::default()};
         eframe::run_native("Generated application UI",options,Box::new(move|cc|{
             let mut app=super::super::App::new(cc,None,None,false,None);
@@ -1090,11 +1092,13 @@ mod tests {
             app.preferences.color_theme=color;
             let mode=if std::env::var("ECLIPSE_UI_PREVIEW_DARK").as_deref()==Ok("1"){egui::ThemePreference::Dark}else{egui::ThemePreference::Light};
             super::super::theme::apply_appearance(&cc.egui_ctx,mode,color);
+            cc.egui_ctx.style_mut(|style|style.interaction.tooltip_delay=60.);
             let mut profile=uu_core::device_book::Profile::new("生成工作站",uu_core::device_book::Destination::Ip{address:"preview.example.invalid:48998".into(),legacy_device:None});
             let config=uu_core::client_settings::NamedClientSettings::new("桌面 4K",uu_core::client_settings::ClientSettings{fps:120,resolution:3,bitrate:4,custom_mbps:79,..Default::default()});
             profile.selected_client=Some(config.id.clone());profile.client_configs.push(config);
             app.workspace.book.devices=vec![profile.clone()];
             if matches!(surface.as_str(),"connections"|"add-server"|"add-device") {app.workspace.open_generated_connection_preview(&surface);}
+            else if surface=="device-details" {app.workspace.open_generated_device_details(&cc.egui_ctx,&profile);}
             else if surface=="device-config" {app.workspace.open_generated_preview_editor(&profile);}
             else {
                 app.stream_target=Some(super::super::sessions::StreamTarget{connection:super::super::sessions::ConnectionTarget::NativeInvitation("generated-unused-invitation".into()),alias:"Generated preview".into(),view_only:true});

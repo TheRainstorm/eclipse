@@ -758,8 +758,8 @@ mod tests {
         assert_eq!(book.sharing.fps,60);
         h.workspace.route.device = DeviceView::Details(id);
         for _ in 0..3 {h.frame(Vec::new());}
-        let more=h.texts.iter().rfind(|(text,_)|text=="⋯").unwrap().1;
-        h.click_at(more);h.click("复制");
+        let more=h.ctx.data(|data|data.get_temp::<egui::Rect>(egui::Id::new(("config-more",&profile.client_configs[0].id)))).unwrap();
+        h.click_at(more.center());h.click("复制");
         assert!(h.workspace.client_editor.as_ref().unwrap().value.name.contains("副本"));
     }
     #[test]
@@ -1557,6 +1557,26 @@ impl Workspace {
         self.edit_client_config(profile,profile.client_configs.first().cloned(),false);
     }
     #[cfg(test)]
+    pub(super) fn open_generated_device_details(&mut self,ctx:&egui::Context,profile:&Profile) {
+        self.open_generated_connection_preview("device-details");
+        let mut profile=profile.clone();
+        profile.name="Notebook · Eclipse".into();
+        profile.peer=Some("ab".repeat(32));
+        profile.routes[0].destination=Destination::Ip{address:"192.0.2.40:48998".into(),legacy_device:None};
+        profile.routes.push(Route::new(Destination::Vps{service:self.book.services[0].id.clone(),device:"generated-target".into()}));
+        profile.client_configs.push(uu_core::client_settings::NamedClientSettings::new("办公",uu_core::client_settings::ClientSettings{fps:60,..Default::default()}));
+        // Synthetic desktop thumbnail; no capture, host or real device is used.
+        let mut image=egui::ColorImage::new([480,270],egui::Color32::from_rgb(208,231,248));
+        for y in 20..250 {for x in 24..456 {
+            image.pixels[y*480+x]=if y<46 {egui::Color32::from_rgb(60,100,140)}else if x<136 {egui::Color32::from_rgb(232,241,248)}else{egui::Color32::WHITE};
+        }}
+        let texture=ctx.load_texture("generated-device-thumbnail",image,egui::TextureOptions::LINEAR);
+        self.previews.insert(profile.id.clone(),PreviewSlot{revision:"generated".into(),texture:Some(texture),loaded:true});
+        self.route.page=Page::Devices;
+        self.route.device=DeviceView::Details(profile.id.clone());
+        self.book.devices=vec![profile];
+    }
+    #[cfg(test)]
     pub(super) fn open_generated_connection_preview(&mut self, surface: &str) {
         let (servers, rows) = crate::connection_service_ui::Servers::fixture();
         self.servers = servers;
@@ -1603,13 +1623,12 @@ impl Workspace {
     }
     fn client_config_picker(&mut self,ui:&mut egui::Ui,profile:&Profile) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(uu_i18n::text("客户端配置"));
             let mut selected=profile.selected_client.clone();
             let title=profile.client_configs.iter().find(|v|Some(&v.id)==selected.as_ref()).map(|v|v.name.as_str()).unwrap_or(uu_i18n::text("默认配置"));
-            crate::theme::Select::from_id_salt(("client-config",&profile.id)).selected_text(title).width(160.).show_ui(ui,|ui| {
+            crate::theme::Select::from_id_salt(("client-config",&profile.id)).selected_text(title).width((ui.available_width()-110.).clamp(140.,240.)).show_ui(ui,|ui| {
                 crate::theme::selectable_value(ui,&mut selected,None,uu_i18n::text("默认配置"));
                 for value in &profile.client_configs {crate::theme::selectable_value(ui,&mut selected,Some(value.id.clone()),&value.name);}
-            });
+            }).response.on_hover_text(uu_i18n::text("默认配置跟随应用设置；已保存的配置仅用于当前设备。"));
             if selected!=profile.selected_client {
                 if let Some(store)=&self.store {
                     match store.select_client_config(&profile.id,selected){

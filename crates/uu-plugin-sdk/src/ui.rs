@@ -36,6 +36,7 @@ pub enum Icon {
     Encoding,
     SelectAll,
     Trash,
+    More,
 }
 pub fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
     let r = Rect::from_center_size(rect.center(), Vec2::splat(18.0));
@@ -45,6 +46,9 @@ pub fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
         p.line_segment([pt(a.0, a.1), pt(b.0, b.1)], stroke);
     };
     match kind {
+        Icon::More => {
+            for x in [4., 9., 14.] { p.circle_filled(pt(x, 9.), 1.3, color); }
+        }
         Icon::SelectAll => {
             p.rect_stroke(Rect::from_min_max(pt(2., 2.), pt(16., 16.)), 3., stroke);
             line((5., 9.), (8., 12.));
@@ -367,4 +371,14 @@ pub fn icon_label_button(ui: &mut egui::Ui, kind: Icon, label: &str) -> Response
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     response
+}
+
+/// A font-independent icon with egui's native menu, focus and keyboard behavior.
+pub fn icon_menu<R>(ui: &mut egui::Ui, kind: Icon, tip: &str, contents: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
+    let mut result = egui::menu::menu_custom_button(ui, egui::Button::new("").frame(false).min_size(Vec2::splat(28.)), contents);
+    ghost_background(ui, &result.response, result.inner.is_some());
+    icon(ui.painter(), result.response.rect, kind, ui.style().interact(&result.response).fg_stroke.color);
+    result.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tip));
+    result.response = result.response.on_hover_text(tip);
+    result
 }

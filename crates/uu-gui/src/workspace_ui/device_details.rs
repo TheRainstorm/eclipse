@@ -29,13 +29,24 @@ impl Workspace {
                 }
                 ui.add_space(22.);
                 if width>=1000. {
-                    ui.columns(2,|columns| {
-                        card(&mut columns[0],|ui|self.device_routes(ui,&profile));
-                        card(&mut columns[1],|ui|{ui.strong(uu_i18n::text("串流配置"));self.client_config_list(ui,&profile);});
+                    let left=(width-24.)*0.44;
+                    let item_gap=ui.spacing().item_spacing.x;
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x=24.;
+                        ui.allocate_ui_with_layout(egui::vec2(left,0.),egui::Layout::top_down(egui::Align::Min),|ui| {
+                            ui.spacing_mut().item_spacing.x=item_gap;
+                            ui.set_width(left);
+                            card(ui,|ui|self.device_routes(ui,&profile));
+                        });
+                        ui.allocate_ui_with_layout(egui::vec2(width-left-24.,0.),egui::Layout::top_down(egui::Align::Min),|ui| {
+                            ui.spacing_mut().item_spacing.x=item_gap;
+                            ui.set_width(width-left-24.);
+                            card(ui,|ui|self.client_config_list(ui,&profile));
+                        });
                     });
                 }else {
                     card(ui,|ui|self.device_routes(ui,&profile));
-                    card(ui,|ui|{ui.strong(uu_i18n::text("串流配置"));self.client_config_list(ui,&profile);});
+                    card(ui,|ui|self.client_config_list(ui,&profile));
                 }
                 ui.collapsing(uu_i18n::text("设备身份与配对详情"),|ui| {
                     if let Some(peer)=&profile.peer {
@@ -88,16 +99,20 @@ impl Workspace {
         for route in routes {
             ui.push_id(&route.id,|ui| {
                 ui.horizontal(|ui| {
-                    let selected=profile.selected_route==route.id;
-                    let choose=ui.radio(selected,"").clicked();
                     let label=self.route_label(route);
-                    let text=ui.add_sized(egui::vec2((ui.available_width()-44.).max(80.),24.),egui::Label::new(&label).truncate().sense(egui::Sense::click())).on_hover_text(&label);
-                    if choose||text.clicked() {
+                    let text_width=(ui.available_width()-28.-ui.spacing().item_spacing.x).max(60.);
+                    let choose=ui.allocate_ui_with_layout(egui::vec2(text_width,36.),egui::Layout::left_to_right(egui::Align::Center),|ui| {
+                        ui.set_min_size(ui.available_size());
+                        let radio=ui.radio(profile.selected_route==route.id,"");
+                        let text=ui.add(egui::Label::new(&label).truncate().sense(egui::Sense::click())).on_hover_text(&label);
+                        radio.clicked()||text.clicked()
+                    }).inner;
+                    if choose {
                         let mut updated=profile.clone();updated.selected_route=route.id.clone();
                         if let Some(store)=&self.store {if let Err(error)=store.save_device(updated){self.feedback.error(self.device_scope(),uu_i18n::format!("无法保存连接方式：{e:#}",e=error));}}
                         self.refresh();
                     }
-                    ui.menu_button("⋯",|ui| {
+                    uu_plugin_sdk::ui::icon_menu(ui,uu_plugin_sdk::ui::Icon::More,uu_i18n::text("更多"),|ui| {
                         if theme::menu_action(ui,true,uu_i18n::text("编辑")).clicked(){self.new_device(Some(profile.id.clone()),Some(route.id.clone()));ui.close_menu();}
                         if theme::menu_action(ui,profile.routes.len()>1,uu_i18n::text("移除")).clicked() {
                             let mut updated=profile.clone();updated.routes.retain(|item|item.id!=route.id);

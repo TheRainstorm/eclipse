@@ -2259,5 +2259,7 @@
   "各设备串流时长": "Streaming time by device",
   "从此版本开始累计；同一设备多屏只计一次，多台设备的时长相加。": "Counted from this version onward. Screens on one device share a timer; time across devices is added.",
   "设备身份与配对详情": "Device identity and pairing details",
-  "编辑配置": "Edit profile"
+  "编辑配置": "Edit profile",
+  "修改配置只影响下次连接。": "Changes apply to the next connection.",
+  "默认配置跟随应用设置；已保存的配置仅用于当前设备。": "The default follows app settings; saved profiles apply only to this device."
 }

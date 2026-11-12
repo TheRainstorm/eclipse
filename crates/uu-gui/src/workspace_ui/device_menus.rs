@@ -127,14 +127,26 @@ impl Workspace {
     }
 
     pub(super) fn client_config_list(&mut self, ui: &mut egui::Ui, profile: &Profile) {
-        muted(ui, uu_i18n::text("每台设备可保存多个配置；选择全局默认会跟随应用设置。修改配置只影响下次连接。"));
+        ui.horizontal(|ui| {
+            ui.strong(uu_i18n::text("串流配置"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                if ui.add(theme::secondary_button(uu_i18n::text("新建配置…")).small()).clicked() { self.edit_client_config(profile, None, false); }
+            });
+        });
+        ui.add_space(8.);
         self.client_config_picker(ui, profile);
+        muted(ui, uu_i18n::text("修改配置只影响下次连接。"));
+        if !profile.client_configs.is_empty() {ui.add_space(6.);ui.separator();}
         for value in &profile.client_configs {
             ui.push_id(&value.id, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(&value.name);
-                    muted(ui, format!("{} FPS · {}", value.settings.fps, value.settings.codec.label()));
-                    ui.menu_button("⋯",|ui| {
+                ui.horizontal(|ui| {
+                    let text_width=(ui.available_width()-28.-ui.spacing().item_spacing.x).max(60.);
+                    ui.allocate_ui_with_layout(egui::vec2(text_width,40.),egui::Layout::top_down(egui::Align::Min),|ui| {
+                        ui.set_min_size(ui.available_size());
+                        ui.add(egui::Label::new(egui::RichText::new(&value.name).strong()).truncate()).on_hover_text(&value.name);
+                        muted(ui, format!("{} FPS · {}", value.settings.fps, value.settings.codec.label()));
+                    });
+                    let more=uu_plugin_sdk::ui::icon_menu(ui,uu_plugin_sdk::ui::Icon::More,uu_i18n::text("更多"),|ui| {
                         if theme::menu_action(ui,true,uu_i18n::text("编辑配置")).clicked(){self.edit_client_config(profile,Some(value.clone()),false);ui.close_menu();}
                         if theme::menu_action(ui,true,uu_i18n::text("复制")).clicked(){self.edit_client_config(profile,Some(value.clone()),true);ui.close_menu();}
                         if theme::menu_action(ui,true,uu_i18n::text("删除")).clicked(){
@@ -145,10 +157,13 @@ impl Workspace {
                             ui.close_menu();
                         }
                     });
+                    #[cfg(test)]
+                    ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(("config-more",&value.id)),more.response.rect));
+                    #[cfg(not(test))]
+                    let _=more;
                 });
             });
         }
-        if ui.add(theme::secondary_button(uu_i18n::text("新建配置…"))).clicked() { self.edit_client_config(profile, None, false); }
     }
 
     pub(super) fn confirm_device_removal(&mut self, profile: &Profile) {
