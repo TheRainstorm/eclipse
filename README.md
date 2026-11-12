@@ -47,7 +47,7 @@ Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应
 
 ## 开始使用
 
-**0.24.2** 增加按私人设备组隔离的自建连接服务，支持双向发现、直连优先与 TURN/UDP 中转；完善服务器行内管理、设备复用、连接入口状态和跨进程服务更新，并增加三秒连接提醒与最近200次历史。详见 [0.24.2 版本说明](docs/releases/v0.24.2.md)和[连接服务部署指南](docs/connection-service.md)。下载以 GitHub Releases 实际发布为准。更新使用完整包并重开旧进程；Windows 主机功能还须更新实际后台服务，保留配置和配对。
+**0.24.3** 整理设备与空白处右键菜单、浮动批量管理及居中详情，增加连接历史分页、最近100张壁纸缓存、串流时长统计和F5刷新。详见[0.24.3版本说明](docs/releases/v0.24.3.md)。本版提供Windows完整包；Linux完整包按明确需求构建，既有版本和源码构建方式继续可用。自建连接服务说明见[部署指南](docs/connection-service.md)。
 
 从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包，保留包内全部运行库与清单。
 
@@ -75,7 +75,7 @@ python3 install.py
 已有源码和 GitHub CLI 时，也可下载并校验发布包，无需本机编译：
 
 ```sh
-python3 tools/release/download.py
+python3 tools/release/download.py --platform windows
 # 也可指定 --tag v0.21.1 --platform windows
 ```
 
