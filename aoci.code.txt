@@ -4,12 +4,12 @@
 .gitattributes[FV5T]: F:统一文本检出为LF，维持跨平台源码字节与AOCI基线一致 | R:code:.gitignore | A:- | S:二进制由Git自动识别，不强制换行转换
 .gitignore[FS6T]: F:排除构建产物、账号凭据、邀请、本地资料及独立插件开发检出 | R:code:SECURITY.md,code:docs/plugins.md | A:- | S:handoff与notes只留本地，不强制加入Git；plugins目录由独立仓库维护
 AGENTS.md[SG8S]: F:约束本地资料、统一实现原则、提交规范及开发交付和AOCI认知维护 | R:code:.gitignore,code:aoci.txt | A:- | S:修复先以本地开发编号交付，用户确认后才推送，验收并要求release后才递增正式版本及发布；状态测试不能替代桌面验收；索引语义仅由模型基于证据创作
-Cargo.lock[FV6L]: F:锁定0.24.1主程序、共享SDK、设备目录URL及桌面功能依赖 | R:code:Cargo.toml,code:crates/uu-gui/Cargo.toml | A:- | S:由Cargo生成，构建用--locked；插件独立锁不能替代主程序SDK依赖图
-Cargo.toml[FV8T]: F:组织0.24.1原生应用、动森组件与共享SDK工作区，统一依赖及构建配置 | R:code:crates/animal-island-ui/Cargo.toml,code:crates/uu-core/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:.cargo/config.toml | A:workspace,members,patch.crates-io,profile.release | S:具体插件不属主工作区；共享动态SDK的release关闭LTO；vendor覆盖上游；版本对齐不证明实际发布
+Cargo.lock[FV6L]: F:锁定0.24.2原生程序和共享SDK的跨平台运行及桌面依赖 | R:code:Cargo.toml,code:crates/uu-gui/Cargo.toml | A:- | S:构建用--locked；本次只同步11项workspace版本，不升级外部依赖；独立插件锁不替代主程序SDK依赖图
+Cargo.toml[FV8T]: F:组织0.24.2原生应用、动森组件和共享SDK工作区，统一依赖、补丁及构建配置 | R:code:crates/animal-island-ui/Cargo.toml,code:crates/uu-core/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:.cargo/config.toml | A:workspace,members,patch.crates-io,profile.release | S:具体插件不属于主工作区；共享动态SDK的release关闭LTO；vendor覆盖上游；版本对齐不证明实际tag或发布资产已存在
 LICENSE[SG6T]: F:声明项目自有代码可选择MIT或Apache-2.0并划定第三方权利边界 | R:code:LICENSE-MIT,code:LICENSE-APACHE,code:docs/licensing-and-compatibility.md | A:- | S:代码许可不授予第三方服务接入或商标使用权
 LICENSE-APACHE[SG4M]: F:提供Apache-2.0完整许可、专利授权及分发条件 | R:code:LICENSE | A:- | S:-
 LICENSE-MIT[SG4T]: F:提供MIT授权、保留版权声明条件与免责条款 | R:code:LICENSE | A:- | S:-
-README.md[SG7S]: F:介绍原生多屏串流、正式版安装和便携配置，并指向连接服务直连中转与架构说明 | R:code:docs/connection-service.md,code:docs/releases/v0.24.1.md,code:docs/windows-background-service.md,code:docs/configuration-storage.md,code:docs/architecture.md | A:- | S:下载以实际Release为准；便携不接管其它配置服务；插件默认关且SDK匹配；更新须重开旧进程及实际后台；像素非展示纹理大小
+README.md[SG7S]: F:介绍Eclipse能力、0.24.2连接服务与主机改进，提供安装便携和架构入口 | R:code:docs/releases/v0.24.2.md,code:docs/connection-service.md,code:docs/configuration-storage.md | A:- | S:下载以实际Release为准；便携不接管其它配置服务；具体插件独立且SDK精确匹配；更新须重开旧进程并更新实际后台
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
 
 ===/home/yfy/Repo/uu_remote/.github/workflows/===
@@ -544,7 +544,7 @@ protocol-compatibility-and-transport.md[SN5S]: F:比较原生、UU兼容与Moonl
 protocol-notes.md[SN5M]: F:保留UU官方软件样本、媒体控制协议、认证和传输的证据笔记 | R:code:plugins/uu-compat/src/socketio.rs,code:plugins/uu-compat/src/control_wire.rs | A:- | S:采样版本和来源有边界，字符串线索不能替代线上互通证据
 pyrowave.md[SH5T]: F:说明实验性PyroWave格式、运行库、GPU同步与高带宽使用边界 | R:code:crates/uu-media/src/pyrowave.rs | A:- | S:默认自动协商不选它；Linux当前CPU传输不能声称GPU直通
 reference-index.md[SG5M]: F:组织Sunshine、Moonlight与同协议参考项目的固定版本源码入口和适配差异 | R:code:docs/licensing-and-compatibility.md | A:- | S:参考机制不授复制GPL代码许可；能力广告须由本实现真实链路证明
-releases.md[SV6T]: F:索引0.24.1及历史里程碑，规定双平台构建与校验和首次及重建发布规则 | R:code:.github/workflows/build-release.yml,code:tools/release/check_version.py,code:docs/releases/v0.24.1.md,code:docs/releases/v0.24.0.md | A:- | S:首次先推含v标签，手动输入不创建；产品固定标签而夹具可用当前流程；版本须匹配，已有资产保留；哈希非身份签名
+releases.md[SV6T]: F:索引0.24.2及历史版本，说明双平台构建校验和不可变标签的首次及重建发布规则 | R:code:.github/workflows/build-release.yml,code:tools/release/check_version.py,code:docs/releases/v0.24.2.md | A:- | S:首次先推含v标签，手动输入不创建；产品固定标签而夹具可用当前流程；版本须匹配，既有资产保留；哈希不等于身份签名
 roadmap.md[SW4T]: F:跟踪原生串流与独立兼容插件的交付阶段、后续验证和平台能力边界 | R:code:docs/vision.md,code:docs/releases.md | A:- | S:历史阶段不是当前交付承诺，能力及验收以实际版本说明和安装包为准
 session-probe.md[SO4T]: F:说明后台兼容会话与显式切屏探针及指标收集 | R:code:plugins/uu-compat/examples/session_probe.rs | A:- | S:默认不启剪贴板、不发送键鼠；文中core示例路径早于插件迁移
 stream-recovery.md[SR6T]: F:解释SRTP最高扩展索引、迟到重传、防重放与取消安全读取修复 | R:code:vendor/webrtc-srtp/UU-PATCH.md,code:crates/uu-core/src/srtp_policy.rs | A:- | S:认证成功后才记bitmap，旧包不能倒退最高索引；零解码错误不证明视频仍增长
@@ -633,6 +633,7 @@ v0.23.4-dev.20261104.md[SV4T]: F:记录0.23.4开发版动森主题与独立Rust�
 v0.23.5-dev.20261104.md[SV4T]: F:记录0.23.5开发版统一控件、多屏懒连接和垂直同步调度 | R:code:docs/releases.md,code:docs/client-and-server-settings.md,code:docs/windows-latency.md | A:- | S:开发编号不创建正式发布；已访问屏幕继续占用串流、带宽和解码资源；旧cyan迁移为浅蓝；非阻塞呈现不保证固定毫秒收益
 v0.24.0.md[SV5T]: F:整理0.24.0多屏、虚拟屏、服务、编码回退、声音及可关闭教程和新默认 | R:code:docs/releases.md,code:docs/multiple-displays.md,code:docs/virtual-displays.md,code:docs/native-audio.md | A:- | S:云端和产物看实际结果；更新须完整匹配包及真实后台；旧设置保持；输入延迟、UAC与驱动隔离仍待验证；静音恢复依赖正常关闭
 v0.24.1.md[SV5T]: F:记录0.24.1设备管理收藏、老板键、外网IP与主机显示配置更新及验证范围 | R:code:docs/native-lan.md,code:docs/configuration-storage.md,code:docs/keyboard-shortcuts.md,code:docs/virtual-displays.md | A:- | S:安装须匹配SDK并重开旧进程及实际后台；NAT夹具非实网，Xvfb非Windows或门户验收；串流转发端口内外一致
+v0.24.2.md[SV5T]: F:整理私人组连接服务、服务器与设备管理、入口状态、主机提醒及更新修复和发布包边界 | R:code:docs/connection-service.md,code:docs/windows-background-service.md,code:docs/plugins.md | A:- | S:更新须完整包并重开旧进程及实际后台；插件SDK精确匹配；TURN仅UDP；生成测试和同机公网探针不代替实体跨NAT及长期验收
 
 ===/home/yfy/Repo/uu_remote/licenses/===
 README.md[SG4T]: F:记录SPDX标准文本来源版本及第三方原始通知优先规则 | R:code:tools/licenses/generate.py | A:- | S:附带GPL或LGPL文本不等于项目选用该许可
