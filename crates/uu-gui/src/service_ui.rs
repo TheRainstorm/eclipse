@@ -277,8 +277,6 @@ impl Entry {
                 self.show_status_card(ui, available);
                 return installed;
             }
-            if self.job.is_some() {ui.horizontal(|ui|{ui.spinner();ui.label(uu_i18n::text(
-                if self.deployment_stage==deployment::Stage::Waiting {"正在等待另一个服务更新完成…"} else {"正在完成更新…"}));});}
             manager.show_tabs(ui);
         }
         let section = self.manager.as_ref().map_or(Section::Management, |manager| manager.section);
@@ -319,10 +317,11 @@ impl Entry {
                         uu_i18n::text("后台服务未启动或尚未就绪")
                     },
                 );
-                if busy && self.job.is_none() {
-                    ui.spinner();
-                }
+                if busy {ui.add(egui::Spinner::new().size(16.));}
             });
+            if self.job.is_some() {
+                ui.weak(uu_i18n::text(if self.deployment_stage==deployment::Stage::Waiting {"正在等待另一个服务更新完成…"}else{"正在完成更新…"}));
+            }
             ui.weak(uu_i18n::text(
                 "开机自动运行；关闭此窗口后继续提供串流。配置和配对统一保存在服务中。",
             ));
