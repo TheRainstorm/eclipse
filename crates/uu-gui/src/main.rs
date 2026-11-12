@@ -63,6 +63,7 @@ mod sharing_ui;
 mod service_ui;
 mod server_config_ui;
 mod remote_admin_ui;
+mod host_sessions;
 mod pairing_ui;
 mod onboarding;
 mod connection_details;
@@ -262,6 +263,8 @@ struct App {
     stream_menu: stream_menu::StreamMenu,
     window_sizing: std::rc::Rc<std::cell::RefCell<window::WindowSizing>>,
     tray: Option<tray::Tray>,
+    host_sessions_open: bool,
+    host_sessions_focus: bool,
     virtual_display:virtual_display_ui::State,
     tray_retry:Option<std::time::Instant>,
     tray_background:virtual_display_ui::BackgroundHost,
@@ -552,6 +555,8 @@ impl App {
             stream_menu: stream_menu::StreamMenu::default(),
             window_sizing: Default::default(),
             tray: None,
+            host_sessions_open: false,
+            host_sessions_focus: false,
             virtual_display:Default::default(),
             tray_retry:None,
             tray_background:Default::default(),
@@ -1250,6 +1255,7 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.update_frame(ctx,frame.info().cpu_usage);
+        self.host_session_window(ctx);
     }
 }
 impl App {
@@ -1268,6 +1274,7 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 },
+                tray::Action::Sessions=>{self.host_sessions_open=true;self.host_sessions_focus=true;},
                 tray::Action::VirtualDisplays=>{
                     self.launcher_hidden=false;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));

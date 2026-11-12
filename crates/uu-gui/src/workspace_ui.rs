@@ -112,6 +112,7 @@ pub(super) struct Workspace {
     pub route: HomeRoute,
     pub book: Book,
     pub host: super::sharing_ui::HostUi,
+    pub(super) host_sessions_requested: bool,
     connection_history: super::connection_history_ui::State,
     statistics:super::stream_statistics::View,
     servers: super::connection_service_ui::Servers,
@@ -151,6 +152,21 @@ pub(super) struct Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn media_draft_preserves_a_live_game_room_policy_change() {
+        let mut h=Harness::new();
+        let audio=!h.workspace.draft.audio;h.workspace.draft.audio=audio;
+        h.workspace.store.as_ref().unwrap().edit(|book| {book.sharing.host_input.game_room=true;Ok(())}).unwrap();
+        h.workspace.refresh();
+        assert_eq!(h.workspace.draft.audio,audio,"refresh must retain an edited media draft");
+        assert!(h.workspace.draft.host_input.game_room);
+        assert!(h.workspace.save_sharing());
+        assert!(h.workspace.store.as_ref().unwrap().read().unwrap().sharing.host_input.game_room);
+        assert!(!h.workspace.server_dirty());
+        h.workspace.store.as_ref().unwrap().edit(|book| {book.sharing.host_input.game_room=false;Ok(())}).unwrap();
+        h.workspace.refresh();
+        assert!(!h.workspace.server_dirty(),"a control-center update alone must not dirty the media form");
+    }
     #[test]
     fn device_management_selects_without_connecting_and_deletes_the_batch() {
         let mut h=Harness::new();
@@ -1057,6 +1073,7 @@ impl Workspace {
             },
             book,
             host: Default::default(),
+            host_sessions_requested: false,
             connection_history: Default::default(),
             statistics:Default::default(),
             servers: Default::default(),
@@ -1187,11 +1204,13 @@ impl Workspace {
         if let Some(store) = &self.store {
             match store.read() {
                 Ok(book) => {
+                    self.draft.host_input=self.book.sharing.host_input;
                     if serde_json::to_vec(&self.draft).ok()
                         == serde_json::to_vec(&self.book.sharing).ok()
                     {
                         self.draft = book.sharing.clone();
                     }
+                    self.draft.host_input=book.sharing.host_input;
                     if self.connection_draft.as_ref().is_some_and(|draft|*draft==connection_settings::Draft::from(&self.book.sharing)) {
                         self.connection_draft=None;
                     }
@@ -1235,6 +1254,7 @@ impl Workspace {
                 media.plugin_services = book.sharing.plugin_services.clone();
                 media.service_port = book.sharing.service_port;
                 media.discovery_port = book.sharing.discovery_port;
+                media.host_input = book.sharing.host_input;
                 book.sharing = media;
                 Ok(())
             }));
@@ -1666,10 +1686,12 @@ impl Workspace {
     }
     #[cfg(windows)]
     fn service_workspace(&mut self, ui:&mut egui::Ui, _info:&Info, _actions:&mut Vec<Action>, _connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
+        if ui.add(crate::theme::secondary_button(uu_i18n::text("悬浮会话中心"))).clicked() {self.host_sessions_requested=true;}
         self.background_service.show(ui,&mut self.host,self.store.is_some());
     }
     #[cfg(not(windows))]
     fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
+        if ui.add(crate::theme::secondary_button(uu_i18n::text("悬浮会话中心"))).clicked() {self.host_sessions_requested=true;}
         ui.horizontal_wrapped(|ui| {
             for (tab,label) in [(5,uu_i18n::text("服务管理")),(0,uu_i18n::text("连接服务")),(1,uu_i18n::text("输入")),(2,uu_i18n::text("音频 / 视频")),(3,uu_i18n::text("编码器")),(4,uu_i18n::text("配对设置"))] {
                 crate::theme::tab_value(ui,&mut self.service_tab,tab,label);

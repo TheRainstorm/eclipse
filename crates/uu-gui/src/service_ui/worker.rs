@@ -177,7 +177,7 @@ impl Worker {
                 if state == SERVICE_RUNNING {
                     let result = runtime
                         .block_on(request_owner(Request::Admin {
-                            request: uu_core::host_admin::Request::SessionControls,
+                            request: uu_core::host_admin::Request::SessionCenter,
                         }))
                         .map_err(|e| format!("{e:#}"));
                     if send.send(Event::SessionControls(result)).is_err() {

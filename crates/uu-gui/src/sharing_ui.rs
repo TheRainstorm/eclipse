@@ -389,6 +389,22 @@ impl HostUi {
             SessionView{id,name,status,input,max_input,fps,bitrate_kbps,display,displays}
         }).collect()
     }
+    pub(super) fn session_center(&mut self, ui: &mut egui::Ui) {
+        let Some(access) = self.access.clone() else {
+            ui.weak(uu_i18n::text("开启本机共享后，可在这里管理连接。")); return;
+        };
+        let service = access.sessions.administration.lock().unwrap().clone();
+        let Some(service) = service else { ui.weak(uu_i18n::text("主机管理尚未就绪。")); return; };
+        match service.execute_local_manager(&access, uu_core::host_admin::Request::SessionCenter) {
+            Ok(uu_core::host_admin::Response::SessionCenter { center }) => {
+                for request in crate::host_sessions::show(ui, &center) {
+                    if let Err(error) = service.execute_local_manager(&access, request) { ui.colored_label(crate::theme::palette(ui.visuals()).warning, error.to_string()); }
+                }
+            }
+            Err(error) => { ui.label(error.to_string()); }
+            _ => { ui.weak(uu_i18n::text("主机管理尚未就绪。")); }
+        }
+    }
     pub fn set_session_input(&self, session:&str, input:InputPermissions) -> anyhow::Result<()> {
         let access=self.access.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("本机共享未运行")))?;
         access.sessions.set_session_input(session,input)

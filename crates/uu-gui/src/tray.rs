@@ -6,6 +6,7 @@ use eframe::egui;
 pub enum Action {
     Open,
     VirtualDisplays,
+    Sessions,
     Display(DisplayAction),
     Exit,
 }
@@ -58,6 +59,7 @@ mod windows {
     const CLOSE_DISPLAYS:usize=5;
     const KEEP_DISPLAYS:usize=6;
     const RESET_DISPLAYS:usize=7;
+    const SESSIONS:usize=8;
     // winuser.h's keyboard activation notification (not exposed by windows-sys).
     const KEY_SELECT: u32 = NIN_SELECT | 1;
     fn wide(s: &str) -> Vec<u16> {
@@ -136,6 +138,7 @@ mod windows {
                 wide(uu_i18n::text("打开 Eclipse")).as_ptr(),
             );
             AppendMenuW(menu,MF_SEPARATOR,0,ptr::null());
+            AppendMenuW(menu,MF_STRING,SESSIONS,wide(uu_i18n::text("悬浮会话中心")).as_ptr());
             let displays=CreatePopupMenu();
             if !displays.is_null() {
                 AppendMenuW(displays,MF_STRING,VIRTUAL_DISPLAYS,wide(uu_i18n::text("管理虚拟显示器")).as_ptr());
@@ -208,6 +211,7 @@ mod windows {
                     match wparam & 0xffff {
                         OPEN => state.publish(Action::Open),
                         VIRTUAL_DISPLAYS=>state.publish(Action::VirtualDisplays),
+                        SESSIONS=>state.publish(Action::Sessions),
                         CREATE_DISPLAY=>state.publish(Action::Display(DisplayAction::Create)),
                         CLOSE_DISPLAYS=>state.publish(Action::Display(DisplayAction::Close)),
                         KEEP_DISPLAYS=>state.publish(Action::Display(DisplayAction::ToggleKeep)),

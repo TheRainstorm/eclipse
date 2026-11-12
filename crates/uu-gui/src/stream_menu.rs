@@ -1060,7 +1060,7 @@ mod tests {
             "sky_blue"=>super::super::theme::ColorTheme::SkyBlue,
             _=>panic!("explicit supported preview theme required"),
         };
-        assert!(matches!(surface.as_str(),"menus"|"device-config"|"device-details"|"virtual-displays"|"connections"|"add-server"|"add-device"));
+        assert!(matches!(surface.as_str(),"menus"|"device-config"|"device-details"|"virtual-displays"|"connections"|"add-server"|"add-device"|"host-sessions"));
         struct Preview {app:super::super::App,virtual_displays:crate::virtual_display_ui::State,output:PathBuf,surface:String,frames:u32,saved:Arc<AtomicBool>}
         impl eframe::App for Preview {
             fn update(&mut self,ctx:&egui::Context,_:&mut eframe::Frame){
@@ -1069,10 +1069,14 @@ mod tests {
                     image::save_buffer(&self.output,&data,image.size[0] as u32,image.size[1] as u32,image::ColorType::Rgba8).unwrap();
                     self.saved.store(true,Ordering::Release);ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                self.app.preview_title_bar(ctx);
+                if self.surface!="host-sessions" {self.app.preview_title_bar(ctx);}
                 if matches!(self.surface.as_str(),"device-config"|"device-details"|"connections"|"add-server"|"add-device") {
                     self.app.workspace_home(ctx);
                     self.app.workspace_dialogs(ctx);
+                } else if self.surface=="host-sessions" {
+                    egui::CentralPanel::default().frame(egui::Frame::none().fill(crate::theme::palette(&ctx.style().visuals).base).inner_margin(12.)).show(ctx,|ui| {
+                        egui::ScrollArea::vertical().show(ui,|ui|{let _=crate::host_sessions::show(ui,&crate::host_sessions::fixture());});
+                    });
                 } else if self.surface=="virtual-displays" {
                     egui::CentralPanel::default().frame(egui::Frame::none().fill(super::super::theme::palette(&ctx.style().visuals).base).inner_margin(24.)).show(ctx,|ui| {
                         ui.heading("虚拟显示器 · 生成数据预览");ui.add_space(12.);
@@ -1098,8 +1102,8 @@ mod tests {
         }
         let saved=Arc::new(AtomicBool::new(false));let check=saved.clone();
         let width=std::env::var("ECLIPSE_UI_PREVIEW_WIDTH").ok().map(|value|value.parse::<u32>().unwrap()).unwrap_or(1100);
-        assert!((800..=1240).contains(&width));
-        let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([width as f32,800.]),vsync:false,
+        assert!(if surface=="host-sessions" {(360..=600).contains(&width)}else{(800..=1240).contains(&width)});
+        let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([width as f32,if surface=="host-sessions"{600.}else{800.}]),vsync:false,
             event_loop_builder:Some(Box::new(|builder|{use winit::platform::x11::EventLoopBuilderExtX11;builder.with_any_thread(true);})),..Default::default()};
         eframe::run_native("Generated application UI",options,Box::new(move|cc|{
             let mut app=super::super::App::new(cc,None,None,false,None);
