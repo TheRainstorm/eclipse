@@ -261,6 +261,9 @@ mod tests {
         });
         let settings=Settings{wallpaper_refresh:crate::settings::WallpaperRefresh::OnOpen,..settings};
         let mut background=Background::new(Some(path));background.sync(&settings,&ctx);
+        // The initial reader already owns the cache path. This scheduling
+        // fixture does not need a detached writer racing its directory cleanup.
+        background.cache=None;
         while !background.received || background.worker.is_some() || background.cache_rx.is_some(){background.sync(&settings,&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(2));}
         for _ in 0..4 {background.sync(&settings,&ctx);assert!(background.worker.is_none());}
         server.join().unwrap();std::fs::remove_dir_all(root).unwrap();
