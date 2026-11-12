@@ -74,6 +74,7 @@ mod native_interfaces;
 mod wallpapers;
 mod wallpaper_favorites;
 mod wallpaper_cache;
+mod stream_statistics;
 mod wallpaper_download;
 mod virtual_display_ui;
 mod virtual_display_presets;

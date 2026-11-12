@@ -53,6 +53,7 @@ impl Workspace {
             }
         });
         ui.separator();
+        if theme::menu_action(ui,true,uu_i18n::text("串流统计…")).clicked(){self.statistics.open=true;ui.close_menu();}
         if theme::menu_action(ui, true, uu_i18n::text("本机串流测试")).on_hover_text(uu_i18n::text("只读采集本机画面，通过本机回环完成编解码和显示；无需开启共享服务。")).clicked() {
             actions.push(Action::SelfStream); ui.close_menu();
         }

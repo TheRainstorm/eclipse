@@ -112,6 +112,7 @@ pub(super) struct Workspace {
     pub book: Book,
     pub host: super::sharing_ui::HostUi,
     connection_history: super::connection_history_ui::State,
+    statistics:super::stream_statistics::View,
     servers: super::connection_service_ui::Servers,
     service_config: Option<uu_core::Config>,
     history_path: Option<std::path::PathBuf>,
@@ -1043,6 +1044,7 @@ impl Workspace {
             book,
             host: Default::default(),
             connection_history: Default::default(),
+            statistics:Default::default(),
             servers: Default::default(),
             service_config: config.cloned(),
             history_path: config.map(|config| config.at("device-trust/connection-history.json")),
@@ -2042,6 +2044,7 @@ impl Workspace {
             if let Some(target) = self.servers.take_open() { actions.push(Action::OpenPrepared(target)); }
             self.servers.dialogs(ctx, self.service_config.as_ref());
         }
+        self.statistics.show(ctx,self.service_config.as_ref(),&self.book);
         self.host.dialogs(ctx);
         self.device_menu_dialogs(ctx);
         if let Some(mut editor)=self.client_editor.take() {

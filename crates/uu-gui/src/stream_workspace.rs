@@ -811,7 +811,7 @@ impl Workspace {
                 budget:Default::default(),
             })
         });
-        Self { owner }
+        Self { owner,usage:crate::stream_statistics::Tracker::new(uu_core::Config::from_env().ok().map(|config|config.at("stream-statistics.json"))) }
     }
 }
 // Glow's UI and window lifetimes are confined to the event-loop thread. The
@@ -819,6 +819,7 @@ impl Workspace {
 std::thread_local! {static STATE:RefCell<Option<State>>=const {RefCell::new(None)};}
 pub struct Workspace {
     owner: uu_core::local_workspace::Owner,
+    usage:crate::stream_statistics::Tracker,
 }
 impl State {
     fn has_deferred_connect(&self)->bool {
@@ -1124,6 +1125,9 @@ impl eframe::App for Workspace {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             let state = state.as_mut().expect("workspace UI thread");
+            self.usage.tick(state.windows.iter().flat_map(|window|window.sessions.iter()).filter(|session|
+                session.app.recorded_connection && session.app.controller.is_some() && !session.app.controller.closing()
+            ).filter_map(|session|session.app.stream_target.as_ref().and_then(crate::stream_statistics::device)));
             let hidden=crate::boss_key::hidden();
             for session in state.windows.iter_mut().flat_map(|w|w.sessions.iter_mut()) {
                 if session.app.boss_hidden!=hidden {
@@ -1220,6 +1224,7 @@ impl eframe::App for Workspace {
         });
     }
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        self.usage.tick(std::iter::empty::<(String,String)>());
         STATE.with(|state| {
             if let Some(mut state) = state.borrow_mut().take() {
                 for window in &mut state.windows {

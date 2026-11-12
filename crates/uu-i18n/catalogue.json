@@ -2243,5 +2243,18 @@
   "连接历史": "Connection history",
   "返回会话": "Back to sessions",
   "还没有已结束的连接记录。": "There are no completed connections yet.",
-  "第 {} / {} 页": "Page {} / {}"
+  "第 {} / {} 页": "Page {} / {}",
+  "{} 小时 {} 分钟": "{} hr {} min",
+  "{} 分钟 {} 秒": "{} min {} sec",
+  "串流统计…": "Streaming statistics…",
+  "串流统计": "Streaming statistics",
+  "累计串流时长": "Total streaming time",
+  "连接次数": "Connections",
+  "使用过的设备": "Devices used",
+  "首次串流": "First stream",
+  "累计一小时": "One hour",
+  "累计十小时": "Ten hours",
+  "累计百小时": "One hundred hours",
+  "各设备串流时长": "Streaming time by device",
+  "从此版本开始累计；同一设备多屏只计一次，多台设备的时长相加。": "Counted from this version onward. Screens on one device share a timer; time across devices is added."
 }
