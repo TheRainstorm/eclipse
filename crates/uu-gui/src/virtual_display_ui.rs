@@ -902,14 +902,14 @@ impl State {
                                 crate::virtual_display_presets::display_spec_row(ui,&mut draft.spec);
                             });
                             let dirty=draft!=original;
-                            if ui.add_enabled(dirty&&supports_configuration&&!busy&&!mutations_blocked,crate::theme::primary_button(uu_i18n::text("保存")))
+                            if ui.add_enabled(dirty&&supports_configuration&&can_edit&&!mutations_blocked,crate::theme::primary_button(uu_i18n::text("保存")))
                                 .on_hover_text(uu_i18n::text("名称可立即修改；规格变更需先结束此主机的串流。")).clicked() {
                                 save_edit=Some(draft.clone());
                             }
                             if dirty && ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("还原修改"))).clicked() {cancel=true;}
                             if ui.add_enabled(can_edit&&!mutations_blocked&&supports_catalog&&!dirty&&(!display.enabled||!display.active)&&!display.cleanup_pending,crate::theme::primary_button(uu_i18n::text("启用"))).on_hover_text(uu_i18n::text("连接到 Windows；编辑后的属性请先保存。")).clicked() {command=Some(Request::SetEnabled{id:display.id,enabled:true});}
                             if ui.add_enabled(can_edit&&!mutations_blocked&&supports_catalog&&display.enabled&&!fixed_current,crate::theme::secondary_button(uu_i18n::text("禁用"))).on_hover_text(uu_i18n::text("从 Windows 移除设备，保留此配置和上次位置。")).clicked() {command=Some(Request::SetEnabled{id:display.id,enabled:false});}
-                            if ui.add_enabled(!busy&&!mutations_blocked&&!fixed_current,crate::theme::secondary_button(if display.cleanup_pending {uu_i18n::text("重试删除")}else{uu_i18n::text("删除")}))
+                            if ui.add_enabled(can_edit&&!mutations_blocked&&!fixed_current,crate::theme::secondary_button(if display.cleanup_pending {uu_i18n::text("重试删除")}else{uu_i18n::text("删除")}))
                                 .on_disabled_hover_text(uu_i18n::text("关闭此串流标签即可断开并移除它的临时虚拟屏")).clicked() {
                                 command=Some(Request::Remove{id:display.id});
                             }
