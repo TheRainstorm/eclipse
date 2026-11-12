@@ -2,6 +2,7 @@
 //! have their own pages and never ask for a per-device shared key file.
 use super::theme;
 mod device_management;
+mod device_menus;
 mod connection_settings;
 use eframe::egui::{self, RichText};
 use std::{
@@ -133,6 +134,7 @@ pub(super) struct Workspace {
     device_icon_size:f32,
     device_text_size:f32,
     management:device_management::State,
+    menus:device_menus::State,
     connection_draft:Option<connection_settings::Draft>,
     last_read: Instant,
     pub pairing_visible: bool,
@@ -169,7 +171,7 @@ mod tests {
         for pressed in [true,false] {
             h.frame(vec![egui::Event::PointerMoved(position),egui::Event::PointerButton{pos:position,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);
         }
-        assert!(matches!(&h.click("显示设备")[..],[Action::DevicesHidden(false)]));
+        assert!(matches!(&h.click("显示设备列表")[..],[Action::DevicesHidden(false)]));
         h.frame(vec![]);
         assert!(h.texts.iter().any(|(s,_)|s=="尚未添加设备"));
     }
@@ -334,6 +336,12 @@ mod tests {
             self.frame(vec![egui::Event::PointerMoved(position), event(true)]);
             self.frame(vec![event(false)])
         }
+        fn submenu(&mut self, label:&str) {
+            self.frame(Vec::new());
+            let point=self.texts.iter().find(|(text,_)|text==label).unwrap_or_else(||panic!("missing submenu {label}")).1;
+            self.frame(vec![egui::Event::PointerMoved(point)]);
+            for _ in 0..3 {self.frame(Vec::new());}
+        }
         fn choose_preset(&mut self,label:&str) {
             for _ in 0..3 {self.frame(Vec::new());}
             let rect=self.ctx.data(|d|d.get_temp::<egui::Rect>(egui::Id::new("test-client-config-name-arrow"))).expect("name dropdown response");
@@ -410,7 +418,7 @@ mod tests {
             }]);
         }
         h.frame(vec![]);
-        h.click("详情");
+        h.click("设备详情…");
         h.frame(vec![]);
         assert_eq!(h.workspace.route.device, DeviceView::Details(id));
         assert!(h.texts.iter().any(|(text, _)| text == "编辑"));
@@ -425,7 +433,49 @@ mod tests {
         for pressed in [true,false] {
             h.frame(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);
         }
+        h.submenu("壁纸");
         assert!(matches!(&h.click("刷新壁纸")[..],[Action::RefreshWallpaper]));
+    }
+
+    #[test]
+    fn device_menu_separates_library_actions_and_removal_requires_confirmation() {
+        let mut h=Harness::new();
+        let profile=Profile::new("Selected host",Destination::Ip{address:"192.0.2.10:48998".into(),legacy_device:None});
+        let other=Profile::new("Other host",Destination::Ip{address:"192.0.2.11:48998".into(),legacy_device:None});
+        for value in [&profile,&other] {h.workspace.store.as_ref().unwrap().save_device(value.clone()).unwrap();}
+        h.workspace.refresh();
+        let open=|h:&mut Harness| {
+            h.frame(Vec::new());
+            let point=h.texts.iter().find(|(text,_)|text=="Selected host").unwrap().1;
+            for pressed in [true,false] {h.frame(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);}
+            h.frame(Vec::new());
+        };
+        open(&mut h);
+        for label in ["连接此设备","连接方式","串流配置","刷新在线状态","设备详情…","移除此设备…"] {
+            assert!(h.texts.iter().any(|(text,_)|text==label),"missing {label}");
+        }
+        for label in ["隐藏设备列表","批量管理设备…","配置选择","配置编辑","壁纸"] {
+            assert!(!h.texts.iter().any(|(text,_)|text==label),"library action leaked: {label}");
+        }
+        assert!(matches!(&h.click("连接此设备")[..],[Action::Open(id)] if id==&profile.id));
+        open(&mut h);h.click("移除此设备…");h.click("取消");
+        assert_eq!(h.workspace.store.as_ref().unwrap().read().unwrap().devices.len(),2);
+        open(&mut h);h.click("移除此设备…");h.click("确认移除");
+        let book=h.workspace.store.as_ref().unwrap().read().unwrap();
+        assert!(book.device(&profile.id).is_err());assert!(book.device(&other.id).is_ok());
+    }
+
+    #[test]
+    fn current_default_edits_global_settings_and_saved_profile_edits_only_that_device() {
+        let mut h=Harness::new();
+        let mut profile=Profile::new("Generated host",Destination::Ip{address:"192.0.2.10:48998".into(),legacy_device:None});
+        h.workspace.edit_selected_client_config(&profile);
+        assert!(h.workspace.client_editor.as_ref().unwrap().global);
+        let preset=uu_core::client_settings::NamedClientSettings::new("Office",Default::default());
+        profile.selected_client=Some(preset.id.clone());profile.client_configs.push(preset.clone());
+        h.workspace.edit_selected_client_config(&profile);
+        let editor=h.workspace.client_editor.as_ref().unwrap();
+        assert!(!editor.global);assert_eq!(editor.device,profile.id);assert_eq!(editor.editing_id(),Some(preset.id.as_str()));
     }
 
     #[test]
@@ -438,15 +488,15 @@ mod tests {
         }
         h.frame(vec![]);
         let x=|label:&str|h.text_lefts.iter().rfind(|(text,_)|text==label).unwrap_or_else(||panic!("missing {label}: {:?}",h.texts)).1;
-        let expected=x("收藏当前壁纸");
-        for label in ["下载壁纸","刷新壁纸","本机串流测试","添加设备","添加附近设备"] {
+        let expected=x("添加设备…");
+        for label in ["添加附近设备","刷新全部在线状态","批量管理设备…","隐藏设备列表","壁纸","本机串流测试"] {
             assert!((x(label)-expected).abs()<2.,"{label} at {} is not aligned with {expected}: {:?}",x(label),h.text_lefts);
         }
     }
 
     #[test]
     fn wallpaper_context_menu_exposes_source_pixels_and_separate_favorite_and_download_actions() {
-        for (label, download) in [("收藏当前壁纸",false),("下载壁纸",true)] {
+        for (label, download) in [("收藏当前壁纸",false),("下载当前壁纸…",true)] {
             let mut h=Harness::new();
             for _ in 0..3 {h.frame(vec![]);}
             let point=egui::pos2(900.,850.);
@@ -454,6 +504,7 @@ mod tests {
                 h.frame(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);
             }
             h.frame(vec![]);
+            h.submenu("壁纸");
             assert!(h.texts.iter().any(|(text,_)|text=="原图：2560 × 1440 像素"),"{:?}",h.texts);
             let actions=h.click(label);
             assert!(if download {matches!(&actions[..],[Action::DownloadWallpaper])}else{matches!(&actions[..],[Action::FavoriteWallpaper])});
@@ -1009,6 +1060,7 @@ impl Workspace {
             device_icon_size:230.0,
             device_text_size:17.0,
             management:Default::default(),
+            menus:Default::default(),
             connection_draft:None,
             last_read: Instant::now(),
             pairing_visible: false,
@@ -1327,37 +1379,7 @@ impl Workspace {
             return;
         }
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
-        blank.context_menu(|ui| {
-            compact_context_menu(ui);
-            self.device_management_menu(ui,actions);
-            ui.separator();
-            if let Some((width,height))=info.wallpaper_size {ui.label(uu_i18n::format!("原图：{} × {} 像素",width,height));ui.separator();}
-            if theme::menu_action(ui,info.wallpaper_ready,uu_i18n::text("收藏当前壁纸")).clicked(){actions.push(Action::FavoriteWallpaper);ui.close_menu();}
-            if theme::menu_action(ui,info.wallpaper_download_ready,uu_i18n::text("下载壁纸")).clicked(){actions.push(Action::DownloadWallpaper);ui.close_menu();}
-            if theme::menu_action(ui,info.wallpaper_enabled,uu_i18n::text("刷新壁纸")).clicked(){actions.push(Action::RefreshWallpaper);ui.close_menu();}
-            ui.separator();
-            if theme::menu_action(ui,true,uu_i18n::text("本机串流测试")).on_hover_text(uu_i18n::text("只读采集本机画面，通过本机回环完成编解码和显示；无需开启共享服务。")).clicked(){actions.push(Action::SelfStream);ui.close_menu();}
-            if theme::menu_action(ui,true,uu_i18n::text("添加设备")).clicked(){self.new_device(None,None);ui.close_menu();}
-            if !info.nearby.is_empty() {
-                ui.menu_button(uu_i18n::text("添加附近设备"),|ui| {
-                    for (name,address) in &info.nearby {
-                        if theme::menu_action(ui,true,name).on_hover_text(address).clicked() {
-                            if let Some(store)=&self.store {
-                                let result=store.upsert_device(name,Destination::Ip {address:address.clone(),legacy_device:None},None);
-                                if let Err(error)=result {
-                                    self.feedback.error(
-                                        super::ui_feedback::Scope::Devices,
-                                        uu_i18n::format!("无法添加设备：{error:#}"),
-                                    );
-                                }
-                                self.refresh();
-                            }
-                            ui.close_menu();
-                        }
-                    }
-                });
-            }
-        });
+        blank.context_menu(|ui| self.library_menu(ui, info, actions));
         self.feedback.show(ui, super::ui_feedback::Scope::Devices);
         if self.devices_hidden {return;}
         let profiles:Vec<_>=self.book.devices.iter().filter(|p|p.redirect.is_none()).cloned().collect();
@@ -1434,41 +1456,7 @@ impl Workspace {
                     if !self.management.selected.remove(&profile.id) {self.management.selected.insert(profile.id.clone());}
                 }else{actions.push(Action::Open(profile.id.clone()));}
             }
-            response.context_menu(|ui| {
-                compact_context_menu(ui);
-                self.device_management_menu(ui,actions);
-                ui.separator();
-                if theme::menu_action(ui,true,uu_i18n::text("刷新在线状态")).clicked(){self.presence.refresh();ui.close_menu();}
-                if theme::menu_action(ui,true,uu_i18n::text("详情")).clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
-                let visible_routes:Vec<_>=profile.routes.iter().filter(|route|self.route_visible(route)).collect();
-                if !visible_routes.is_empty() {ui.menu_button(uu_i18n::text("连接方式"),|ui| {
-                    for route in visible_routes {
-                        if crate::theme::selectable_label(ui,profile.selected_route==route.id,self.route_label(route)).clicked() {
-                            let mut updated=profile.clone();updated.selected_route=route.id.clone();
-                            if let Some(store)=&self.store {if let Err(e)=store.save_device(updated){
-                                let scope=self.device_scope();
-                                self.feedback.error(scope,uu_i18n::format!("无法保存连接方式：{e:#}"));
-                            }}
-                            self.refresh();ui.close_menu();
-                        }
-                    }
-                });}
-                ui.menu_button(uu_i18n::text("配置选择"),|ui| {
-                    for (id,name) in std::iter::once((None,uu_i18n::text("默认配置"))).chain(profile.client_configs.iter().map(|v|(Some(v.id.clone()),v.name.as_str()))) {
-                        if crate::theme::selectable_label(ui,profile.selected_client==id,name).clicked() {
-                            if let Some(store)=&self.store {if let Err(e)=store.select_client_config(&profile.id,id){
-                                let scope=self.device_scope();
-                                self.feedback.error(scope,uu_i18n::format!("无法选择配置：{e:#}"));
-                            }}
-                            self.refresh();ui.close_menu();
-                        }
-                    }
-                });
-                if theme::menu_action(ui,true,uu_i18n::text("配置编辑")).clicked(){
-                    let selected=profile.client_configs.iter().find(|v|Some(&v.id)==profile.selected_client.as_ref()).cloned();
-                    self.edit_client_config(profile,selected,false);ui.close_menu();
-                }
-            });
+            response.context_menu(|ui| self.device_menu(ui, profile, actions));
             response
         }).inner
     }
@@ -1601,10 +1589,8 @@ impl Workspace {
                 }
             }
             if ui.add(crate::theme::secondary_button(uu_i18n::text("配置…")).small()).clicked() {
-                let value=profile.client_configs.iter().find(|v|Some(&v.id)==profile.selected_client.as_ref()).cloned();
-                self.edit_client_config(profile,value,false);
+                self.edit_selected_client_config(profile);
             }
-            if matches!(self.route.device, DeviceView::Details(_)) && ui.add(crate::theme::secondary_button(uu_i18n::text("新建")).small()).clicked(){self.edit_client_config(profile,None,false);}
             if ui.add(crate::theme::secondary_button(uu_i18n::text("编辑全局默认")).small()).clicked(){self.edit_global_client_config();}
         });
     }
@@ -1716,41 +1702,11 @@ impl Workspace {
         });
         card(ui,|ui| {
             ui.strong(uu_i18n::text("客户端配置"));
-            muted(ui,uu_i18n::text("每台设备可保存多个配置；选择全局默认会跟随应用设置。修改配置只影响下次连接。"));
-            self.client_config_picker(ui,&profile);
-            for value in &profile.client_configs {
-                ui.push_id(&value.id,|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.strong(&value.name);
-                        muted(ui,format!("{} FPS · {}",value.settings.fps,value.settings.codec.label()));
-                        if ui.add(crate::theme::secondary_button(uu_i18n::text("编辑")).small()).clicked(){self.edit_client_config(&profile,Some(value.clone()),false);}
-                        if ui.add(crate::theme::secondary_button(uu_i18n::text("复制")).small()).clicked(){self.edit_client_config(&profile,Some(value.clone()),true);}
-                        if ui.add(crate::theme::secondary_button(uu_i18n::text("删除")).small()).clicked(){
-                            if let Some(store)=&self.store {
-                                match store.remove_client_config(&profile.id,&value.id){
-                                    Ok(())=>self.refresh(),
-                                    Err(e)=>{
-                                        let scope=self.device_scope();
-                                        self.feedback.error(scope,uu_i18n::format!("无法删除配置：{e:#}"));
-                                    }
-                                }
-                            }
-                        }
-                    });
-                });
-            }
+            self.client_config_list(ui, &profile);
         });
         ui.add_space(12.);
         if ui.add(crate::theme::secondary_button(uu_i18n::text("移除本地设备记录"))).clicked() {
-            if let Some(store) = &self.store {
-                match store.forget(&profile.id) {
-                    Ok(()) => {
-                        self.route.device = DeviceView::List;
-                        self.refresh();
-                    }
-                    Err(e) => self.feedback.error(self.device_scope(), uu_i18n::format!("无法移除：{e}")),
-                }
-            }
+            self.confirm_device_removal(&profile);
         }
         muted(ui,uu_i18n::text("移除本地记录不会撤销被控端已授予的权限。授权在被控端的“共享本机”中管理。"));
         });
@@ -2070,6 +2026,7 @@ impl Workspace {
             self.servers.dialogs(ctx, self.service_config.as_ref());
         }
         self.host.dialogs(ctx);
+        self.device_menu_dialogs(ctx);
         if let Some(mut editor)=self.client_editor.take() {
             let mut open=true; let mut save=false; let mut cancel=false; let mut remove=false;
             egui::Window::new(if editor.global {uu_i18n::text("全局默认客户端配置")} else {uu_i18n::text("设备客户端配置")}).id("device-client-editor".into()).open(&mut open)

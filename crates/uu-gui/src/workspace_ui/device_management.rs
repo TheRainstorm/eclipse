@@ -15,17 +15,17 @@ struct Drag(String);
 
 impl Workspace {
     pub(super) fn device_management_menu(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let label = if self.devices_hidden { "显示设备" } else { "隐藏设备" };
+        if theme::menu_action(ui, true, uu_i18n::text("批量管理设备…")).clicked() {
+            self.devices_hidden = false;
+            self.management.active = true;
+            actions.push(Action::DevicesHidden(false));
+            ui.close_menu();
+        }
+        let label = if self.devices_hidden { "显示设备列表" } else { "隐藏设备列表" };
         if theme::menu_action(ui, true, uu_i18n::text(label)).clicked() {
             self.devices_hidden = !self.devices_hidden;
             self.management = State::default();
             actions.push(Action::DevicesHidden(self.devices_hidden));
-            ui.close_menu();
-        }
-        if theme::menu_action(ui, true, uu_i18n::text("设备管理")).clicked() {
-            self.devices_hidden = false;
-            self.management.active = true;
-            actions.push(Action::DevicesHidden(false));
             ui.close_menu();
         }
     }
