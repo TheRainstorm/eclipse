@@ -389,6 +389,10 @@ impl HostUi {
             SessionView{id,name,status,input,max_input,fps,bitrate_kbps,display,displays}
         }).collect()
     }
+    pub(super) fn session_summary(&self) -> crate::host_sessions::Summary {
+        crate::host_sessions::Summary {connections:self.sessions().len(),
+            paused:self.access.as_ref().is_some_and(|access|access.sessions.input_state().keyboard_mouse_paused)}
+    }
     pub(super) fn session_center(&mut self, ui: &mut egui::Ui) {
         let Some(access) = self.access.clone() else {
             ui.weak(uu_i18n::text("开启本机共享后，可在这里管理连接。")); return;

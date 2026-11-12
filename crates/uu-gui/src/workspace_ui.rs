@@ -1686,12 +1686,11 @@ impl Workspace {
     }
     #[cfg(windows)]
     fn service_workspace(&mut self, ui:&mut egui::Ui, _info:&Info, _actions:&mut Vec<Action>, _connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
-        if ui.add(crate::theme::secondary_button(uu_i18n::text("悬浮会话中心"))).clicked() {self.host_sessions_requested=true;}
         self.background_service.show(ui,&mut self.host,self.store.is_some());
+        if self.background_service.take_session_center() {self.host_sessions_requested=true;}
     }
     #[cfg(not(windows))]
     fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
-        if ui.add(crate::theme::secondary_button(uu_i18n::text("悬浮会话中心"))).clicked() {self.host_sessions_requested=true;}
         ui.horizontal_wrapped(|ui| {
             for (tab,label) in [(5,uu_i18n::text("服务管理")),(0,uu_i18n::text("连接服务")),(1,uu_i18n::text("输入")),(2,uu_i18n::text("音频 / 视频")),(3,uu_i18n::text("编码器")),(4,uu_i18n::text("配对设置"))] {
                 crate::theme::tab_value(ui,&mut self.service_tab,tab,label);
@@ -1825,7 +1824,10 @@ impl Workspace {
         card(ui,|ui| {
             ui.horizontal(|ui| {
                 ui.strong(uu_i18n::text("会话"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{self.connection_history.button(ui);});
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                    self.connection_history.button(ui);
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("悬浮会话中心"))).clicked() {self.host_sessions_requested=true;}
+                });
             });
             if sessions.is_empty() {
                 muted(ui,uu_i18n::text("会话为空"));

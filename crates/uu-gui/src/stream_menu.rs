@@ -1060,19 +1060,29 @@ mod tests {
             "sky_blue"=>super::super::theme::ColorTheme::SkyBlue,
             _=>panic!("explicit supported preview theme required"),
         };
-        assert!(matches!(surface.as_str(),"menus"|"device-config"|"device-details"|"virtual-displays"|"connections"|"add-server"|"add-device"|"host-sessions"));
-        struct Preview {app:super::super::App,virtual_displays:crate::virtual_display_ui::State,output:PathBuf,surface:String,frames:u32,saved:Arc<AtomicBool>}
+        assert!(matches!(surface.as_str(),"menus"|"device-config"|"device-details"|"virtual-displays"|"connections"|"add-server"|"add-device"|"host-sessions"|"host-ball"|"host-floating"));
+        struct Preview {app:super::super::App,virtual_displays:crate::virtual_display_ui::State,output:PathBuf,surface:String,frames:u32,saved:Arc<AtomicBool>,started:std::time::Instant}
         impl eframe::App for Preview {
+            fn clear_color(&self,_:&egui::Visuals)->[f32;4] {[0.;4]}
             fn update(&mut self,ctx:&egui::Context,_:&mut eframe::Frame){
                 if let Some(image)=ctx.input(|i|i.events.iter().find_map(|e|if let egui::Event::Screenshot{image,..}=e{Some(image.clone())}else{None})) {
                     let data:Vec<_>=image.pixels.iter().flat_map(|p|p.to_array()).collect();
                     image::save_buffer(&self.output,&data,image.size[0] as u32,image.size[1] as u32,image::ColorType::Rgba8).unwrap();
                     self.saved.store(true,Ordering::Release);ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                if self.surface!="host-sessions" {self.app.preview_title_bar(ctx);}
+                if !matches!(self.surface.as_str(),"host-sessions"|"host-ball"|"host-floating") {self.app.preview_title_bar(ctx);}
                 if matches!(self.surface.as_str(),"device-config"|"device-details"|"connections"|"add-server"|"add-device") {
                     self.app.workspace_home(ctx);
                     self.app.workspace_dialogs(ctx);
+                } else if self.surface=="host-floating" {
+                    if self.frames==0 {self.app.host_sessions.open();}
+                    self.app.host_sessions.show(ctx,crate::host_sessions::Summary{connections:2,paused:false},|ui| {
+                        let _=crate::host_sessions::show(ui,&crate::host_sessions::fixture());
+                    });
+                } else if self.surface=="host-ball" {
+                    egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx,|ui| {
+                        let _=crate::host_sessions::ball(ui,crate::host_sessions::Summary{connections:2,paused:false});
+                    });
                 } else if self.surface=="host-sessions" {
                     egui::CentralPanel::default().frame(egui::Frame::none().fill(crate::theme::palette(&ctx.style().visuals).base).inner_margin(12.)).show(ctx,|ui| {
                         egui::ScrollArea::vertical().show(ui,|ui|{let _=crate::host_sessions::show(ui,&crate::host_sessions::fixture());});
@@ -1096,14 +1106,16 @@ mod tests {
                         });
                     });
                 }
-                self.frames+=1;if self.frames==6{ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);}
+                self.frames+=1;
+                let capture=if self.surface=="host-floating" {self.started.elapsed().as_secs()>=5}else{self.frames==6};
+                if capture {ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);}
                 ctx.request_repaint();
             }
         }
         let saved=Arc::new(AtomicBool::new(false));let check=saved.clone();
         let width=std::env::var("ECLIPSE_UI_PREVIEW_WIDTH").ok().map(|value|value.parse::<u32>().unwrap()).unwrap_or(1100);
-        assert!(if surface=="host-sessions" {(360..=600).contains(&width)}else{(800..=1240).contains(&width)});
-        let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([width as f32,if surface=="host-sessions"{600.}else{800.}]),vsync:false,
+        assert!(if surface=="host-ball" {width==64}else if matches!(surface.as_str(),"host-sessions"|"host-floating") {(360..=600).contains(&width)}else{(800..=1240).contains(&width)});
+        let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_transparent(surface=="host-ball").with_inner_size([width as f32,if surface=="host-ball"{64.}else if surface=="host-sessions"{600.}else{800.}]),vsync:false,
             event_loop_builder:Some(Box::new(|builder|{use winit::platform::x11::EventLoopBuilderExtX11;builder.with_any_thread(true);})),..Default::default()};
         eframe::run_native("Generated application UI",options,Box::new(move|cc|{
             let mut app=super::super::App::new(cc,None,None,false,None);
@@ -1129,7 +1141,7 @@ mod tests {
                     frames:uu_core::media::frame_channel().1,input:tokio::sync::mpsc::unbounded_channel().0,native_input:None,
                     settings:tokio::sync::mpsc::unbounded_channel().0,close:tokio::sync::mpsc::unbounded_channel().0,stats});
             }
-            Ok(Box::new(Preview{app,virtual_displays:crate::virtual_display_ui::State::generated_preview(),output,surface,frames:0,saved}))
+            Ok(Box::new(Preview{app,virtual_displays:crate::virtual_display_ui::State::generated_preview(),output,surface,frames:0,saved,started:std::time::Instant::now()}))
         })).unwrap();
         assert!(check.load(Ordering::Acquire));
     }

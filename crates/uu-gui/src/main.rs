@@ -263,8 +263,7 @@ struct App {
     stream_menu: stream_menu::StreamMenu,
     window_sizing: std::rc::Rc<std::cell::RefCell<window::WindowSizing>>,
     tray: Option<tray::Tray>,
-    host_sessions_open: bool,
-    host_sessions_focus: bool,
+    host_sessions: host_sessions::Floating,
     virtual_display:virtual_display_ui::State,
     tray_retry:Option<std::time::Instant>,
     tray_background:virtual_display_ui::BackgroundHost,
@@ -555,8 +554,7 @@ impl App {
             stream_menu: stream_menu::StreamMenu::default(),
             window_sizing: Default::default(),
             tray: None,
-            host_sessions_open: false,
-            host_sessions_focus: false,
+            host_sessions: Default::default(),
             virtual_display:Default::default(),
             tray_retry:None,
             tray_background:Default::default(),
@@ -1274,7 +1272,7 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 },
-                tray::Action::Sessions=>{self.host_sessions_open=true;self.host_sessions_focus=true;},
+                tray::Action::Sessions=>self.host_sessions.open(),
                 tray::Action::VirtualDisplays=>{
                     self.launcher_hidden=false;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));

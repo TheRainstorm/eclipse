@@ -60,6 +60,16 @@ pub(super) struct Entry {
 }
 impl Entry {
     pub fn take_open(&mut self) -> Option<crate::sessions::StreamTarget> { self.manager.as_mut().and_then(|manager| manager.pending_open.take()) }
+    pub fn take_session_center(&mut self) -> bool {
+        self.manager.as_mut().is_some_and(|manager|std::mem::take(&mut manager.session_center_requested))
+    }
+    pub fn session_summary(&self, host: &super::sharing_ui::HostUi) -> crate::host_sessions::Summary {
+        if host.running() { return host.session_summary(); }
+        self.manager.as_ref().filter(|m|m.state==SERVICE_RUNNING&&m.owns_profile())
+            .and_then(|m|m.session_center.as_ref()).map(|center|crate::host_sessions::Summary {
+                connections:center.sessions.len(),paused:center.input.keyboard_mouse_paused,
+            }).unwrap_or_default()
+    }
     pub fn open_servers(&mut self) {
         self.select_section(Section::Connections);
         self.requested_server_dialog = true;
@@ -486,6 +496,7 @@ struct Manager {
     snapshot: Option<host_admin::Snapshot>,
     session_controls: Vec<host_admin::SessionControl>,
     session_center: Option<host_admin::SessionCenter>,
+    session_center_requested: bool,
     session_controls_error: String,
     connection_history: super::connection_history_ui::State,
     trust: Option<TrustSnapshot>,
@@ -539,6 +550,7 @@ impl Manager {
             snapshot: None,
             session_controls: Vec::new(),
             session_center: None,
+            session_center_requested: false,
             session_controls_error: String::new(),
             connection_history: Default::default(),
             trust: None,
@@ -1136,7 +1148,10 @@ impl Manager {
         }
     }
     fn connections(&mut self, ui: &mut egui::Ui) {
-        if self.connection_history.button(ui){self.submit(Job::HistoryRefresh);}
+        ui.horizontal_wrapped(|ui| {
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("悬浮会话中心"))).clicked() {self.session_center_requested=true;}
+            if self.connection_history.button(ui){self.submit(Job::HistoryRefresh);}
+        });
         ui.add_space(8.);
         self.current_connections(ui);
     }
@@ -1172,6 +1187,7 @@ impl Manager {
 
 }
 struct Standalone {
+    host_sessions: crate::host_sessions::Floating,
     sessions: super::sessions::Sessions,
     entry: Entry,
     host: super::sharing_ui::HostUi,
@@ -1193,6 +1209,9 @@ impl eframe::App for Standalone {
             });
         });
         self.entry.dialogs(ctx);
+        if self.entry.take_session_center() {self.host_sessions.open();}
+        let summary=self.entry.session_summary(&self.host);
+        self.host_sessions.show(ctx,summary,|ui|self.entry.session_center(ui,&mut self.host));
         if let Some(target) = self.entry.take_open() {
                 if let Err(error) = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target, self.platform.origin())) {
                     self.entry.feedback.error(super::ui_feedback::Scope::Services(5), error.to_string());
@@ -1375,6 +1394,7 @@ fn run_manager(virtual_displays: bool) -> eframe::Result {
                 manager.section = Section::VirtualDisplays;
             }
             Ok(Box::new(Standalone {
+                host_sessions: Default::default(),
                 sessions: Default::default(),
                 platform:super::platform::Platform::new(cc,None,false),
                 entry: Entry {
