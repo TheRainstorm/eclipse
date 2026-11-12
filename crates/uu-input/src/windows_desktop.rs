@@ -87,7 +87,9 @@ pub fn sync_input_desktop() -> io::Result<bool> {
     sync_desktop(DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP)
 }
 
-pub(crate) fn input_desktop_changed() -> io::Result<bool> {
+/// Check a worker's current desktop without rebinding it, so a capture can
+/// discard pixels obtained while Windows switched the input desktop.
+pub fn input_desktop_changed() -> io::Result<bool> {
     let input = unsafe { OpenInputDesktop(0, 0, DESKTOP_READOBJECTS) };
     if input.is_null() { return Err(io::Error::last_os_error()); }
     let result = name(unsafe { GetThreadDesktop(GetCurrentThreadId()) }).and_then(|current| Ok(current != name(input)?));

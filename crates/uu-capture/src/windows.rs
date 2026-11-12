@@ -21,6 +21,8 @@ use windows::Win32::{
         Dxgi::{Common::*, *},
     },
 };
+#[path = "windows_gdi.rs"]
+mod gdi;
 
 fn backend(error: impl std::fmt::Display) -> CaptureError {
     CaptureError::Backend(format!("DXGI: {error}"))
@@ -65,14 +67,18 @@ pub struct Monitor {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OutputIdentity { adapter:[u32;2], monitor_interface:String }
-fn output_identity(output:&Output)->Result<OutputIdentity,CaptureError> {
+fn monitor_interface(name:&str)->Result<String,CaptureError> {
     use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW,EnumDisplayDevicesW};
-    let name:Vec<u16>=output.monitor.name.encode_utf16().chain(Some(0)).collect();
+    let name:Vec<u16>=name.encode_utf16().chain(Some(0)).collect();
     let mut monitor=DISPLAY_DEVICEW::default();monitor.cb=std::mem::size_of::<DISPLAY_DEVICEW>() as u32;
     if !unsafe{EnumDisplayDevicesW(windows::core::PCWSTR(name.as_ptr()),0,&mut monitor,1)}.as_bool(){return Err(backend("cannot resolve the selected monitor interface"));}
     let end=monitor.DeviceID.iter().position(|c|*c==0).unwrap_or(monitor.DeviceID.len());
     let interface=String::from_utf16_lossy(&monitor.DeviceID[..end]).to_ascii_lowercase();
     if interface.is_empty(){return Err(backend("selected monitor interface is unavailable"));}
+    Ok(interface)
+}
+fn output_identity(output:&Output)->Result<OutputIdentity,CaptureError> {
+    let interface=monitor_interface(&output.monitor.name)?;
     let adapter=unsafe{output.adapter.GetDesc1()}.map_err(backend)?.AdapterLuid;
     Ok(OutputIdentity{adapter:[adapter.LowPart,adapter.HighPart as u32],monitor_interface:interface})
 }
@@ -236,12 +242,14 @@ pub struct DxgiCapture {
     mapping:crate::DesktopMapping,
     rotation: Rotation,
     last: Option<RawFrame>,
+    cpu_fallback: bool,
     source_frames: crate::frame_info::SourceFrames,
     present_info: Option<crate::frame_info::SourceTime>,
     accumulated_frames: u32,
     qpc_frequency: u64,
     started: Instant,
     staging: Option<ID3D11Texture2D>,
+    gdi_upload: Option<ID3D11Texture2D>,
     capture_pool: Option<uu_media::encoder::CapturePool>,
     gpu: bool,
     overlap:bool,
@@ -326,12 +334,14 @@ impl DxgiCapture {
             mapping,
             rotation: selected.rotation,
             last: None,
+            cpu_fallback: false,
             source_frames: Default::default(),
             present_info: None,
             accumulated_frames: 0,
             qpc_frequency,
             started: Instant::now(),
             staging: None,
+            gdi_upload: None,
             capture_pool: None,
             gpu: false,
             overlap:false,
@@ -373,6 +383,7 @@ impl DxgiCapture {
         self.cursor.update([self.source.width,self.source.height],position,shape);
     }
     fn invalidate(&mut self) {
+        self.cpu_fallback=false;
         self.mapping.update(None);
         if let Some(observer) = &mut self.diagnostics {
             observer.retired(self.source_frames.snapshot(None), qpc_now(), "desktop_invalidated", self.duplication.is_some());
@@ -381,6 +392,7 @@ impl DxgiCapture {
         if self.duplication.is_some() { self.source_frames.retire(); }
         self.last = None;
         self.staging = None;
+        self.gdi_upload = None;
         self.capture_pool = None;
         self.duplication = None;
         self.retry_at = Instant::now() + Duration::from_millis(100);
@@ -442,7 +454,7 @@ impl DxgiCapture {
         // poll for updates without adding another blocking wait to that interval.
         // Initial acquisition keeps a short wait to avoid spinning on an idle desktop.
         // An owner deadline probe may explicitly request a nonblocking check.
-        let wait_ms = bounded_wait.map(|v|v.as_millis().min(16) as u32).unwrap_or_else(||if self.last.is_some() {0}else{5});
+        let wait_ms = bounded_wait.map(|v|v.as_millis().min(16) as u32).unwrap_or_else(||if self.last.is_some()||self.cpu_fallback {0}else{5});
         let before = self.diagnostics.as_ref().and_then(|_| qpc_now());
         let acquired = unsafe { duplication.AcquireNextFrame(wait_ms, &mut info, &mut resource) };
         let after = self.diagnostics.as_ref().and_then(|_| qpc_now());
@@ -501,16 +513,8 @@ impl DxgiCapture {
             if (desc.Width, desc.Height) != (self.source.width, self.source.height) {
                 return Err(backend(format!("desktop layout changed: expected {}x{}, acquired {}x{}; reopen capture",self.source.width,self.source.height,desc.Width,desc.Height)));
             }
-            if self.capture_pool.is_none() {
-                let device = uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).map_err(backend)?;
-                self.capture_pool = Some(if let Some(encode)=&self.encode_device {uu_media::encoder::CapturePool::separate(device,encode.clone(),desc.Width,desc.Height)}else{uu_media::encoder::CapturePool::with_limit(device,desc.Width,desc.Height,if self.overlap{3}else{2})}.map_err(backend)?);
-            }
             let pts = self.timestamp();
-            let frame = self.capture_pool.as_mut().unwrap().capture(&texture, pts).map_err(backend)?;
-            if frame.is_none() {
-                if let Some(observer) = &mut self.diagnostics { observer.pool_busy(); }
-            }
-            return Ok(frame);
+            return self.gpu_snapshot(&texture,desc.Width,desc.Height,pts);
         }
         if self.encode_device.is_some(){return Err(backend("separate encode device requested but GPU capture is inactive"));}
         let mut needs_staging = true;
@@ -613,7 +617,7 @@ impl Capture for DxgiCapture {
     }
 
     fn enable_overlap(&mut self)->Result<(),CaptureError> {
-        if !self.gpu || self.rotation!=Rotation::None {return Err(backend("overlap requires same-adapter GPU capture without rotation"));}
+        if !self.gpu || self.cpu_fallback || self.rotation!=Rotation::None {return Err(backend("overlap requires same-adapter GPU capture without rotation"));}
         if !self.overlap {
             if let Some(observer) = &mut self.diagnostics {
                 observer.retired(self.source_frames.snapshot(None), qpc_now(), "overlap_cache_reset", false);
@@ -633,6 +637,7 @@ impl Capture for DxgiCapture {
     }
 
     fn frame_info(&self)->Option<crate::frame_info::FrameInfo> {
+        if self.cpu_fallback {return None;}
         self.source_frames.snapshot(qpc_now())
     }
     fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{self.hdr}
@@ -668,12 +673,19 @@ impl Capture for DxgiCapture {
         let deadline = Instant::now() + Duration::from_millis(250);
         loop {
             if let Some(frame) = self.acquire(None)? {
+                if self.cpu_fallback {
+                    tracing::info!(source=%self.source.name,"DXGI image delivery resumed after CPU desktop capture");
+                    self.cpu_fallback=false;
+                }
                 self.source_frames.new_frame(self.present_info, self.accumulated_frames);
                 self.last = Some(frame.clone());
                 if let Some(observer) = &mut self.diagnostics {
                     observer.returned(self.source_frames.snapshot(None), frame.pts.0, false);
                 }
                 return Ok(frame);
+            }
+            if self.cpu_fallback {
+                return self.cpu_frame();
             }
             if let Some(last) = &self.last {
                 self.source_frames.repeated();
@@ -685,9 +697,52 @@ impl Capture for DxgiCapture {
                 return Ok(frame);
             }
             if Instant::now() >= deadline {
-                return Err(CaptureError::Suspended("等待当前桌面首帧".into()));
+                return self.cpu_frame();
             }
         }
+    }
+}
+impl DxgiCapture {
+    fn gpu_snapshot(&mut self,texture:&ID3D11Texture2D,width:u32,height:u32,pts:Timestamp)->Result<Option<RawFrame>,CaptureError> {
+        if self.capture_pool.is_none() {
+            let device=uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).map_err(backend)?;
+            self.capture_pool=Some(if let Some(encode)=&self.encode_device {uu_media::encoder::CapturePool::separate(device,encode.clone(),width,height)}else{uu_media::encoder::CapturePool::with_limit(device,width,height,if self.overlap{3}else{2})}.map_err(backend)?);
+        }
+        let frame=self.capture_pool.as_mut().unwrap().capture(texture,pts).map_err(backend)?;
+        if frame.is_none(){if let Some(observer)=&mut self.diagnostics {observer.pool_busy();}}
+        Ok(frame)
+    }
+    fn cpu_frame(&mut self)->Result<RawFrame,CaptureError> {
+        // A valid duplication can indefinitely time out on an idle virtual
+        // desktop. Read current SDR pixels rather than requiring user input to
+        // produce the first frame. Keep probing duplication on every read.
+        if self.hdr.is_some()||self.overlap||self.encode_device.is_some() {
+            return Err(CaptureError::Suspended("等待当前桌面首帧；当前 GPU/HDR 模式不能使用 CPU 兼容采集".into()));
+        }
+        let frame=match gdi::snapshot(&self.source,&self.identity.monitor_interface,self.timestamp(),&self.cursor) {
+            Ok(frame)=>frame,
+            Err(error)=>{self.invalidate();return Err(error);},
+        };
+        if !self.cpu_fallback {
+            tracing::warn!(source=%self.source.name,"DXGI has no initial image; reading fresh CPU desktop images until it recovers");
+            self.source_frames.retire();
+            self.cpu_fallback=true;
+        }
+        // GDI reads have no compositor presentation timestamp. Do not invent
+        // source-frame identity or end-to-end latency evidence for these reads.
+        self.present_info=None;self.accumulated_frames=0;self.last=None;
+        if !self.gpu {return Ok(frame);}
+        // Keep the encoder's negotiated GPU input. The upload texture is
+        // mutable; the existing bounded snapshot pool owns every published
+        // image, just as it does for duplication textures.
+        if self.gdi_upload.is_none() {
+            let desc=D3D11_TEXTURE2D_DESC{Width:frame.width,Height:frame.height,MipLevels:1,ArraySize:1,Format:DXGI_FORMAT_B8G8R8A8_UNORM,SampleDesc:DXGI_SAMPLE_DESC{Count:1,Quality:0},Usage:D3D11_USAGE_DEFAULT,..Default::default()};
+            unsafe{self.device.CreateTexture2D(&desc,None,Some(&mut self.gdi_upload)).map_err(backend)?;}
+        }
+        let texture=self.gdi_upload.as_ref().ok_or_else(||backend("CPU capture upload texture unavailable"))?.clone();
+        unsafe{self.context.UpdateSubresource(&texture,0,None,frame.data.as_ptr().cast(),frame.stride,0);}
+        self.gpu_snapshot(&texture,frame.width,frame.height,frame.pts)?
+            .ok_or_else(||CaptureError::Suspended("等待 CPU 桌面图像的 GPU 快照槽位".into()))
     }
 }
 impl Drop for DxgiCapture {
