@@ -1,13 +1,19 @@
 //! Shared enrollment and online-device controls for foreground and installed hosts.
 mod directory;
 mod enrollment;
+mod servers;
+mod labels;
+pub(crate) mod removal;
+pub(crate) mod device_picker;
 #[cfg(any(windows, test))]
 mod pending;
-pub(super) use directory::Directory;
-pub(super) use enrollment::Join;
+pub(crate) use directory::Directory;
+pub(crate) use enrollment::Join;
+pub(crate) use servers::{Server, ServerAction, Servers};
+pub(crate) use labels::{address_key, display_name, load_names, Labels, Names};
 use std::sync::mpsc;
 
-fn received<T>(job: &Option<mpsc::Receiver<T>>) -> Option<Result<T, String>> {
+pub(crate) fn received<T>(job: &Option<mpsc::Receiver<T>>) -> Option<Result<T, String>> {
     match job.as_ref()?.try_recv() {
         Ok(value) => Some(Ok(value)),
         Err(mpsc::TryRecvError::Empty) => None,

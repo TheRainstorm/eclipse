@@ -1,319 +1,298 @@
 use super::*;
-use uu_core::service_admin::connections::{CertificateChange, Entry, Request as Command, Snapshot};
+use uu_core::service_admin::connections::{CertificateChange, Request as Command, Snapshot};
 
 #[derive(Default)]
-pub(super) struct State {
-    pub snapshot: Option<Snapshot>,
-    editor: Option<Editor>,
-}
-struct Editor {
-    revision: String,
-    value: Entry,
-    token: zeroize::Zeroizing<String>,
-    certificate_mode: u8,
-    pem: String,
+pub(crate) struct State {
+    pub(crate) snapshot: Option<Snapshot>,
+    pub(crate) servers: crate::connection_service_ui::Servers,
+    removal: Option<Removal>,
+    removing: Option<
+        std::sync::mpsc::Receiver<
+            Result<Option<Snapshot>, crate::connection_service_ui::removal::Failure>,
+        >,
+    >,
     error: String,
 }
-impl Editor {
-    fn new(revision: String, value: Entry) -> Self {
-        Self {
-            revision,
-            value,
-            token: Default::default(),
-            certificate_mode: 0,
-            pem: String::new(),
-            error: String::new(),
-        }
-    }
-    fn command(&self) -> anyhow::Result<Command> {
-        anyhow::ensure!(
-            self.value.token_configured || !self.token.trim().is_empty(),
-            "{}",
-            uu_i18n::text("请填写服务器访问令牌")
-        );
-        Ok(Command::Save {
-            revision: self.revision.clone(),
-            entry: self.value.clone(),
-            token: (!self.token.trim().is_empty()).then(|| self.token.clone()),
-            certificate: match self.certificate_mode {
-                1 => CertificateChange::Remove,
-                2 => CertificateChange::Set {
-                    pem: self.pem.clone(),
-                },
-                _ => CertificateChange::Keep,
-            },
-        })
-    }
+struct Removal {
+    id: String,
+    address: String,
+    revision: String,
+    owner_removed: bool,
 }
 impl State {
-    pub fn apply(
+    pub(crate) fn poll(&mut self, ctx: &egui::Context, config: Option<&uu_core::Config>) {
+        self.servers.poll(ctx, config);
+        if let Some(result) = crate::connection_service_ui::received(&self.removing) {
+            self.removing = None;
+            match result {
+                Ok(Ok(snapshot)) => {
+                    if let Some(snapshot) = snapshot {
+                        self.snapshot = Some(snapshot);
+                    }
+                    self.removal = None;
+                    self.error.clear();
+                    self.servers.refresh_directory();
+                }
+                Ok(Err(failure)) => {
+                    if let Some(snapshot) = failure.owner_snapshot {
+                        self.snapshot = Some(snapshot);
+                        if let Some(removal) = &mut self.removal {
+                            removal.owner_removed = true;
+                        }
+                    }
+                    let partial = self
+                        .removal
+                        .as_ref()
+                        .is_some_and(|removal| removal.owner_removed);
+                    self.error = if partial {
+                        format!(
+                            "{}：{}",
+                            uu_i18n::text(
+                                "主机已移除服务器，客户端配置仍保留；请处理错误后重试清理"
+                            ),
+                            failure.message
+                        )
+                    } else {
+                        failure.message
+                    };
+                }
+                Err(error) => self.error = error,
+            }
+        }
+        if self.removing.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+    fn start_removal(&mut self, ctx: &egui::Context, config: &uu_core::Config) {
+        if self.removing.is_some() {
+            return;
+        }
+        let Some(removal) = &self.removal else {
+            return;
+        };
+        let (id, address, revision, owner_removed) = (
+            removal.id.clone(),
+            removal.address.clone(),
+            removal.revision.clone(),
+            removal.owner_removed,
+        );
+        let config = config.clone();
+        let context = ctx.clone();
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let result = crate::connection_service_ui::removal::remove(&config, &address, || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
+                if owner_removed {
+                    match runtime.block_on(uu_core::service_admin::windows::request_owner(
+                        Request::Connections {
+                            request: Command::Inspect,
+                        },
+                    ))? {
+                        Response::Connections { snapshot } => {
+                            crate::connection_service_ui::removal::confirm_owner_absent(
+                                &snapshot, &address,
+                            )?
+                        }
+                        Response::Error { message } => anyhow::bail!("{message}"),
+                        _ => anyhow::bail!(
+                            "{}",
+                            uu_i18n::text("主机没有确认移除结果，请刷新服务状态。")
+                        ),
+                    }
+                    return Ok(None);
+                }
+                match runtime.block_on(uu_core::service_admin::windows::request_owner(
+                    Request::Connections {
+                        request: Command::Remove { revision, id },
+                    },
+                ))? {
+                    Response::Connections { snapshot } => Ok(Some(snapshot)),
+                    Response::Error { message } => anyhow::bail!("{message}"),
+                    _ => anyhow::bail!(
+                        "{}",
+                        uu_i18n::text("主机没有确认移除结果，请刷新服务状态。")
+                    ),
+                }
+            });
+            let _ = send.send(result);
+            context.request_repaint();
+        });
+        self.removing = Some(receive);
+        self.error.clear();
+    }
+    pub(crate) fn apply(
         &mut self,
         completed: bool,
         result: Result<Response, String>,
     ) -> Option<Result<String, String>> {
         match result {
             Ok(Response::Connections { snapshot }) => {
-                self.snapshot = Some(snapshot);
-                if completed {
-                    self.editor = None;
-                    Some(Ok(uu_i18n::text(
-                        "服务器配置已保存；重启服务后使用新入口。",
-                    )
-                    .into()))
+                if self.removing.is_none() {
+                    if let Some(removal) = &mut self.removal {
+                        if !snapshot.entries.iter().any(|entry| entry.id == removal.id) {
+                            removal.owner_removed = true;
+                        }
+                    }
+                }
+                let message = if snapshot.restart_required {
+                    "服务器配置已保存；重启服务后使用新入口。"
                 } else {
-                    None
-                }
+                    "服务器配置已保存。"
+                };
+                self.snapshot = Some(snapshot);
+                completed.then(|| Ok(uu_i18n::text(message).into()))
             }
-            Ok(Response::Error { message }) | Err(message) if completed => {
-                if let Some(editor) = &mut self.editor {
-                    editor.error = message.clone();
-                }
-                Some(Err(message))
-            }
+            Ok(Response::Error { message }) | Err(message) if completed => Some(Err(message)),
             _ => None,
         }
     }
-    pub fn show(&mut self, ui: &mut egui::Ui, enabled: bool) -> Option<Command> {
-        let mut command = None;
-        ui.add_space(12.);
-        crate::theme::card(ui.visuals()).show(ui, |ui| {
-            let snapshot = self.snapshot.clone();
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        enabled: bool,
+        config: Option<&uu_core::Config>,
+    ) -> Option<Command> {
+        self.poll(ui.ctx(), config);
+        let servers: Vec<_> = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .entries
+                    .iter()
+                    .map(|entry| crate::connection_service_ui::Server {
+                        id: entry.id.clone(),
+                        name: entry.name.clone(),
+                        address: entry.address.clone(),
+                        host_enabled: entry.host_enabled,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let action = self.servers.show(
+            ui,
+            config,
+            &servers,
+            enabled && self.snapshot.is_some() && self.removing.is_none(),
+        );
+        if self.removing.is_some() {
             ui.horizontal(|ui| {
-                ui.strong(uu_i18n::text("自建服务器"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(
-                            enabled && snapshot.is_some(),
-                            crate::theme::primary_button("＋"),
-                        )
-                        .on_hover_text(uu_i18n::text("添加服务器"))
-                        .clicked()
-                    {
-                        self.editor = Some(Editor::new(
-                            snapshot.as_ref().unwrap().revision.clone(),
-                            Entry {
-                                published_name: "eclipse-desktop".into(),
-                                ..Default::default()
-                            },
-                        ));
-                    }
-                });
+                ui.spinner();
+                ui.label(uu_i18n::text("正在移除服务器…"));
             });
-            ui.add_enabled_ui(enabled && snapshot.is_some(), |ui| {
-                if let Some(snapshot) = snapshot {
-                    if snapshot.entries.is_empty() {
-                        ui.weak(uu_i18n::text("还没有服务器，可点击右上角加号添加。"));
-                    }
-                    for value in snapshot.entries {
-                        ui.separator();
-                        ui.horizontal_wrapped(|ui| {
-                            ui.strong(&value.name);
-                            ui.weak(if value.host_enabled {
-                                uu_i18n::text("已启用")
-                            } else {
-                                uu_i18n::text("未启用")
-                            });
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .add(crate::theme::secondary_button(uu_i18n::text("删除")))
-                                        .clicked()
-                                    {
-                                        command = Some(Command::Remove {
-                                            revision: snapshot.revision.clone(),
-                                            id: value.id.clone(),
-                                        });
-                                    }
-                                    if ui
-                                        .add(crate::theme::secondary_button(uu_i18n::text("编辑")))
-                                        .clicked()
-                                    {
-                                        self.editor = Some(Editor::new(
-                                            snapshot.revision.clone(),
-                                            value.clone(),
-                                        ));
-                                    }
-                                },
-                            );
-                        });
-                        ui.weak(&value.address);
-                    }
-                    if snapshot.restart_required {
-                        ui.weak(uu_i18n::text("服务器配置已保存；重启服务后使用新入口。"));
-                    }
-                } else {
-                    ui.weak(uu_i18n::text("正在读取服务器列表…"));
+        }
+        if !self.error.is_empty() {
+            ui.colored_label(crate::theme::palette(ui.visuals()).danger, &self.error);
+            if self
+                .removal
+                .as_ref()
+                .is_some_and(|removal| removal.owner_removed)
+                && self.removing.is_none()
+            {
+                if ui
+                    .add_enabled(
+                        config.is_some(),
+                        crate::theme::secondary_button(uu_i18n::text("重试清理客户端配置")),
+                    )
+                    .clicked()
+                {
+                    self.start_removal(ui.ctx(), config.unwrap());
                 }
-            });
-        });
-        if let Some(editor) = &mut self.editor {
-            let mut open = true;
-            let mut cancel = false;
-            egui::Window::new(uu_i18n::text("连接服务器"))
-                .id("service-owner-connection-editor".into())
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .default_width(480.)
-                .show(ui.ctx(), |ui| {
-                    ui.add_enabled_ui(enabled, |ui| {
-                        if !editor.error.is_empty() {
-                            ui.colored_label(
-                                crate::theme::palette(ui.visuals()).danger,
-                                &editor.error,
-                            );
-                        }
-                        field(ui, "名称", &mut editor.value.name, "例如：家庭服务器");
-                        field(
-                            ui,
-                            "服务器地址",
-                            &mut editor.value.address,
-                            "signal.example:8443 或 wss://…/v1/signal",
-                        );
-                        ui.label(uu_i18n::text("访问令牌"));
-                        ui.add(
-                            crate::theme::Input::new(&mut *editor.token)
-                                .password(true)
-                                .char_limit(128)
-                                .desired_width(f32::INFINITY)
-                                .hint_text(uu_i18n::text(if editor.value.token_configured {
-                                    "留空则保留已保存的凭据"
-                                } else {
-                                    "粘贴服务器提供的访问令牌"
-                                })),
-                        );
-                        ui.collapsing(uu_i18n::text("证书与高级设置"), |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                crate::theme::tab_value(
-                                    ui,
-                                    &mut editor.certificate_mode,
-                                    0,
-                                    uu_i18n::text("保留证书"),
-                                );
-                                crate::theme::tab_value(
-                                    ui,
-                                    &mut editor.certificate_mode,
-                                    1,
-                                    uu_i18n::text("公共可信证书"),
-                                );
-                                crate::theme::tab_value(
-                                    ui,
-                                    &mut editor.certificate_mode,
-                                    2,
-                                    uu_i18n::text("设置私有 CA"),
-                                );
-                            });
-                            if editor.certificate_mode == 2 {
-                                ui.add(
-                                    crate::theme::Input::multiline(&mut editor.pem)
-                                        .desired_rows(4)
-                                        .char_limit(65536)
-                                        .desired_width(f32::INFINITY)
-                                        .hint_text(uu_i18n::text("粘贴 PEM 格式的 CA 证书内容")),
-                                );
-                            }
-                        });
-                        crate::theme::switch(
-                            ui,
-                            &mut editor.value.host_enabled,
-                            uu_i18n::text("共享本机时使用此服务器"),
-                        );
-                        field(
-                            ui,
-                            "本机在服务器的设备名称",
-                            &mut editor.value.published_name,
-                            "my-desktop（字母、数字、-、_）",
-                        );
-                        ui.horizontal_wrapped(|ui| {
-                            if ui
-                                .add(crate::theme::primary_button(uu_i18n::text("保存服务器")))
-                                .clicked()
-                            {
-                                match editor.command() {
-                                    Ok(value) => command = Some(value),
-                                    Err(error) => editor.error = error.to_string(),
-                                }
-                            }
-                            if ui
-                                .add(crate::theme::secondary_button(uu_i18n::text("取消")))
-                                .clicked()
-                            {
-                                cancel = true;
-                            }
-                        });
-                    });
-                });
-            if !open || cancel {
-                self.editor = None;
             }
         }
-        command
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.restart_required)
+        {
+            ui.weak(uu_i18n::text("服务器配置已保存；重启服务后使用新入口。"));
+        }
+        match action? {
+            crate::connection_service_ui::ServerAction::Remove { id } => {
+                let snapshot = self.snapshot.as_ref()?;
+                let entry = snapshot.entries.iter().find(|entry| entry.id == id)?;
+                self.removal = Some(Removal {
+                    id,
+                    address: entry.address.clone(),
+                    revision: snapshot.revision.clone(),
+                    owner_removed: false,
+                });
+                if let Some(config) = config {
+                    self.start_removal(ui.ctx(), config);
+                }
+                None
+            }
+            action => self.command(action),
+        }
     }
-}
-fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
-    ui.label(uu_i18n::text(label));
-    ui.add(
-        crate::theme::Input::new(value)
-            .desired_width(f32::INFINITY)
-            .char_limit(2048)
-            .hint_text(uu_i18n::text(hint)),
-    );
+    fn command(&self, action: crate::connection_service_ui::ServerAction) -> Option<Command> {
+        let snapshot = self.snapshot.as_ref()?;
+        match action {
+            crate::connection_service_ui::ServerAction::Remove { .. } => None,
+            crate::connection_service_ui::ServerAction::SetEnabled { id, enabled } => {
+                let mut entry = snapshot
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == id)?
+                    .clone();
+                entry.host_enabled = enabled;
+                Some(Command::Save {
+                    revision: snapshot.revision.clone(),
+                    entry,
+                    token: None,
+                    certificate: CertificateChange::Keep,
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn periodic_service_refresh_and_failed_save_preserve_connection_drafts_and_credentials() {
-        let mut state = State {
-            editor: Some(Editor::new(
-                "old-revision".into(),
-                Entry {
-                    name: "Home".into(),
-                    address: "signal.example:8443".into(),
-                    ..Default::default()
-                },
-            )),
-            ..Default::default()
-        };
-        assert!(state.editor.as_ref().unwrap().command().is_err());
-        state.editor.as_mut().unwrap().token = zeroize::Zeroizing::new("ab".repeat(32));
+    fn toggling_host_publication_preserves_group_identity_and_write_only_credentials() {
+        let mut state = State::default();
         state.apply(
             false,
             Ok(Response::Connections {
                 snapshot: Snapshot {
                     imported: None,
-                    revision: "new-revision".into(),
-                    entries: vec![],
+                    revision: "fixture-revision".into(),
                     restart_required: false,
+                    entries: vec![uu_core::service_admin::connections::Entry {
+                        id: "fixture-service".into(),
+                        name: "Private group".into(),
+                        address: "wss://signal.example/v1/signal".into(),
+                        published_name: "internal-routing-id".into(),
+                        host_enabled: true,
+                        token_configured: true,
+                        certificate_configured: true,
+                    }],
                 },
             }),
         );
-        state.apply(true, Err("generated CAS conflict".into()));
-        let editor = state.editor.as_ref().unwrap();
-        assert_eq!(editor.value.name, "Home");
-        assert_eq!(editor.value.address, "signal.example:8443");
-        assert_eq!(editor.error, "generated CAS conflict");
+        let command = state
+            .command(crate::connection_service_ui::ServerAction::SetEnabled {
+                id: "fixture-service".into(),
+                enabled: false,
+            })
+            .unwrap();
         let Command::Save {
-            revision, token, ..
-        } = editor.command().unwrap()
+            revision,
+            entry,
+            token,
+            certificate,
+        } = command
         else {
-            panic!("save")
+            panic!("save");
         };
-        assert_eq!(revision, "old-revision");
-        assert_eq!(&**token.as_ref().unwrap(), &"ab".repeat(32));
-        state.apply(
-            true,
-            Ok(Response::Connections {
-                snapshot: Snapshot {
-                    imported: None,
-                    revision: "saved-revision".into(),
-                    entries: vec![],
-                    restart_required: true,
-                },
-            }),
-        );
-        assert!(state.editor.is_none());
+        assert_eq!(revision, "fixture-revision");
+        assert_eq!(entry.name, "Private group");
+        assert_eq!(entry.published_name, "internal-routing-id");
+        assert!(!entry.host_enabled && entry.token_configured && entry.certificate_configured);
+        assert!(token.is_none() && matches!(certificate, CertificateChange::Keep));
     }
 }

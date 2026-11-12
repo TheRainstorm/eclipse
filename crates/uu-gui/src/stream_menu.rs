@@ -1044,7 +1044,7 @@ mod tests {
             "sky_blue"=>super::super::theme::ColorTheme::SkyBlue,
             _=>panic!("explicit supported preview theme required"),
         };
-        assert!(matches!(surface.as_str(),"menus"|"device-config"|"virtual-displays"));
+        assert!(matches!(surface.as_str(),"menus"|"device-config"|"virtual-displays"|"connections"|"add-server"|"add-device"));
         struct Preview {app:super::super::App,virtual_displays:crate::virtual_display_ui::State,output:PathBuf,surface:String,frames:u32,saved:Arc<AtomicBool>}
         impl eframe::App for Preview {
             fn update(&mut self,ctx:&egui::Context,_:&mut eframe::Frame){
@@ -1054,7 +1054,7 @@ mod tests {
                     self.saved.store(true,Ordering::Release);ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 self.app.preview_title_bar(ctx);
-                if self.surface=="device-config" {
+                if matches!(self.surface.as_str(),"device-config"|"connections"|"add-server"|"add-device") {
                     self.app.workspace_home(ctx);
                     self.app.workspace_dialogs(ctx);
                 } else if self.surface=="virtual-displays" {
@@ -1094,7 +1094,8 @@ mod tests {
             let config=uu_core::client_settings::NamedClientSettings::new("桌面 4K",uu_core::client_settings::ClientSettings{fps:120,resolution:3,bitrate:4,custom_mbps:79,..Default::default()});
             profile.selected_client=Some(config.id.clone());profile.client_configs.push(config);
             app.workspace.book.devices=vec![profile.clone()];
-            if surface=="device-config" {app.workspace.open_generated_preview_editor(&profile);}
+            if matches!(surface.as_str(),"connections"|"add-server"|"add-device") {app.workspace.open_generated_connection_preview(&surface);}
+            else if surface=="device-config" {app.workspace.open_generated_preview_editor(&profile);}
             else {
                 app.stream_target=Some(super::super::sessions::StreamTarget{connection:super::super::sessions::ConnectionTarget::NativeInvitation("generated-unused-invitation".into()),alias:"Generated preview".into(),view_only:true});
                 app.preferences.codec=super::super::settings::CodecPreference::Auto;app.preferences.hdr=true;app.target_fps=165;

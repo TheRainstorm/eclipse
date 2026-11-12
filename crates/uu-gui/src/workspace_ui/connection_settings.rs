@@ -1,5 +1,5 @@
 //! Connection drafts own only listener fields; media drafts cannot replay them.
-use super::{card, egui, muted, theme, Action, Info, RichText, Sharing, Workspace};
+use super::{card, egui, muted, theme, Action, Info, Sharing, Workspace};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct Draft {
@@ -62,17 +62,6 @@ impl Workspace {
         connection: &mut dyn FnMut(&mut egui::Ui, Option<&str>),
     ) {
         let locked = self.host.stopping();
-        #[cfg(not(windows))]
-        {
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!locked, crate::theme::primary_button(uu_i18n::text("加入连接服务"))).clicked() { self.enrollment.open(); }
-            ui.weak(uu_i18n::text("使用同一个接入码，让两台电脑互相发现并连接。"));
-        });
-        self.enrollment.status(ui);
-        card(ui, |ui| {
-            if let Some(target) = self.service_directory.show(ui, self.service_config.as_ref(), &self.book) { actions.push(Action::OpenPrepared(target)); }
-        });
-        }
         let mut draft = self
             .connection_draft
             .clone()
@@ -137,6 +126,50 @@ impl Workspace {
                 );
             });
         });
+        #[cfg(not(windows))]
+        {
+            let servers: Vec<_> = self
+                .book
+                .services
+                .iter()
+                .map(crate::connection_service_ui::Server::from)
+                .collect();
+            if let Some(action) =
+                self.servers
+                    .show(ui, self.service_config.as_ref(), &servers, !locked)
+            {
+                let result = self
+                    .store
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!(uu_i18n::text("设备配置不可用")))
+                    .and_then(|store| match action {
+                        crate::connection_service_ui::ServerAction::Remove { id } => {
+                            store.remove_service(&id)
+                        }
+                        crate::connection_service_ui::ServerAction::SetEnabled { id, enabled } => {
+                            store.edit(|book| {
+                                let service = book
+                                    .services
+                                    .iter_mut()
+                                    .find(|service| service.id == id)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(uu_i18n::text("服务器已移除"))
+                                    })?;
+                                service.host_enabled = enabled;
+                                Ok(())
+                            })
+                        }
+                    });
+                match result {
+                    Ok(()) => self.feedback.success(
+                        self.service_scope(),
+                        uu_i18n::text("服务器配置已保存；重启服务后使用新入口。"),
+                    ),
+                    Err(error) => self.feedback.error(self.service_scope(), error.to_string()),
+                }
+                self.refresh();
+            }
+        }
         for provider in &info.providers {
             card(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -160,120 +193,6 @@ impl Workspace {
             });
         }
         connection(ui, None);
-        card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(uu_i18n::text("自建服务器")).strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(!locked, crate::theme::primary_button("＋"))
-                        .on_hover_text(uu_i18n::text("添加服务器"))
-                        .clicked()
-                    {
-                        self.edit_service(None);
-                    }
-                });
-            });
-            ui.add_space(10.);
-            if self.book.services.is_empty() {
-                muted(ui, uu_i18n::text("还没有服务器，可点击右上角加号添加。"));
-            }
-            for service in self.book.services.clone() {
-                ui.push_id(&service.id, |ui| {
-                    ui.separator();
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.label(RichText::new(&service.name).size(17.).strong());
-                                muted(ui, &service.address);
-                            });
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .add_enabled(
-                                            !locked,
-                                            crate::theme::secondary_button(uu_i18n::text("编辑")),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.edit_service(Some(service.clone()));
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            !locked,
-                                            crate::theme::secondary_button(uu_i18n::text("移除")),
-                                        )
-                                        .clicked()
-                                    {
-                                        if let Some(store) = &self.store {
-                                            match store.remove_service(&service.id) {
-                                                Ok(()) => self.refresh(),
-                                                Err(e) => self.feedback.error(
-                                                    self.device_scope(),
-                                                    uu_i18n::format!("无法移除：{e}"),
-                                                ),
-                                            }
-                                        }
-                                    }
-                                },
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label(uu_i18n::text("本机在此服务的设备名称"));
-                            ui.monospace(&service.published_name);
-                            if ui
-                                .add(crate::theme::secondary_button(uu_i18n::text("复制")).small())
-                                .clicked()
-                            {
-                                ui.ctx().copy_text(service.published_name.clone());
-                            }
-                        });
-                        let mut enabled = service.host_enabled;
-                        if ui
-                            .add_enabled_ui(!locked, |ui| {
-                                crate::theme::switch(
-                                    ui,
-                                    &mut enabled,
-                                    uu_i18n::text("启用此连接服务"),
-                                )
-                            })
-                            .inner
-                            .changed()
-                        {
-                            if let Some(store) = &self.store {
-                                let result = store.edit(|book| {
-                                    let item = book
-                                        .services
-                                        .iter_mut()
-                                        .find(|s| s.id == service.id)
-                                        .ok_or_else(|| {
-                                            anyhow::anyhow!("{}", uu_i18n::format!("服务器已移除"))
-                                        })?;
-                                    item.host_enabled = enabled;
-                                    Ok(())
-                                });
-                                if let Err(e) = result {
-                                    self.feedback.error(
-                                        crate::ui_feedback::Scope::Services(0),
-                                        uu_i18n::format!("无法保存：{e:#}"),
-                                    );
-                                }
-                            }
-                            self.refresh();
-                        }
-                        self.endpoint_state(ui, &service.name);
-                        muted(
-                            ui,
-                            if service.host_enabled {
-                                uu_i18n::text("共享开启时，会在此服务器发布本机")
-                            } else {
-                                uu_i18n::text("仅用于连接其它设备")
-                            },
-                        );
-                    });
-                });
-            }
-        });
         self.connection_draft = Some(draft);
         ui.add_space(12.);
         let dirty = self

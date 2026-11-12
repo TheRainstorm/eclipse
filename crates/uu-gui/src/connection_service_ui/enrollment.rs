@@ -14,7 +14,7 @@ use uu_core::{
 use zeroize::Zeroizing;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Activation {
+enum Activation {
     Applied,
     Deferred,
 }
@@ -66,8 +66,11 @@ pub(crate) struct Join {
     changed: bool,
 }
 impl Join {
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
     #[cfg(windows)]
-    pub fn bind_config(&mut self, config: Option<&Config>, ctx: &egui::Context) {
+    pub(crate) fn bind_config(&mut self, config: Option<&Config>, ctx: &egui::Context) {
         if self.config.is_some() {
             return;
         }
@@ -83,11 +86,11 @@ impl Join {
         });
         self.restore = Some(receive);
     }
-    pub fn open(&mut self) {
+    pub(crate) fn open(&mut self) {
         self.open = true;
         self.error.clear();
     }
-    pub fn poll(&mut self, ctx: &egui::Context) {
+    pub(crate) fn poll(&mut self, ctx: &egui::Context) {
         #[cfg(windows)]
         if let Some(result) = received(&self.restore).map(|result| result.and_then(|result| result))
         {
@@ -188,24 +191,24 @@ impl Join {
             ctx.request_repaint_after(Duration::from_secs(5));
         }
     }
-    pub fn take_changed(&mut self) -> bool {
+    pub(crate) fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
     }
     #[cfg(not(windows))]
-    pub fn activation_pending(&self) -> bool {
+    pub(crate) fn activation_pending(&self) -> bool {
         self.deferred
     }
     #[cfg(not(windows))]
-    pub fn require_activation(&mut self) {
+    pub(crate) fn require_activation(&mut self) {
         self.deferred = true;
         self.notice = uu_i18n::text(WAITING).into();
     }
     #[cfg(not(windows))]
-    pub fn activation_started(&mut self) {
+    pub(crate) fn activation_started(&mut self) {
         self.deferred = false;
         self.notice = uu_i18n::text("已保存并请求启用本机共享，连接状态见下方。").into();
     }
-    pub fn status(&self, ui: &mut egui::Ui) {
+    pub(crate) fn status(&self, ui: &mut egui::Ui) {
         if !self.notice.is_empty() {
             ui.weak(&self.notice);
         }
@@ -213,7 +216,7 @@ impl Join {
             ui.colored_label(crate::theme::palette(ui.visuals()).danger, &self.error);
         }
     }
-    pub fn show(&mut self, ctx: &egui::Context, config: Option<&Config>) {
+    pub(crate) fn show(&mut self, ctx: &egui::Context, config: Option<&Config>) {
         #[cfg(windows)]
         self.bind_config(config, ctx);
         self.poll(ctx);
@@ -221,12 +224,13 @@ impl Join {
             return;
         }
         let mut open = true;
-        egui::Window::new(uu_i18n::text("加入连接服务"))
+        egui::Window::new(uu_i18n::text("添加服务器"))
             .id("connection-service-enrollment".into())
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_width(440.)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.label(uu_i18n::text("粘贴管理员提供的接入码或链接"));
                 ui.add_enabled(
@@ -245,7 +249,11 @@ impl Join {
                 }
                 let parsed = Enrollment::decode(&self.code);
                 if let Ok(value) = &parsed {
-                    ui.label(format!("{} · {}", value.name, value.url));
+                    ui.horizontal(|ui| {
+                        ui.weak(uu_i18n::text("设备组"));
+                        ui.label(&value.name);
+                    });
+                    ui.weak(super::display_name(&Default::default(), &value.url));
                 }
                 if self.pending.is_some() {
                     ui.horizontal(|ui| {

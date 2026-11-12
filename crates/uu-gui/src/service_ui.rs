@@ -44,6 +44,7 @@ impl Section {
 pub(super) struct Entry {
     manager: Option<Manager>,
     requested_section: Option<Section>,
+    requested_server_dialog: bool,
     deployment: Option<Deployment>,
     job: Option<mpsc::Receiver<deployment::Event>>,
     deployment_stage: deployment::Stage,
@@ -59,6 +60,18 @@ pub(super) struct Entry {
 }
 impl Entry {
     pub fn take_open(&mut self) -> Option<crate::sessions::StreamTarget> { self.manager.as_mut().and_then(|manager| manager.pending_open.take()) }
+    pub fn open_servers(&mut self) {
+        self.select_section(Section::Connections);
+        self.requested_server_dialog = true;
+    }
+    pub fn servers_dialog_open(&self) -> bool {
+        self.requested_server_dialog || self.manager.as_ref().is_some_and(|manager| manager.service_connections.servers.is_open())
+    }
+    pub fn dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(manager) = &mut self.manager {
+            manager.service_connections.servers.dialogs(ctx, manager.client_config.as_ref());
+        }
+    }
     pub fn set_loaded_plugins(&mut self,plugins:Vec<uu_plugin_sdk::Manifest>,preferences:Option<uu_core::plugins::Preferences>,automatic_sync:bool) {
         self.loaded_plugins=plugins;
         self.plugin_preferences=preferences;
@@ -74,10 +87,12 @@ impl Entry {
             }
         }
         if let Some(manager) = &mut self.manager {
-            manager.enrollment.bind_config(manager.client_config.as_ref(), ctx);
-            manager.enrollment.poll(ctx);
-            if manager.enrollment.take_changed() { manager.directory.reset(); }
-            if let Some(target) = manager.directory.take_open() { manager.pending_open = Some(target); }
+            manager.service_connections.poll(ctx, manager.client_config.as_ref());
+            let _ = manager.service_connections.servers.take_changed();
+            if std::mem::take(&mut self.requested_server_dialog) {
+                manager.service_connections.servers.join_mut().open();
+            }
+            if let Some(target) = manager.service_connections.servers.take_open() { manager.pending_open = Some(target); }
             manager.loaded_plugins=self.loaded_plugins.clone();
             if let Some(section)=self.requested_section.take() {manager.section=section;}
             manager.poll();
@@ -443,8 +458,6 @@ enum Confirmation {
     Restart,
 }
 struct Manager {
-    enrollment: super::connection_service_ui::Join,
-    directory: super::connection_service_ui::Directory,
     client_config: Option<uu_core::Config>,
     pending_open: Option<crate::sessions::StreamTarget>,
     expected_profile: Option<String>,
@@ -495,7 +508,7 @@ impl Manager {
     }
     fn with_worker(worker: worker::Worker) -> Self {
         Self {
-            enrollment: Default::default(), directory: Default::default(), client_config: None, pending_open: None,
+            client_config: None, pending_open: None,
             expected_profile: None,
             allow_legacy_profile: true,
             virtual_display: Default::default(),
@@ -959,15 +972,6 @@ impl Manager {
                 });
             }
             Section::Connections => {
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(enabled, crate::theme::primary_button(uu_i18n::text("加入连接服务"))).clicked() { self.enrollment.open(); }
-                    ui.weak(uu_i18n::text("使用同一个接入码，让两台电脑互相发现并连接。"));
-                });
-                self.enrollment.status(ui);
-                self.enrollment.show(ui.ctx(), self.client_config.as_ref());
-                section_card(ui, uu_i18n::text("设备目录"), |ui| {
-                    if let Some(id) = self.directory.show_local(ui, self.client_config.as_ref()) { self.pending_open = Some(id); }
-                });
                 section_card(ui, uu_i18n::text("IP 直连"), |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
                         let before=self.draft.clone();
@@ -983,7 +987,7 @@ impl Manager {
                         self.dirty |= self.draft!=before;
                     });
                 });
-                if let Some(request)=self.service_connections.show(ui,enabled) {
+                if let Some(request)=self.service_connections.show(ui,enabled,self.client_config.as_ref()) {
                     self.submit(Job::Rpc(Request::Connections{request}));
                 }
                 self.plugins_ui(ui,enabled);
@@ -1121,6 +1125,7 @@ impl eframe::App for Standalone {
                 self.entry.show(ui, &mut self.host, true);
             });
         });
+        self.entry.dialogs(ctx);
         if let Some(target) = self.entry.take_open() {
                 if let Err(error) = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target, self.platform.origin())) {
                     self.entry.feedback.error(super::ui_feedback::Scope::Services(5), error.to_string());

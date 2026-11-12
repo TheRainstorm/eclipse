@@ -53,6 +53,7 @@ pub(super) enum Action {
     DevicesHidden(bool),
     Open(String),
     OpenPrepared(crate::sessions::StreamTarget),
+    OpenConnectionServices,
     RefreshWallpaper,
     FavoriteWallpaper,
     DownloadWallpaper,
@@ -100,14 +101,6 @@ impl ClientEditor {
         self.error.clear();
     }
 }
-#[derive(Clone)]
-struct ServiceEditor {
-    error: String,
-    value: Service,
-    token: String,
-    credential: String,
-    certificate: String,
-}
 
 struct PreviewSlot {revision:String,texture:Option<egui::TextureHandle>,loaded:bool}
 struct PreviewJob {device:String,revision:String,rx:std::sync::mpsc::Receiver<Result<super::wallpapers::Thumbnail,String>>}
@@ -119,11 +112,7 @@ pub(super) struct Workspace {
     pub book: Book,
     pub host: super::sharing_ui::HostUi,
     connection_history: super::connection_history_ui::State,
-    #[cfg(not(windows))]
-    enrollment: super::connection_service_ui::Join,
-    #[cfg(not(windows))]
-    service_directory: super::connection_service_ui::Directory,
-    #[cfg(not(windows))]
+    servers: super::connection_service_ui::Servers,
     service_config: Option<uu_core::Config>,
     history_path: Option<std::path::PathBuf>,
     pub store: Option<Store>,
@@ -136,7 +125,8 @@ pub(super) struct Workspace {
     service_tab:u8,
     encoder_vendor_tab:u8,
     editor: Option<DeviceEditor>,
-    service_editor: Option<ServiceEditor>,
+    suspended_editor: Option<DeviceEditor>,
+    device_picker: super::connection_service_ui::device_picker::DevicePicker,
     client_editor: Option<ClientEditor>,
     pub client_defaults: uu_core::client_settings::ClientSettings,
     dark_background:bool,
@@ -205,7 +195,8 @@ mod tests {
         assert!(y("IP 直连")<y("Generated provider"));
         assert!(y("Generated provider")<y("Generated account controls"));
         assert!(y("Generated account controls")<y("Generated independent protocol"));
-        assert!(y("Generated independent protocol")<y("自建服务器"));
+        assert!(y("IP 直连")<y("自建服务器"));
+        assert!(y("自建服务器")<y("Generated provider"));
     }
     struct Harness {
         workspace: Workspace,
@@ -526,10 +517,12 @@ mod tests {
             .unwrap();
         h.workspace.refresh();
         h.workspace.new_device(Some(id.clone()), None);
+        let service = h.workspace.book.services.iter().find(|item| item.id == service.id).unwrap().clone();
         let editor = h.workspace.editor.as_mut().unwrap();
         editor.kind = 2;
-        editor.service = service.id;
+        editor.service = service.id.clone();
         editor.device = "other-host".into();
+        h.workspace.device_picker.seed(&service, vec![uu_core::internet::self_hosted::Device { device: "other-host".into(), name: "Other host".into() }], &mut editor.device);
         let actions = h.click("保存并连接");
         assert!(matches!(&actions[..],[Action::Open(opened)] if opened==&id));
         assert_eq!(h.workspace.book.device(&id).unwrap().routes.len(), 3);
@@ -539,31 +532,51 @@ mod tests {
             .any(|(s, _)| s.contains("配对文件") || s.contains("配对 key")));
     }
     #[test]
-    fn fresh_controller_can_configure_a_server_from_the_device_route_without_a_host() {
-        let mut h=Harness::new();
-        let sharing=h.workspace.book.sharing.clone();
-        h.workspace.new_device(None,None);
-        h.workspace.editor.as_mut().unwrap().kind=2;
-        h.click("添加连接服务器");
-        let editor=h.workspace.service_editor.as_mut().unwrap();
-        editor.value.name="Controller route".into();
-        editor.value.address="signal.example.invalid:8443".into();
-        h.click("保存服务器");
-        assert!(h.workspace.service_editor.as_ref().is_some_and(|e|!e.error.is_empty()));
-        h.workspace.service_editor.as_mut().unwrap().credential="ab".repeat(32);
-        h.click("保存服务器");
-        assert!(h.workspace.service_editor.is_none());
-        let selected=h.workspace.book.services[0].clone();
-        assert!(!selected.host_enabled);
-        assert_eq!(h.workspace.editor.as_ref().unwrap().service,selected.id);
-        assert_eq!(h.workspace.book.sharing,sharing);
+    fn device_server_shortcut_keeps_the_draft_and_uses_the_management_entry() {
+        let mut h = Harness::new();
+        let sharing = h.workspace.book.sharing.clone();
+        h.workspace.new_device(None, None);
+        let editor = h.workspace.editor.as_mut().unwrap();
+        editor.kind = 2;
+        editor.name = "Unsaved device name".into();
+        let actions = h.click("添加服务器");
+        assert!(matches!(&actions[..], [Action::OpenConnectionServices]));
+        assert!(h.workspace.editor.is_none());
+        assert_eq!(h.workspace.suspended_editor.as_ref().unwrap().name, "Unsaved device name");
+        assert_eq!(h.workspace.book.sharing, sharing);
+        assert!(h.workspace.book.services.is_empty());
         assert!(!h.workspace.host.running());
-        let editor=h.workspace.editor.as_mut().unwrap();
-        editor.device="remote-desktop".into();
-        let actions=h.click("保存并连接");
-        assert!(matches!(&actions[..],[Action::Open(_)]));
-        let profile=&h.workspace.book.devices[0];
-        assert!(matches!(&profile.routes[0].destination,Destination::Vps{service,device} if service==&selected.id&&device=="remote-desktop"));
+        #[cfg(not(windows))]
+        {
+            h.workspace.servers.join_mut().open();
+            h.workspace.route.page = Page::Devices;
+            h.frame(Vec::new());
+            assert!(h.workspace.editor.is_none(), "the suspended device form cannot overlap enrollment");
+            h.workspace.servers = Default::default();
+            h.frame(Vec::new());
+            assert_eq!(h.workspace.editor.as_ref().unwrap().name, "Unsaved device name");
+            assert!(h.workspace.suspended_editor.is_none());
+        }
+    }
+    #[test]
+    fn route_names_use_local_server_aliases_and_actual_plugin_names_without_target_ids() {
+        let mut h = Harness::new();
+        let (servers, rows) = crate::connection_service_ui::Servers::fixture();
+        h.workspace.servers = servers;
+        h.workspace.book.services = rows.iter().map(|row| Service {
+            id: row.id.clone(), name: row.name.clone(), address: row.address.clone(),
+            token_file: "fixture-unused-token".into(), certificate: None,
+            host_enabled: false, published_name: "owned-device".into(),
+        }).collect();
+        h.workspace.providers = vec![uu_core::plugins::Descriptor { id: "generated-plugin", name: "Generated account service", version: "1" }];
+        let target = "opaque-generated-device-id-never-a-visible-name";
+        let route = |destination| Route::new(destination);
+        assert_eq!(h.workspace.route_label(&route(Destination::Vps { service: rows[0].id.clone(), device: target.into() })), "家里的服务器");
+        let fallback = h.workspace.route_label(&route(Destination::Vps { service: rows[1].id.clone(), device: target.into() }));
+        assert!(fallback.starts_with("203.0.113.10:9443 · "));
+        assert!(!fallback.contains(target) && !fallback.contains(&rows[1].name));
+        assert_eq!(h.workspace.route_label(&route(Destination::Plugin { plugin: "generated-plugin".into(), device: target.into() })), "Generated account service");
+        assert_eq!(h.workspace.route_label(&route(Destination::Plugin { plugin: "missing-plugin".into(), device: target.into() })), "插件未安装或未启用 · missing-plugin");
     }
     #[test]
     #[cfg(not(windows))]
@@ -584,26 +597,18 @@ mod tests {
     }
     #[test]
     #[cfg(not(windows))]
-    fn server_form_reports_missing_credentials_without_discarding_fields() {
+    fn server_addition_uses_one_invitation_form_without_exposing_routing_fields() {
         let mut h = Harness::new();
         h.workspace.route.page = Page::Services;
-        h.click("＋");
-        let editor = h.workspace.service_editor.as_mut().unwrap();
-        editor.value.name = "Home".into();
-        editor.value.address = "signal.example.invalid:8443".into();
-        h.click("保存服务器");
-        let editor = h.workspace.service_editor.as_ref().unwrap();
-        assert_eq!(editor.value.name, "Home");
-        assert!(!editor.error.is_empty());
-        assert!(h.workspace.book.services.is_empty());
-        h.workspace.service_editor.as_mut().unwrap().credential = "ab".repeat(32);
-        h.click("保存服务器");
-        assert!(h.workspace.service_editor.is_none());
-        assert_eq!(h.workspace.book.services.len(), 1);
-        let path = &h.workspace.book.services[0].token_file;
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "ab".repeat(32));
+        h.click("＋ 添加服务器");
         h.frame(Vec::new());
-        assert!(!h.texts.iter().any(|(s, _)| s.contains(&"ab".repeat(32))));
+        assert!(h.workspace.servers.join_mut().is_open());
+        assert!(h.texts.iter().any(|(text, _)| text == "粘贴管理员提供的接入码或链接"));
+        for hidden in ["访问令牌", "服务器地址", "证书与高级设置", "本机在服务器的设备名称"] {
+            assert!(!h.texts.iter().any(|(text, _)| text == hidden), "unexpected field: {hidden}");
+        }
+        assert!(h.workspace.book.services.is_empty());
+        assert!(!h.workspace.host.running());
     }
     #[test]
     fn final_remote_image_is_persisted_and_loaded_into_the_device_card() {
@@ -945,11 +950,7 @@ impl Workspace {
             book,
             host: Default::default(),
             connection_history: Default::default(),
-            #[cfg(not(windows))]
-            enrollment: Default::default(),
-            #[cfg(not(windows))]
-            service_directory: Default::default(),
-            #[cfg(not(windows))]
+            servers: Default::default(),
             service_config: config.cloned(),
             history_path: config.map(|config| config.at("device-trust/connection-history.json")),
             #[cfg(windows)]
@@ -964,7 +965,8 @@ impl Workspace {
             service_tab:0,
             encoder_vendor_tab:0,
             editor: None,
-            service_editor: None,
+            suspended_editor: None,
+            device_picker: Default::default(),
             client_editor: None,
             client_defaults:Default::default(),
             dark_background:false,
@@ -984,12 +986,12 @@ impl Workspace {
     pub fn poll(&mut self, ctx: &egui::Context, window: isize) {
         #[cfg(not(windows))]
         {
-            self.enrollment.poll(ctx);
-            if self.enrollment.take_changed() {
-                self.refresh(); self.service_directory.reset();
-                if !self.host.connection_services_current(&self.book.services) { self.enrollment.require_activation(); }
+            self.servers.poll(ctx, self.service_config.as_ref());
+            if self.servers.take_changed() { self.refresh(); }
+            if self.servers.take_config_changed() && !self.host.connection_services_current(&self.book.services) {
+                self.servers.join_mut().require_activation();
             }
-            if self.enrollment.activation_pending() && !self.host.stopping() {
+            if self.servers.join_mut().activation_pending() && !self.host.stopping() {
                 if let (Some(config), Some(trust)) = (self.service_config.clone(), self.trust.clone()) {
                     let reserved = self.host.access.as_ref().map(|access| {
                         let token = uuid::Uuid::new_v4().to_string();
@@ -999,7 +1001,7 @@ impl Workspace {
                         let result = if self.host.running() { self.host.restart(config, self.book.clone(), trust, ctx) }
                             else { self.host.start(config, self.book.clone(), trust, ctx) };
                         match result {
-                            Ok(()) => self.enrollment.activation_started(),
+                            Ok(()) => self.servers.join_mut().activation_started(),
                             Err(error) => {
                                 if let Some(Ok((access, token))) = reserved { let _ = access.sessions.reserve_configuration_switch(&token, true); }
                                 self.feedback.error(super::ui_feedback::Scope::Services(0), error.to_string());
@@ -1009,6 +1011,8 @@ impl Workspace {
                 }
             }
         }
+        #[cfg(windows)]
+        self.servers.labels_mut().poll(ctx, self.service_config.as_ref());
         self.feedback.tick(ctx);
         self.host.poll(ctx, window);
         #[cfg(windows)]
@@ -1141,6 +1145,8 @@ impl Workspace {
         saved
     }
     fn new_device(&mut self, profile: Option<String>, route: Option<String>) {
+        self.suspended_editor = None;
+        self.device_picker.reset();
         let mut editor = DeviceEditor {
             error: String::new(),
             profile,
@@ -1182,6 +1188,10 @@ impl Workspace {
         self.editor = Some(editor);
     }
     fn save_device(&mut self, editor: DeviceEditor) -> anyhow::Result<String> {
+        if editor.kind == 2 {
+            let service = self.book.services.iter().find(|service| service.id == editor.service);
+            anyhow::ensure!(self.device_picker.valid(service, &editor.device), "{}", uu_i18n::text("请选择在线设备"));
+        }
         let destination = match editor.kind {
             0 => Destination::Ip {
                 address: uu_core::native_discovery::endpoint(&editor.address)?,
@@ -1392,7 +1402,7 @@ impl Workspace {
                 if theme::menu_action(ui,true,uu_i18n::text("详情")).clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
                 ui.menu_button(uu_i18n::text("连接方式"),|ui| {
                     for route in &profile.routes {
-                        if crate::theme::selectable_label(ui,profile.selected_route==route.id,format!("{} · {}",route.destination.label(),route.destination.target())).clicked() {
+                        if crate::theme::selectable_label(ui,profile.selected_route==route.id,self.route_label(route)).clicked() {
                             let mut updated=profile.clone();updated.selected_route=route.id.clone();
                             if let Some(store)=&self.store {if let Err(e)=store.save_device(updated){
                                 let scope=self.device_scope();
@@ -1421,12 +1431,24 @@ impl Workspace {
             response
         }).inner
     }
+    fn route_label(&self, route: &Route) -> String {
+        match &route.destination {
+            Destination::Ip { address, .. } => format!("{} · {address}", uu_i18n::text("IP 直连")),
+            Destination::Vps { service, .. } => self.book.services.iter().find(|item| &item.id == service)
+                .map(|item| self.servers.labels().display_name(&item.address))
+                .unwrap_or_else(|| uu_i18n::text("服务器已移除").into()),
+            Destination::Plugin { plugin, .. } => self.providers.iter().find(|provider| provider.id == plugin)
+                .map(|provider| provider.name.to_owned())
+                .unwrap_or_else(|| format!("{} · {plugin}", uu_i18n::text("插件未安装或未启用"))),
+            _ => route.destination.label().into(),
+        }
+    }
     fn route_picker(&mut self,ui:&mut egui::Ui,profile:&Profile) {
                 let mut selected=profile.selected_route.clone();
                 ui.horizontal(|ui| {
                     ui.label(uu_i18n::text("连接方式"));
-                    crate::theme::Select::from_id_salt("device-route").selected_text(profile.route().map(|r|r.destination.label()).unwrap_or(uu_i18n::text("请选择"))).width(150.).show_ui(ui,|ui| {
-                        for route in &profile.routes {crate::theme::selectable_value(ui,&mut selected,route.id.clone(),format!("{} · {}",route.destination.label(),route.destination.target()));}
+                    crate::theme::Select::from_id_salt("device-route").selected_text(profile.route().map(|route|self.route_label(route)).unwrap_or_else(|_|uu_i18n::text("请选择").into())).width(240.).show_ui(ui,|ui| {
+                        for route in &profile.routes {crate::theme::selectable_value(ui,&mut selected,route.id.clone(),self.route_label(route));}
                     });
                 });
                 if selected!=profile.selected_route {
@@ -1464,6 +1486,35 @@ impl Workspace {
     #[cfg(test)]
     pub(super) fn open_generated_preview_editor(&mut self,profile:&Profile) {
         self.edit_client_config(profile,profile.client_configs.first().cloned(),false);
+    }
+    #[cfg(test)]
+    pub(super) fn open_generated_connection_preview(&mut self, surface: &str) {
+        let (servers, rows) = crate::connection_service_ui::Servers::fixture();
+        self.servers = servers;
+        self.book.services = rows.into_iter().map(|row| Service {
+            id: row.id, name: row.name, address: row.address,
+            token_file: "fixture-unused-token".into(), certificate: None,
+            host_enabled: row.host_enabled, published_name: "own-device-route-id".into(),
+        }).collect();
+        // This fixture retains the seeded in-memory directory and never loads
+        // the user's configuration or opens a signaling endpoint.
+        self.service_config = None;
+        self.last_read = Instant::now();
+        self.service_tab = 0;
+        self.route.page = Page::Services;
+        if surface == "add-server" {
+            self.servers.join_mut().open();
+        } else if surface == "add-device" {
+            self.route.page = Page::Devices;
+            self.new_device(None, None);
+            let service = self.book.services[0].clone();
+            let editor = self.editor.as_mut().unwrap();
+            editor.kind = 2;
+            editor.service = service.id.clone();
+            self.device_picker.seed(&service, vec![uu_core::internet::self_hosted::Device {
+                device: "generated-laptop".into(), name: "笔记本电脑".into(),
+            }], &mut editor.device);
+        }
     }
     fn edit_client_config(&mut self,profile:&Profile, value:Option<uu_core::client_settings::NamedClientSettings>, duplicate:bool) {
         let loaded=value.as_ref().filter(|_|!duplicate).map(|v|(v.id.clone(),v.name.clone()));
@@ -1542,7 +1593,7 @@ impl Workspace {
                         }
                     }
                     let route = profile.route().map(|route| {
-                        format!("{} · {}", route.destination.label(), route.destination.target())
+                        self.route_label(route)
                     }).unwrap_or_else(|_| uu_i18n::text("未选择连接方式").into());
                     muted(ui, route);
                     if profile.peer.is_some() {
@@ -1583,11 +1634,7 @@ impl Workspace {
             for route in &profile.routes {
                 ui.push_id(&route.id, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "{} · {}",
-                            route.destination.label(),
-                            route.destination.target()
-                        ));
+                        ui.label(self.route_label(route));
                         if ui.add(crate::theme::secondary_button(uu_i18n::text("编辑")).small()).clicked() {
                             self.new_device(Some(profile.id.clone()), Some(route.id.clone()));
                         }
@@ -1960,41 +2007,17 @@ impl Workspace {
             }
         });
     }
-    fn edit_service(&mut self, service: Option<Service>) {
-        let value = service.unwrap_or_else(|| Service {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: String::new(),
-            address: String::new(),
-            token_file: PathBuf::new(),
-            certificate: None,
-            host_enabled: false,
-            published_name: self
-                .trust
-                .as_ref()
-                .map(|t| format!("device-{}", &t.card("Eclipse").id()[..12]))
-                .unwrap_or_else(|| "my-desktop".into()),
-        });
-        self.service_editor = Some(ServiceEditor {
-            error: String::new(),
-            token: value.token_file.display().to_string(),
-            credential: String::new(),
-            certificate: value
-                .certificate
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-            value,
-        });
-    }
-
     pub fn dialogs(&mut self, ctx: &egui::Context, info: &Info) -> Vec<Action> {
         let mut actions = Vec::new();
         #[cfg(windows)]
-        if let Some(target) = self.background_service.take_open() { actions.push(Action::OpenPrepared(target)); }
+        {
+            if let Some(target) = self.background_service.take_open() { actions.push(Action::OpenPrepared(target)); }
+            self.background_service.dialogs(ctx);
+        }
         #[cfg(not(windows))]
         {
-            if let Some(target) = self.service_directory.take_open() { actions.push(Action::OpenPrepared(target)); }
-            self.enrollment.show(ctx, self.service_config.as_ref());
+            if let Some(target) = self.servers.take_open() { actions.push(Action::OpenPrepared(target)); }
+            self.servers.dialogs(ctx, self.service_config.as_ref());
         }
         self.host.dialogs(ctx);
         if let Some(mut editor)=self.client_editor.take() {
@@ -2075,11 +2098,23 @@ impl Workspace {
                 }
             }else if open && !cancel {self.client_editor=Some(editor);}
         }
+        #[cfg(windows)]
+        let connection_dialog_open = self.background_service.servers_dialog_open();
+        #[cfg(not(windows))]
+        let connection_dialog_open = self.servers.is_open();
+        if self.route.page == Page::Devices && matches!(self.route.device, DeviceView::List)
+            && self.editor.is_none() && !connection_dialog_open {
+            self.editor = self.suspended_editor.take();
+            if let Some(editor) = self.editor.as_mut().filter(|editor| editor.profile.is_none() && editor.kind == 2 && editor.service.is_empty()) {
+                if self.book.services.len() == 1 { editor.service = self.book.services[0].id.clone(); }
+            }
+        }
         if let Some(mut editor) = self.editor.take() {
             let mut open = true;
             let mut save = false;
             let mut connect = false;
             let mut cancel = false;
+            let mut open_services = false;
             egui::Window::new(if editor.profile.is_none() {
                 uu_i18n::text("添加设备")
             } else if editor.route.is_some() {
@@ -2087,22 +2122,18 @@ impl Workspace {
             } else {
                 uu_i18n::text("添加连接地址")
             })
-            .id("device-editor".into())
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(460.)
-            .default_pos(ctx.screen_rect().center() - egui::vec2(240., 200.))
+            .id("device-editor".into()).open(&mut open).collapsible(false).resizable(false)
+            .default_width(460.).default_pos(ctx.screen_rect().center() - egui::vec2(240., 200.))
             .show(ctx, |ui| {
-                if !editor.error.is_empty() {
-                    ui.colored_label(theme::palette(ui.visuals()).danger, &editor.error);
-                }
+                if !editor.error.is_empty() { ui.colored_label(theme::palette(ui.visuals()).danger, &editor.error); }
                 field(ui, uu_i18n::text("设备名称（可选）"), &mut editor.name, uu_i18n::text("例如：工作电脑"));
+                let previous = (editor.kind, editor.provider.clone());
                 ui.horizontal(|ui| {
                     crate::theme::tab_value(ui,&mut editor.kind, 0, uu_i18n::text("IP 直连"));
                     for provider in &info.providers {if crate::theme::selectable_tab(ui,editor.kind==1&&editor.provider==provider.id,provider.name).clicked(){editor.kind=1;editor.provider=provider.id.into();}}
                     crate::theme::tab_value(ui,&mut editor.kind, 2, uu_i18n::text("自建服务器"));
                 });
+                if previous != (editor.kind, editor.provider.clone()) { editor.device.clear(); self.device_picker.reset(); }
                 ui.add_space(12.);
                 match editor.kind {
                     0 => {
@@ -2110,179 +2141,52 @@ impl Workspace {
                         muted(ui, uu_i18n::text("支持 IPv4、IPv6 和主机名。自定义端口使用 IP:端口，IPv6 使用 [地址]:端口，例如 [2001:db8::10]:48998。"));
                     },
                     1 => {field(ui,uu_i18n::text("目标设备编号"),&mut editor.device,uu_i18n::text("由连接插件提供的设备标识"));},
-                    _ => {
+                    2 => {
                         ui.label(uu_i18n::text("连接服务器"));
-                        crate::theme::Select::from_id_salt("route-service")
-                            .selected_text(
-                                self.book
-                                    .services
-                                    .iter()
-                                    .find(|s| s.id == editor.service)
-                                    .map(|s| s.name.as_str())
-                                    .unwrap_or(uu_i18n::text("请先添加服务器")),
-                            )
-                            .show_ui(ui, |ui| {
-                                for service in &self.book.services {
-                                    crate::theme::selectable_value(ui,
-                                        &mut editor.service,
-                                        service.id.clone(),
-                                        &service.name,
-                                    );
-                                }
-                            });
                         ui.horizontal(|ui| {
-                            if ui.add(crate::theme::secondary_button(uu_i18n::text("添加连接服务器"))).clicked() {
-                                self.edit_service(None);
-                            }
-                            let selected=self.book.services.iter().find(|s|s.id==editor.service).cloned();
-                            if ui.add_enabled(selected.is_some(),crate::theme::secondary_button(uu_i18n::text("编辑连接服务器"))).clicked() {
-                                self.edit_service(selected);
-                            }
+                            let label = self.book.services.iter().find(|service| service.id == editor.service)
+                                .map(|service| self.servers.labels().display_name(&service.address))
+                                .unwrap_or_else(|| uu_i18n::text(if self.book.services.is_empty() { "请先添加服务器" } else { "请选择服务器" }).into());
+                            crate::theme::Select::from_id_salt("route-service").selected_text(label)
+                                .width((ui.available_width() - 130.).max(160.)).show_ui(ui, |ui| {
+                                    for service in &self.book.services {
+                                        crate::theme::selectable_value(ui, &mut editor.service, service.id.clone(),
+                                            self.servers.labels().display_name(&service.address));
+                                    }
+                                });
+                            if ui.add(crate::theme::secondary_button(uu_i18n::text("添加服务器"))).clicked() { open_services = true; }
                         });
-                        field(
-                            ui,
-                            uu_i18n::text("目标设备名称"),
-                            &mut editor.device,
-                            uu_i18n::text("被控端在该服务器发布的名称"),
-                        );
-                    }
+                        let selected = self.book.services.iter().find(|service| service.id == editor.service).cloned();
+                        ui.add_space(8.); ui.label(uu_i18n::text("目标设备"));
+                        if let Some(name) = self.device_picker.show(ui, selected.as_ref(), &mut editor.device) {
+                            if editor.name.trim().is_empty() { editor.name = name; }
+                        }
+                    },
+                    _ => { ui.weak(uu_i18n::text("此连接方式需要安装所属插件后编辑")); },
                 }
                 muted(ui,uu_i18n::text("首次连接时确认设备身份，以后不再重复配对。"));
                 ui.add_space(12.);
+                let ready = editor.kind < 2 || (editor.kind == 2 && self.device_picker.valid(
+                    self.book.services.iter().find(|service| service.id == editor.service), &editor.device));
                 ui.horizontal(|ui| {
-                    if primary(ui, uu_i18n::text("保存并连接")).clicked() {
-                        save = true;
-                        connect = true;
-                    }
-                    if ui.add(crate::theme::secondary_button(uu_i18n::text("仅保存"))).clicked() {
-                        save = true;
-                    }
-                    if ui.add(crate::theme::secondary_button(uu_i18n::text("取消"))).clicked() {
-                        cancel = true;
-                    }
+                    if ui.add_enabled(ready, theme::primary_button(uu_i18n::text("保存并连接"))).clicked() { save = true; connect = true; }
+                    if ui.add_enabled(ready, crate::theme::secondary_button(uu_i18n::text("仅保存"))).clicked() { save = true; }
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("取消"))).clicked() { cancel = true; }
                 });
             });
-            if save {
+            if open_services {
+                self.device_picker.reset();
+                self.suspended_editor = Some(editor);
+                actions.push(Action::OpenConnectionServices);
+            } else if save {
                 match self.save_device(editor.clone()) {
-                    Ok(id) => {
-                        if connect {
-                            actions.push(Action::Open(id));
-                        }
-                    }
-                    Err(e) => {
-                        editor.error = uu_i18n::format!("无法保存设备：{e:#}");
-                        self.editor = Some(editor);
-                    }
+                    Ok(id) => { if connect { actions.push(Action::Open(id)); } self.device_picker.reset(); },
+                    Err(e) => { editor.error = uu_i18n::format!("无法保存设备：{e:#}"); self.editor = Some(editor); },
                 }
-            } else if open && !cancel {
-                self.editor = Some(editor);
-            }
+            } else if open && !cancel { self.editor = Some(editor); }
+            else { self.device_picker.reset(); }
         }
-        if let Some(mut editor) = self.service_editor.take() {
-            let mut open = true;
-            let mut save = false;
-            egui::Window::new(uu_i18n::text("连接服务器"))
-                .id("service-editor".into())
-                .open(&mut open)
-                .collapsible(false)
-                .default_width(480.)
-                .resizable(false)
-                .default_pos(ctx.screen_rect().center() - egui::vec2(250., 210.))
-                .show(ctx, |ui| {
-                    if !editor.error.is_empty() {
-                        ui.colored_label(theme::palette(ui.visuals()).danger, &editor.error);
-                    }
-                    field(ui, uu_i18n::text("名称"), &mut editor.value.name, uu_i18n::text("例如：家庭服务器"));
-                    field(
-                        ui,
-                        uu_i18n::text("服务器地址"),
-                        &mut editor.value.address,
-                        uu_i18n::text("signal.example:8443 或 wss://…/v1/signal"),
-                    );
-                    ui.label(uu_i18n::text("访问令牌"));
-                    ui.add(
-                        crate::theme::Input::new(&mut editor.credential)
-                            .password(true)
-                            .desired_width(f32::INFINITY)
-                            .hint_text(if editor.token.is_empty() {
-                                uu_i18n::text("粘贴服务器提供的访问令牌")
-                            } else {
-                                uu_i18n::text("留空则保留已保存的凭据")
-                            }),
-                    );
-                    ui.add_space(6.);
-                    ui.collapsing(uu_i18n::text("证书与高级设置"), |ui| {
-                        field(
-                            ui,
-                            uu_i18n::text("使用现有访问凭据文件（可选）"),
-                            &mut editor.token,
-                            "server.token",
-                        );
-                        field(
-                            ui,
-                            uu_i18n::text("自签名或私有 CA 证书（可选）"),
-                            &mut editor.certificate,
-                            uu_i18n::text("公开可信证书可留空"),
-                        );
-                    });
-                    #[cfg(not(windows))]
-                    crate::theme::switch(ui,&mut editor.value.host_enabled, uu_i18n::text("共享本机时使用此服务器"));
-                    if !cfg!(windows) && editor.value.host_enabled {
-                        field(
-                            ui,
-                            uu_i18n::text("本机在服务器的设备名称"),
-                            &mut editor.value.published_name,
-                            uu_i18n::text("my-desktop（字母、数字、-、_）"),
-                        );
-                    }
-                    ui.add_space(12.);
-                    if primary(ui, uu_i18n::text("保存服务器")).clicked() {
-                        save = true;
-                    }
-                });
-            if save {
-                editor.value.token_file = editor.token.trim().trim_matches('"').into();
-                editor.value.certificate = (!editor.certificate.trim().is_empty())
-                    .then(|| editor.certificate.trim().trim_matches('"').into());
-                let result = (|| -> anyhow::Result<()> {
-                    let store = self
-                        .store
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))?;
-                    if !editor.credential.trim().is_empty() {
-                        editor.value.token_file =
-                            store.store_service_credential(&editor.value.id, &editor.credential)?;
-                        editor.token = editor.value.token_file.display().to_string();
-                    }
-                    let settings = uu_core::internet::Settings {
-                        server: editor.value.address.clone(),
-                        server_token: editor.value.token_file.clone(),
-                        server_ca: editor.value.certificate.clone(),
-                        ..Default::default()
-                    };
-                    settings.self_hosted()?.validate_local()?;
-                    store.save_service(editor.value.clone())
-                })();
-                match result {
-                    Ok(()) => {
-                        if let Some(device)=&mut self.editor {
-                            if device.kind==2 {device.service=editor.value.id.clone();}
-                        }
-                        self.feedback.success(
-                            super::ui_feedback::Scope::Services(0),
-                            uu_i18n::text("服务器配置已保存"),
-                        );
-                        self.refresh();
-                    }
-                    Err(e) => {
-                        editor.error = uu_i18n::format!("无法保存：{e:#}");
-                        self.service_editor = Some(editor);
-                    }
-                }
-            } else if open {
-                self.service_editor = Some(editor);
-            }
-        }
+
         actions
     }
 }
@@ -2317,7 +2221,7 @@ impl super::App {
         self.workspace.route.page = page;
         self.workspace.route.device = DeviceView::List;
         self.workspace.editor = None;
-        self.workspace.service_editor = None;
+        self.workspace.device_picker.reset();
         self.context.request_repaint();
     }
     pub(super) fn leave_settings(&mut self) {
@@ -2372,6 +2276,15 @@ impl super::App {
                 Action::DevicesHidden(hidden) => {
                     self.preferences.devices_hidden=hidden;
                     self.persist_preferences();
+                }
+                Action::OpenConnectionServices => {
+                    if self.workspace.suspended_editor.is_none() { self.workspace.suspended_editor = self.workspace.editor.take(); }
+                    self.workspace.device_picker.reset();
+                    self.workspace.route.page = Page::Services;
+                    self.workspace.service_tab = 0;
+                    #[cfg(windows)] self.workspace.background_service.open_servers();
+                    #[cfg(not(windows))] self.workspace.servers.join_mut().open();
+                    ctx.request_repaint();
                 }
                 Action::Open(id) => self.open_device_profile(&id),
                 Action::OpenPrepared(target) => {

@@ -12,23 +12,58 @@ use uu_core::{
 };
 
 type Devices = Vec<uu_core::internet::self_hosted::Device>;
+enum Update {
+    Service { id: String, result: Result<Devices, String> },
+    Finished,
+}
 #[derive(Default)]
 pub(crate) struct Directory {
-    #[cfg(windows)]
     local_book: Option<Book>,
-    #[cfg(windows)]
     local_read: Option<mpsc::Receiver<Result<Book, String>>>,
-    #[cfg(windows)]
     read_at: Option<Instant>,
     entries: HashMap<String, Result<Devices, String>>,
-    pending: Option<mpsc::Receiver<HashMap<String, Result<Devices, String>>>>,
+    pending: Option<mpsc::Receiver<Update>>,
+    awaiting: Vec<String>,
     open: Option<mpsc::Receiver<Result<crate::sessions::StreamTarget, String>>>,
     key: String,
     next: Option<Instant>,
     error: String,
 }
 impl Directory {
-    pub fn take_open(&mut self) -> Option<crate::sessions::StreamTarget> {
+    fn poll_results(&mut self) {
+        while let Some(message) = received(&self.pending) {
+            match message {
+                Ok(Update::Service { id, result }) => {
+                    if self.awaiting.iter().any(|pending| pending == &id) {
+                        self.awaiting.retain(|pending| pending != &id);
+                        self.entries.insert(id, result);
+                    }
+                }
+                result => {
+                    let error = match result {
+                        Err(error) => Some(error),
+                        _ if !self.awaiting.is_empty() => Some(uu_i18n::text("后台操作未返回结果，请刷新确认状态。").into()),
+                        _ => None,
+                    };
+                    if let Some(error) = error {
+                        for id in self.awaiting.drain(..) { self.entries.insert(id, Err(error.clone())); }
+                        self.error = error;
+                    }
+                    self.pending = None;
+                    self.next = Some(Instant::now() + Duration::from_secs(5));
+                }
+            }
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn seed_fixture(&mut self, book: Book, entries: HashMap<String, Result<Devices, String>>) {
+        self.key = serde_json::to_string(&book.services).unwrap();
+        self.entries = entries;
+        self.local_book = Some(book);
+        self.next = Some(Instant::now() + Duration::from_secs(3600));
+        self.read_at = self.next;
+    }
+    pub(crate) fn take_open(&mut self) -> Option<crate::sessions::StreamTarget> {
         let result = received(&self.open)?.and_then(|result| result);
         self.open = None;
         match result {
@@ -71,17 +106,19 @@ impl Directory {
             }
         }
     }
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.key.clear();
         self.next = None;
-        #[cfg(windows)]
-        {
-            self.read_at = None;
-            self.local_read = None;
-        }
+        self.read_at = None;
+        self.local_read = None;
     }
-    #[cfg(windows)]
-    pub fn show_local(&mut self, ui: &mut egui::Ui, config: Option<&Config>) -> Option<crate::sessions::StreamTarget> {
+    pub(crate) fn refresh(&mut self) {
+        self.pending = None;
+        self.awaiting.clear();
+        self.next = None;
+        self.read_at = None;
+    }
+    fn read_local(&mut self, ctx: &egui::Context, config: Option<&Config>) {
         if let Some(result) =
             received(&self.local_read).map(|result| result.and_then(|result| result))
         {
@@ -95,7 +132,7 @@ impl Directory {
         if self.local_read.is_none() && self.read_at.is_none_or(|at| Instant::now() >= at) {
             if let Some(config) = config {
                 let directory = config.at("device-trust");
-                let context = ui.ctx().clone();
+                let context = ctx.clone();
                 let (send, receive) = mpsc::channel();
                 std::thread::spawn(move || {
                     let _ = send.send(
@@ -108,36 +145,42 @@ impl Directory {
                 self.local_read = Some(receive);
             }
         }
+    }
+    pub(crate) fn show_local(&mut self, ui: &mut egui::Ui, config: Option<&Config>) -> Option<crate::sessions::StreamTarget> {
+        self.read_local(ui.ctx(), config);
         let book = self.local_book.clone().unwrap_or_default();
         self.show(ui, config, &book)
     }
-    pub fn show(
+    pub(crate) fn show_service(&mut self, ui: &mut egui::Ui, config: Option<&Config>, address: &str) -> Option<crate::sessions::StreamTarget> {
+        self.read_local(ui.ctx(), config);
+        let book = self.local_book.clone().unwrap_or_default();
+        self.show_filtered(ui, config, &book, Some(address))
+    }
+    pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
         config: Option<&Config>,
         book: &Book,
     ) -> Option<crate::sessions::StreamTarget> {
+        self.show_filtered(ui, config, book, None)
+    }
+    fn show_filtered(&mut self, ui: &mut egui::Ui, config: Option<&Config>, book: &Book, address: Option<&str>) -> Option<crate::sessions::StreamTarget> {
         let open = self.take_open();
         let key = serde_json::to_string(&book.services).unwrap_or_default();
         if key != self.key {
             self.key = key;
             self.entries.clear();
             self.pending = None;
+            self.awaiting.clear();
             self.next = None;
         }
-        if let Some(result) = received(&self.pending) {
-            match result {
-                Ok(entries) => self.entries = entries,
-                Err(error) => self.error = error,
-            }
-            self.pending = None;
-            self.next = Some(Instant::now() + Duration::from_secs(5));
-        }
+        self.poll_results();
         if self.pending.is_none()
             && !book.services.is_empty()
             && self.next.is_none_or(|at| Instant::now() >= at)
         {
             let services = book.services.clone();
+            self.awaiting = services.iter().map(|service| service.id.clone()).collect();
             let context = ui.ctx().clone();
             let (send, receive) = mpsc::channel();
             std::thread::spawn(move || {
@@ -145,7 +188,7 @@ impl Directory {
                     .enable_all()
                     .build();
                 if let Ok(runtime) = runtime {
-                    let results = runtime.block_on(async move {
+                    runtime.block_on(async {
                         let mut tasks = tokio::task::JoinSet::new();
                         for service in services {
                             tasks.spawn(async move {
@@ -166,21 +209,20 @@ impl Directory {
                                 (service.id, result)
                             });
                         }
-                        let mut results = HashMap::new();
                         while let Some(result) = tasks.join_next().await {
                             if let Ok((id, result)) = result {
-                                results.insert(id, result);
+                                if send.send(Update::Service { id, result }).is_err() { return; }
+                                context.request_repaint();
                             }
                         }
-                        results
+                        let _ = send.send(Update::Finished);
                     });
-                    let _ = send.send(results);
                 }
                 context.request_repaint();
             });
             self.pending = Some(receive);
         }
-        ui.horizontal(|ui| {
+        if address.is_none() { ui.horizontal(|ui| {
             ui.strong(uu_i18n::text("在线设备"));
             if ui
                 .add(crate::theme::secondary_button(uu_i18n::text("刷新")).small())
@@ -188,19 +230,23 @@ impl Directory {
             {
                 self.next = None;
             }
-        });
+        }); }
         if !self.error.is_empty() {
             ui.colored_label(crate::theme::palette(ui.visuals()).danger, &self.error);
         }
-        if book.services.is_empty() {
+        if book.services.is_empty() && address.is_none() {
             ui.weak(uu_i18n::text(
                 "加入同一连接服务后，可在这里选择另一台设备。",
             ));
         }
         let mut requested = None;
-        for service in &book.services {
+        let services: Vec<_> = book.services.iter().filter(|service| address.is_none_or(|address| super::address_key(&service.address) == super::address_key(address))).collect();
+        if address.is_some() && services.is_empty() {
+            ui.weak(uu_i18n::text(if self.local_read.is_some() { "正在读取在线设备…" } else { "本机尚未保存此服务器的连接配置，请重新导入接入码。" }));
+        }
+        for service in services {
             ui.push_id(&service.id, |ui| {
-                ui.label(&service.name);
+                if address.is_none() { ui.label(&service.name); }
                 match self.entries.get(&service.id) {
                     Some(Ok(devices)) => {
                         let devices: Vec<_> = devices
@@ -313,6 +359,35 @@ fn prepare_profile(config: &Config, id: &str) -> anyhow::Result<crate::sessions:
 mod tests {
     use super::*;
     use uu_core::internet::enrollment::{self, Enrollment};
+    #[test]
+    fn completed_services_are_visible_before_slow_services_and_stale_batches_are_discarded() {
+        let (send, receive) = mpsc::channel();
+        let mut directory = Directory { pending: Some(receive), awaiting: vec!["fast".into(), "slow".into()], ..Default::default() };
+        send.send(Update::Service { id: "fast".into(), result: Ok(vec![uu_core::internet::self_hosted::Device { device: "fast-device".into(), name: "Fast device".into() }]) }).unwrap();
+        directory.poll_results();
+        assert_eq!(directory.entries["fast"].as_ref().unwrap()[0].name, "Fast device");
+        assert!(directory.pending.is_some() && !directory.entries.contains_key("slow"), "a stalled service must not hide an already completed directory");
+        send.send(Update::Service { id: "slow".into(), result: Err("controlled timeout".into()) }).unwrap();
+        send.send(Update::Finished).unwrap();
+        directory.poll_results();
+        assert!(directory.pending.is_none() && directory.awaiting.is_empty());
+        assert_eq!(directory.entries["slow"].as_ref().err().unwrap(), "controlled timeout");
+        assert!(directory.entries["fast"].is_ok());
+
+        let (lost, receive) = mpsc::channel();
+        directory.pending = Some(receive); directory.awaiting = vec!["unfinished".into()];
+        drop(lost); directory.poll_results();
+        assert!(directory.pending.is_none() && directory.entries["unfinished"].is_err());
+        assert!(directory.entries["fast"].is_ok(), "worker failure keeps completed service results");
+
+        let (old, receive) = mpsc::channel();
+        directory.pending = Some(receive); directory.awaiting = vec!["old-service".into()]; directory.key = "old configuration".into();
+        old.send(Update::Service { id: "old-service".into(), result: Ok(vec![]) }).unwrap();
+        let context = egui::Context::default();
+        let _ = context.run(Default::default(), |ctx| { egui::CentralPanel::default().show(ctx, |ui| { directory.show(ui, None, &Book::default()); }); });
+        assert!(directory.entries.is_empty() && directory.pending.is_none() && directory.awaiting.is_empty());
+        assert!(old.send(Update::Finished).is_err(), "reconfigured UI retires the old result receiver");
+    }
     struct Fixture {
         root: std::path::PathBuf,
         config: Config,

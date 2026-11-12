@@ -5505,6 +5505,7 @@ dependencies = [
  "sha2",
  "time",
  "tokio",
+ "url",
  "uu-clipboard",
  "uu-core",
  "uu-i18n",
