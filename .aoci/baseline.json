@@ -1,13 +1,13 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-12T14:16:56Z",
+  "updated_at": "2026-11-12T16:37:54Z",
   "files": {
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "6a0bf5c9355529985cd32d9a7f4caf40b7b3cb03883a878c5556d1f7c63c31d3",
-      "size": 124185,
-      "normalized_sha256": "6a0bf5c9355529985cd32d9a7f4caf40b7b3cb03883a878c5556d1f7c63c31d3"
+      "sha256": "8b2884c86e0156eb0b82ce225123071e592cccc5ba53a8fd23227435cfc14c8e",
+      "size": 124279,
+      "normalized_sha256": "8b2884c86e0156eb0b82ce225123071e592cccc5ba53a8fd23227435cfc14c8e"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -173,9 +173,9 @@
     },
     "crates/uu-cli/src/service_cli/install.rs": {
       "role": "index",
-      "sha256": "5fb263cad71c2a79deeba4793b96720812fbfec59f4f7db4018455bd41f18a5c",
-      "size": 55186,
-      "normalized_sha256": "5fb263cad71c2a79deeba4793b96720812fbfec59f4f7db4018455bd41f18a5c"
+      "sha256": "4edce2d84fb53d88e2312f1bb268f302bc993ffdab77468edeeb577428773297",
+      "size": 56178,
+      "normalized_sha256": "4edce2d84fb53d88e2312f1bb268f302bc993ffdab77468edeeb577428773297"
     },
     "crates/uu-cli/src/service_cli/supervisor.rs": {
       "role": "index",
@@ -1013,9 +1013,9 @@
     },
     "crates/uu-gui/src/service_ui.rs": {
       "role": "index",
-      "sha256": "2766be2e4d55b5a47331151ccf834f85a7e25183b189c6a3211df46c5bf143d0",
-      "size": 108680,
-      "normalized_sha256": "2766be2e4d55b5a47331151ccf834f85a7e25183b189c6a3211df46c5bf143d0"
+      "sha256": "c24117895e67bdde85d6cf3dd48dc7c9e46786bcaa3033160cfcc74b2a98016b",
+      "size": 110992,
+      "normalized_sha256": "c24117895e67bdde85d6cf3dd48dc7c9e46786bcaa3033160cfcc74b2a98016b"
     },
     "crates/uu-gui/src/service_ui/connections.rs": {
       "role": "index",
