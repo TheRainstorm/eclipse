@@ -1,15 +1,13 @@
 use eframe::egui;
-use uu_core::{host_admin::{Client,Request,Response,ServerSettings},device_book::Sharing,media::MediaStats};
+use uu_core::{host_admin::{Client,Request,Response,ServerSettings},media::MediaStats};
 use std::time::{Duration,Instant};
 
 #[derive(Default)]
 pub(super) struct RemoteAdminUi {
     base:Option<ServerSettings>,
-    draft:Option<Sharing>,
     pending:Option<(u64,Instant)>,
     seen:u64,
     notice:String,
-    tab:u8,
 }
 impl RemoteAdminUi {
     fn send(&mut self,client:&Client,request:Request) {
@@ -26,18 +24,16 @@ impl RemoteAdminUi {
             self.seen=id;self.pending=None;
             match response {
                 Response::Snapshot{snapshot}=>{
-                    if let Some(server)=snapshot.server {
-                        let dirty=self.base.as_ref().zip(self.draft.as_ref()).is_some_and(|(base,draft)|&base.saved!=draft);
-                        if !dirty {self.draft=Some(server.saved.clone());self.base=Some(server);}
-                    }
+                    self.base=snapshot.server;
                     self.notice.clear();
                 },
                 Response::Saved{restart}=>{
                     self.notice=if restart {uu_i18n::text("配置已保存，主机正在重启；服务就绪后可重新连接。")}else{uu_i18n::text("配置已保存，下次启动服务生效。")}.into();
-                    if !restart {self.base=None;self.draft=None;}
+                    if !restart {self.base=None;}
                 },
                 Response::Applied=>{self.notice=uu_i18n::text("连接权限已更新；受影响设备需重新连接。").into();},
                 Response::Error{message}=>self.notice=message,
+                Response::SessionControls{..}=>{},
             }
         }
         if self.pending.is_some_and(|(_,at)|at.elapsed()>Duration::from_secs(10)) {
@@ -57,38 +53,23 @@ impl RemoteAdminUi {
         ui.add_space(12.);
         if section==super::settings_page::Section::Connections {
             ui.label(uu_i18n::format!("已连接 {} 个会话",snapshot.connections.len()));
-            ui.weak(uu_i18n::text("修改授权会断开对应设备的会话并释放输入，重连后使用新权限。"));
+            ui.weak(uu_i18n::text("客户端只能查看会话状态；键盘、鼠标、手柄和画质由被控端服务面板控制。"));
             for connection in snapshot.connections {
                 ui.push_id(&connection.id,|ui| {
                     ui.group(|ui| {
                         ui.strong(&connection.name);ui.weak(&connection.status);
-                        let mut permissions=connection.permissions;
-                        ui.add_enabled_ui(manage&&self.pending.is_none(),|ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                if super::sharing_ui::permissions(ui,&mut permissions){self.send(client,Request::Permissions{peer:connection.peer.clone(),permissions});}
-                                if ui.add(crate::theme::secondary_button(uu_i18n::text("断开此会话"))).clicked(){self.send(client,Request::Disconnect{session:connection.id.clone()});}
-                            });
-                        });
                     });
                 });
             }
-            if !manage {ui.weak(uu_i18n::text("本机没有主机管理授权；房主可在服务管理的设备授权中授予。"));}
+            if !manage {ui.weak(uu_i18n::text("本机没有主机查看授权；被控端可调整设备授权。"));}
         }else{
             if !manage {ui.label(uu_i18n::text("房主尚未授予管理服务配置的权限。"));return;}
-            if self.base.is_none()&&self.pending.is_none(){self.send(client,Request::Inspect);}
-            let (Some(base),Some(draft))=(&self.base,&mut self.draft) else{return;};
-            ui.horizontal_wrapped(|ui|{for (tab,label) in [(0,uu_i18n::text("采集与声音")),(1,uu_i18n::text("编码")),(2,uu_i18n::text("访问权限"))] {crate::theme::tab_value(ui,&mut self.tab,tab,label);}});
-            ui.add_space(10.);
-            super::server_config_ui::edit(ui,draft,self.tab,&base.monitors,base.portal,true,true);
-            ui.add_space(12.);
-            if base.active!=base.saved {ui.weak(uu_i18n::text("已保存配置与当前运行配置不同，下次启动生效。"));}
-            ui.weak(uu_i18n::text("保存供下次启动使用；保存并重启会断开主机上的全部串流。修改连接端口后，请同步更新设备地址。"));
-            let mut save=None;
-            ui.horizontal(|ui| {
-                if ui.add_enabled(self.pending.is_none()&&draft!=&base.saved,crate::theme::secondary_button(uu_i18n::text("保存，下次启动生效"))).clicked(){save=Some(false);}
-                if ui.add_enabled(self.pending.is_none(),crate::theme::secondary_button(uu_i18n::text("保存并重启服务"))).clicked(){save=Some(true);}
-            });
-            if let Some(restart)=save {let request=Request::Save{revision:base.revision.clone(),settings:draft.clone(),restart};self.send(client,request);}
+            ui.label(uu_i18n::text("主机配置只能在被控端修改；此处仅显示主机当前提供的只读信息。"));
+            if let Some(base)=&self.base {
+                ui.add_space(8.);
+                ui.weak(uu_i18n::format!("当前显示器：{} 个",base.monitors.len()));
+                ui.weak(uu_i18n::text("服务端可通过会话面板控制每个客户端的输入、显示器和画质。"));
+            }
         }
     }
 }

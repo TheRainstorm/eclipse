@@ -5,7 +5,7 @@ use crate::{
     media::MediaStats,
     native_input::{InputCommand, NativeInputReceiver, NextInput},
 };
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{
@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::{mpsc,oneshot, Notify},
+    sync::{mpsc,oneshot, watch, Notify},
     time::timeout,
 };
 use uu_input::{DesktopRect, InputInjector};
@@ -35,6 +35,7 @@ enum Packet {
     Quality {request:u64,settings:crate::native_quality::Update},
     QualityApplied {applied:crate::native_quality::Applied},
     AdminStatus {available:bool},
+    ServerManaged {managed:bool},
     AdminRequest {request:u64,command:crate::host_admin::Request},
     AdminResponse {request:u64,response:crate::host_admin::Response},
     AdminApply {request:u64},
@@ -389,9 +390,10 @@ pub(crate) struct HostControl {
     frame_trace_registered: AtomicBool,
     video_e2e_registered: AtomicBool,
     quality:Mutex<Option<crate::native_quality::Runtime>>,
+    quality_state:Mutex<Option<watch::Receiver<uu_media::encoder::Settings>>>,
     session:Mutex<Option<crate::shared_host::SessionContext>>,
+    server_managed:AtomicBool,
     admin_busy:AtomicBool,
-    pending_restart:Mutex<Option<u64>>,
     displays:Mutex<Option<Arc<crate::native_displays::Host>>>,
     pending_display:Mutex<Option<u64>>,
     stopped:AtomicBool,
@@ -404,6 +406,9 @@ pub(crate) struct HostControl {
     clipboard_version: std::sync::atomic::AtomicU8,
     gamepad_registered: AtomicBool,
     gamepad_typed: AtomicBool,
+    input_limit: std::sync::atomic::AtomicU8,
+    input_current: std::sync::atomic::AtomicU8,
+    client_input_requested: AtomicBool,
 }
 impl HostControl {
     pub fn set_virtual_displays(&self,host:Option<Arc<crate::native_virtual_display::Host>>) {*self.virtual_displays.lock().unwrap()=host;}
@@ -413,7 +418,12 @@ impl HostControl {
     pub fn clipboard_images(&self,enabled:bool){self.clipboard_version.store(if enabled{2}else{1},Ordering::Release);}
     pub fn gamepad_types(&self,enabled:bool){self.gamepad_typed.store(enabled,Ordering::Release);}
     pub fn set_quality(&self,quality:crate::native_quality::Runtime){*self.quality.lock().unwrap()=Some(quality);}
-    pub fn set_session(&self,session:Option<crate::shared_host::SessionContext>) {*self.session.lock().unwrap()=session;}
+    pub fn set_quality_state(&self,state:watch::Receiver<uu_media::encoder::Settings>){*self.quality_state.lock().unwrap()=Some(state);}
+    pub fn set_session(&self,session:Option<crate::shared_host::SessionContext>) {
+        self.server_managed.store(session.is_some(),Ordering::Release);
+        *self.session.lock().unwrap()=session;
+    }
+    pub(crate) fn server_managed(&self)->bool {self.server_managed.load(Ordering::Acquire)}
     fn admin_status(&self)->Packet {
         Packet::AdminStatus{available:self.session.lock().unwrap().as_ref().is_some_and(|s|s.access.sessions.administration.lock().unwrap().is_some())}
     }
@@ -434,11 +444,71 @@ impl HostControl {
         };
         if self.stopped.load(Ordering::Acquire){return;}
         let response=result.unwrap_or_else(|error|Response::Error{message:error.to_string().chars().take(512).collect()});
-        if matches!(response,Response::Saved{restart:true}) {*self.pending_restart.lock().unwrap()=Some(request);}
         let _=send(&channel,Packet::AdminResponse{request,response}).await;
     }
     pub fn set_permissions(&self,permissions:crate::device_trust::Permissions) {
-        if let Some(worker)=&self.worker {worker.state.allowed.store(permissions.input_mask(),Ordering::Release);}
+        let input = if self.worker.is_some() { permissions.input_permissions() } else { crate::device_trust::InputPermissions::NONE };
+        self.input_limit.store(input.mask(),Ordering::Release);
+        self.input_current.store(input.mask(),Ordering::Release);
+        if let Some(worker)=&self.worker {
+            worker.state.allowed.store(input.mask(),Ordering::Release);
+            let enabled=input.any()&&self.client_input_requested.load(Ordering::Acquire);
+            worker.request(enabled);
+        }
+    }
+    pub fn set_input_permissions(&self,input:crate::device_trust::InputPermissions)->Result<()> {
+        let requested=input.mask();
+        let limit=self.input_limit.load(Ordering::Acquire);
+        ensure!(requested & !limit == 0,"{}",uu_i18n::text("该会话没有请求的输入权限"));
+        let previous=self.input_current.swap(requested,Ordering::AcqRel);
+        if let Some(worker)=&self.worker {
+            worker.state.allowed.store(requested,Ordering::Release);
+            if previous & !requested != 0 {
+                // Revocation owns the whole active input stream: release held
+                // keys and the virtual gamepad before the next channel grant.
+                worker.request(false);
+            }
+            if requested!=0&&self.client_input_requested.load(Ordering::Acquire) {worker.request(true);}
+        }
+        Ok(())
+    }
+    pub fn input_permissions(&self)->crate::device_trust::InputPermissions {
+        crate::device_trust::InputPermissions::from_mask(self.input_current.load(Ordering::Acquire))
+    }
+    pub fn max_input_permissions(&self)->crate::device_trust::InputPermissions {
+        crate::device_trust::InputPermissions::from_mask(self.input_limit.load(Ordering::Acquire))
+    }
+    pub fn request_quality(&self,settings:crate::native_quality::Update)->Result<()> {
+        let runtime=self.quality.lock().unwrap().clone().context(uu_i18n::text("主机尚未准备好动态画质"))?;
+        let reply=runtime.request(settings)?;
+        if let Ok(handle)=tokio::runtime::Handle::try_current() {
+            handle.spawn(async move { let _=reply.await; });
+        } else {
+            std::thread::spawn(move|| {
+                if let Ok(runtime)=tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                    let _=runtime.block_on(reply);
+                }
+            });
+        }
+        Ok(())
+    }
+    pub fn select_display(&self,id:i32)->Result<()> {
+        let displays=self.displays.lock().unwrap().clone().context(uu_i18n::text("该会话不支持显示器切换"))?;
+        match displays.select(id) {
+            Some(false)=>Ok(()),
+            Some(true)=>{displays.commit();Ok(())},
+            None=>anyhow::bail!("{}",uu_i18n::text("显示器不存在或正在切换")),
+        }
+    }
+    pub fn control_snapshot(&self)->crate::shared_host::SessionControlSnapshot {
+        let displays=self.displays.lock().unwrap().clone();
+        let (fps,bitrate_kbps)=self.quality_state.lock().unwrap().as_ref().map_or((0,0),|state|{
+            let settings=state.borrow();(settings.fps,settings.bitrate_kbps)
+        });
+        let (display,displays)=displays.map_or((None,Vec::new()),|host|{
+            let catalog=host.catalog();(Some(catalog.current_id),catalog.screens)
+        });
+        crate::shared_host::SessionControlSnapshot{input:self.input_permissions(),max_input:self.max_input_permissions(),fps,bitrate_kbps,display,displays}
     }
     #[cfg(test)]
     pub async fn new(
@@ -478,7 +548,8 @@ impl HostControl {
             frame_trace_allowed:AtomicBool::new(false),frame_trace_registered:AtomicBool::new(false),
             video_e2e_registered:AtomicBool::new(false),
             quality:Mutex::new(None),
-            session:Mutex::new(None),admin_busy:AtomicBool::new(false),pending_restart:Mutex::new(None),
+            quality_state:Mutex::new(None),
+            session:Mutex::new(None),server_managed:AtomicBool::new(false),admin_busy:AtomicBool::new(false),
             displays:Mutex::new(None),
             pending_display:Mutex::new(None),
             stopped:AtomicBool::new(false),
@@ -491,6 +562,9 @@ impl HostControl {
             clipboard_version: std::sync::atomic::AtomicU8::new(1),
             gamepad_registered: AtomicBool::new(false),
             gamepad_typed: AtomicBool::new(false),
+            input_limit: std::sync::atomic::AtomicU8::new(0),
+            input_current: std::sync::atomic::AtomicU8::new(0),
+            client_input_requested:AtomicBool::new(false),
             registered: AtomicBool::new(false),
         })
     }
@@ -579,6 +653,10 @@ impl HostControl {
                         if host.stopped.load(Ordering::Acquire){return;}
                         match packet {
                             Some(Packet::Quality{request,settings})=>{
+                                if host.server_managed() {
+                                    let _=send(&channel,Packet::QualityApplied{applied:crate::native_quality::Applied{request,settings,bitrate_kbps:0,error:Some(uu_i18n::text("画质由被控端服务面板控制").into())}}).await;
+                                    return;
+                                }
                                 let quality=host.quality.lock().unwrap().clone();
                                 tokio::spawn(async move {
                                     let result=async {
@@ -593,14 +671,7 @@ impl HostControl {
                                 tokio::spawn(host.clone().administer(channel.clone(),request,command));
                             },
                             Some(Packet::AdminApply{request})=>{
-                                let matched={let mut pending=host.pending_restart.lock().unwrap();if *pending==Some(request){pending.take();true}else{false}};
-                                if matched {
-                                    let context=host.session.lock().unwrap().clone();
-                                    if let Some(context)=context {
-                                        let service=context.access.sessions.administration.lock().unwrap().clone();
-                                        if let Some(service)=service {tokio::task::spawn_blocking(move||service.restart(&context));}
-                                    }
-                                }
+                                let _=request;
                             },
                             Some(Packet::Ping { sequence }) => {
                                 if let Some(worker) = &host.worker {
@@ -609,6 +680,7 @@ impl HostControl {
                                 let _ = send(&channel, Packet::Pong { sequence }).await;
                                 let _ = send(&channel, host.status()).await;
                                 let _ = send(&channel, host.admin_status()).await;
+                                let _ = send(&channel, Packet::ServerManaged{managed:host.server_managed()}).await;
                                 let _ = send(&channel,Packet::Telemetry{version:1,stages:host.timing.snapshot()}).await;
                                 if host.timing.video_e2e.enabled() {let _=send(&channel,Packet::InputTimingSupport{version:1}).await;}
                                 let displays=host.displays.lock().unwrap().clone();
@@ -617,7 +689,7 @@ impl HostControl {
                             }
                             Some(Packet::SelectDisplay{request,id})=>{
                                 let displays=host.displays.lock().unwrap().clone();
-                                let decision=if host.pending_display.lock().unwrap().is_some(){None}else{displays.as_ref().and_then(|d|d.select(id))};
+                                let decision=if host.server_managed() {None}else if host.pending_display.lock().unwrap().is_some(){None}else{displays.as_ref().and_then(|d|d.select(id))};
                                 let restart=decision==Some(true);
                                 if restart {*host.pending_display.lock().unwrap()=Some(request);}
                                 let _=send(&channel,Packet::DisplaySelected{request,accepted:decision.is_some(),restart}).await;
@@ -627,6 +699,7 @@ impl HostControl {
                                 if matched {let displays=host.displays.lock().unwrap().clone();if let Some(displays)=displays{displays.commit();}}
                             },
                             Some(Packet::RequestInput { enabled }) => {
+                                host.client_input_requested.store(enabled,Ordering::Release);
                                 if let Some(worker) = &host.worker {
                                     worker.request(enabled);
                                 }
@@ -729,6 +802,7 @@ impl ViewerControl {
         let admin=stats.host_admin.attach();
         *stats.native_quality_applied.lock().unwrap()=None;
         stats.control_open.store(0,Ordering::Release);
+        stats.server_managed.store(false,Ordering::Release);
         stats.capabilities.enable(Capability::Input,false);
         stats.native_input_available.store(false,Ordering::Release);
         stats.native_timing.reset();
@@ -788,6 +862,7 @@ impl ViewerControl {
                     }
                 },
                 Some(Packet::AdminStatus{available})=>{incoming.host_admin.available.store(available,Ordering::Release);},
+                Some(Packet::ServerManaged{managed})=>{incoming.server_managed.store(managed,Ordering::Release);},
                 Some(Packet::AdminResponse{request,response})=>{
                     let restart=matches!(response,crate::host_admin::Response::Saved{restart:true});
                     incoming.host_admin.receive(request,response);
@@ -1303,10 +1378,32 @@ mod tests {
             .is_none());
         assert!(HostControl::new(true, None, None).await.worker.is_none());
     }
+    #[tokio::test]
+    async fn session_permissions_are_a_ceiling_and_release_then_restore_client_input() {
+        let releases=Arc::new(AtomicU64::new(0));let observed=releases.clone();
+        let host=HostControl::with_injector(true,Some(uu_capture::DesktopRect{x:0,y:0,width:640,height:480}),None,
+            Some(Box::new(Fixture{events:Arc::default(),releases:observed})),Arc::default()).await;
+        let keyboard_only=crate::device_trust::InputPermissions{keyboard:true,mouse:false,gamepad:false};
+        host.client_input_requested.store(true,Ordering::Release);
+        host.set_permissions(crate::device_trust::Permissions::CONTROL.with_input_permissions(keyboard_only));
+        let worker=host.worker.as_ref().unwrap();
+        wait(||worker.state.enabled.load(Ordering::Acquire)).await;
+        assert_eq!(host.input_permissions(),keyboard_only);
+        assert!(host.set_input_permissions(crate::device_trust::InputPermissions::ALL).is_err(),"session controls cannot exceed the device grant");
+        assert!(worker.push(InputCommand::Key{usage:4,pressed:true}));
+        wait(||worker.state.applied.load(Ordering::Acquire)>0).await;
+        assert!(host.set_input_permissions(crate::device_trust::InputPermissions::NONE).is_ok());
+        wait(||releases.load(Ordering::Acquire)>0).await;
+        wait(||!worker.state.enabled.load(Ordering::Acquire)).await;
+        assert!(host.set_input_permissions(keyboard_only).is_ok());
+        wait(||worker.state.enabled.load(Ordering::Acquire)).await;
+        host.stop().await;
+    }
     #[test]
     fn control_messages_are_bounded_and_do_not_accept_interop_or_extra_commands() {
         assert!(parse(&vec![b'x'; MAX_CONTROL + 1]).is_none());
         assert!(parse(br#"{"action":"kbd_press","key":65}"#).is_none());
         assert!(parse(br#"{"type":"request_input","enabled":true,"command":"other"}"#).is_none());
+        assert!(matches!(parse(br#"{"type":"server_managed","managed":true}"#),Some(Packet::ServerManaged{managed:true})));
     }
 }

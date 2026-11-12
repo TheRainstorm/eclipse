@@ -48,6 +48,9 @@ impl EncodedCapture {
             hdr: false, allow_input: config.allow_input, fps: options.fps, cancelled: cancelled.0.clone(),
         };
         let prepared = tokio::task::spawn_blocking(move || -> Result<_> {
+            #[cfg(windows)]
+            let mut capture = crate::shared_capture::open_with_options(&config.source, capture_options)?;
+            #[cfg(not(windows))]
             let mut capture = uu_capture::open_with_options(&config.source, capture_options)?;
             capture.set_frame_rate(options.fps)?;
             let mut capture = uu_capture::scale::bounded(capture, options.bounds);

@@ -739,6 +739,10 @@ impl App {
         self.resolve_frame_rate();
         if self.stream_target.is_some() {
             if self.controller.closing() {return;}
+            if self.server_managed_media() {
+                self.settings_feedback=uu_i18n::text("画质由被控端服务面板控制").into();
+                return;
+            }
             let request=self.native_quality_request();
             let dynamic=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_response.lock().unwrap().as_ref().is_some_and(|r|r.dynamic));
             let reconnect=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_request.get().is_some_and(|old|if dynamic {old.bounds!=request.bounds||old.codec!=request.codec}else{old!=&request}));

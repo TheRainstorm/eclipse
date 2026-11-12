@@ -470,6 +470,8 @@ struct Manager {
     connection_error: String,
     keep_displays: Option<bool>,
     snapshot: Option<host_admin::Snapshot>,
+    session_controls: Vec<host_admin::SessionControl>,
+    session_controls_error: String,
     connection_history: super::connection_history_ui::State,
     trust: Option<TrustSnapshot>,
     plugins:Option<PluginSnapshot>,
@@ -520,6 +522,8 @@ impl Manager {
             connection_error: String::new(),
             keep_displays: None,
             snapshot: None,
+            session_controls: Vec::new(),
+            session_controls_error: String::new(),
             connection_history: Default::default(),
             trust: None,
             plugins:None,
@@ -604,6 +608,22 @@ impl Manager {
                     Ok(Response::Error { message }) | Err(message) => Err(message),
                     _ => Err(uu_i18n::text("请更新并重启主机服务以读取连接历史。").into()),
                 }),
+                Event::SessionControls(result) => match result {
+                    Ok(Response::Admin { response: host_admin::Response::SessionControls { sessions } }) => {
+                        self.session_controls = sessions;
+                        self.session_controls_error.clear();
+                    }
+                    Ok(Response::Admin { response: host_admin::Response::Error { message } })
+                    | Ok(Response::Error { message })
+                    | Err(message) => {
+                        self.session_controls.clear();
+                        self.session_controls_error = message;
+                    }
+                    _ => {
+                        self.session_controls.clear();
+                        self.session_controls_error = uu_i18n::text("请更新并重启后台服务以读取逐会话控制。").into();
+                    }
+                },
                 Event::State {
                     state,
                     build,
@@ -638,6 +658,8 @@ impl Manager {
                                 .retain(|id, _| self.pending.iter().any(|p| p.id == *id));
                             self.permissions
                                 .retain(|id, _| self.pending.iter().any(|p| p.id == *id));
+                            self.session_controls.retain(|session| snapshot.connections.iter().any(|connection| connection.id == session.id));
+                            if snapshot.connections.is_empty() { self.session_controls_error.clear(); }
                             if !self.dirty {
                                 if let Some(server) = &snapshot.server {
                                     self.draft = server.saved.clone();
@@ -650,6 +672,8 @@ impl Manager {
                             self.ready = false;
                             self.keep_displays = None;
                             self.snapshot = None;
+                            self.session_controls.clear();
+                            self.session_controls_error.clear();
                             self.service_connections.snapshot = None;
                             self.pending.clear();
                             self.endpoints.clear();
@@ -1092,41 +1116,105 @@ impl Manager {
         self.current_connections(ui);
     }
     fn current_connections(&mut self, ui: &mut egui::Ui) {
-        if let Some(snapshot) = self.snapshot.clone() {
+        let Some(snapshot) = self.snapshot.clone() else {
+            ui.weak(uu_i18n::text("连接服务后显示当前会话。"));
+            return;
+        };
+        if self.session_controls.is_empty() {
             if snapshot.connections.is_empty() {
                 ui.weak(uu_i18n::text("当前没有连接的会话。设备连接后，可在这里查看和管理会话。"));
-                return;
+            } else {
+                ui.strong(uu_i18n::format!("已连接 {} 个会话", snapshot.connections.len()));
+                ui.colored_label(crate::theme::palette(ui.visuals()).warning,
+                    if self.session_controls_error.is_empty() {
+                        uu_i18n::text("逐会话控制正在建立；请稍候。")
+                    } else {
+                        uu_i18n::text("当前后台服务尚不支持逐会话控制；请更新并重启服务。")
+                    });
+                for connection in snapshot.connections {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("{} · {}", connection.name, connection.status));
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("断开此会话"))).clicked() {
+                            self.submit(Job::Rpc(Request::Admin {
+                                request: host_admin::Request::Disconnect { session: connection.id },
+                            }));
+                        }
+                    });
+                }
             }
-            ui.strong(uu_i18n::format!(
-                "已连接 {} 个会话",
-                snapshot.connections.len()
-            ));
-            for connection in snapshot.connections {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("{} · {}", connection.name, connection.status));
-                    let mut permission = connection.permissions;
-                    if super::sharing_ui::permissions(ui, &mut permission) {
+            return;
+        }
+        ui.strong(uu_i18n::format!("已连接 {} 个会话", self.session_controls.len()));
+        ui.weak(uu_i18n::text("每个会话可单独限制键盘、鼠标、手柄、显示器和画质；客户端无法修改此面板。"));
+        for session in self.session_controls.clone() {
+            ui.push_id(("service-session", &session.id), |ui| {
+                let frame = crate::theme::card(ui.visuals());
+                frame.show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(&session.name);
+                        ui.weak(&session.status);
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("断开此会话")).small()).clicked() {
+                            self.submit(Job::Rpc(Request::Admin {
+                                request: host_admin::Request::Disconnect { session: session.id.clone() },
+                            }));
+                        }
+                    });
+                    let Some(control) = session.control else {
+                        ui.weak(uu_i18n::text("此会话尚未建立控制通道。"));
+                        return;
+                    };
+                    let mut input = control.input;
+                    if super::sharing_ui::input_permissions(ui, &mut input, control.max_input) {
                         self.submit(Job::Rpc(Request::Admin {
-                            request: host_admin::Request::Permissions {
-                                peer: connection.peer,
-                                permissions: permission,
+                            request: host_admin::Request::SessionPermissions {
+                                session: session.id.clone(),
+                                input,
                             },
                         }));
                     }
-                    if ui
-                        .add(crate::theme::secondary_button(uu_i18n::text("断开此会话")))
-                        .clicked()
-                    {
-                        self.submit(Job::Rpc(Request::Admin {
-                            request: host_admin::Request::Disconnect {
-                                session: connection.id,
-                            },
-                        }));
+                    if !control.displays.is_empty() {
+                        let mut selected = control.display;
+                        let label = control.display.and_then(|id| control.displays.iter().find(|screen| screen.id == id).map(|screen| screen.display_name.clone()))
+                            .unwrap_or_else(|| uu_i18n::text("当前显示器").into());
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(uu_i18n::text("显示器"));
+                            let before = selected;
+                            crate::theme::Select::from_id_salt(("service-session-display", &session.id)).selected_text(label).show_ui(ui, |ui| {
+                                for screen in &control.displays {
+                                    crate::theme::selectable_value(ui, &mut selected, Some(screen.id), screen.display_name.clone());
+                                }
+                            });
+                            if selected != before {
+                                if let Some(id) = selected {
+                                    self.submit(Job::Rpc(Request::Admin {
+                                        request: host_admin::Request::SessionDisplay { session: session.id.clone(), id },
+                                    }));
+                                }
+                            }
+                        });
+                    }
+                    if control.fps > 0 && control.bitrate_kbps > 0 {
+                        let draft_id = egui::Id::new(("service-session-quality", &session.id));
+                        let (mut fps, mut bitrate) = ui.data_mut(|data| data.get_temp::<(u32, u32)>(draft_id)).unwrap_or((control.fps, control.bitrate_kbps));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(uu_i18n::text("帧率"));
+                            crate::theme::number_input(ui, egui::DragValue::new(&mut fps).range(5..=240).suffix(" FPS"));
+                            ui.label(uu_i18n::text("码率"));
+                            crate::theme::number_input(ui, egui::DragValue::new(&mut bitrate).range(64..=1_000_000).suffix(" kbps"));
+                            if ui.add(crate::theme::secondary_button(uu_i18n::text("应用此会话画质")).small()).clicked() {
+                                ui.data_mut(|data| data.insert_temp(draft_id, (fps, bitrate)));
+                                self.submit(Job::Rpc(Request::Admin {
+                                    request: host_admin::Request::SessionQuality {
+                                        session: session.id.clone(),
+                                        update: uu_core::native_quality::Update { fps, bitrate_kbps: Some(bitrate), rate_control: None },
+                                    },
+                                }));
+                            }
+                        });
+                        ui.data_mut(|data| data.insert_temp(draft_id, (fps, bitrate)));
                     }
                 });
-            }
-        } else {
-            ui.weak(uu_i18n::text("连接服务后显示当前会话。"));
+            });
         }
     }
 }

@@ -7,6 +7,17 @@ use anyhow::{ensure, Context, Result};
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 use tokio::sync::watch;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionControlSnapshot {
+    pub input: crate::device_trust::InputPermissions,
+    pub max_input: crate::device_trust::InputPermissions,
+    pub fps: u32,
+    pub bitrate_kbps: u32,
+    pub display: Option<i32>,
+    pub displays: Vec<crate::screen_control::RemoteScreen>,
+}
+
 /// One running host per private configuration, including separate launcher
 /// processes. This lock is independent of the short-lived store update lock.
 pub struct HostOwner(std::fs::File);
@@ -40,7 +51,7 @@ pub struct SessionContext {
     /// The authenticated session lease, independent of peer/device identity.
     pub session_id: Option<String>,
 }
-struct Active { peer: String, record: crate::connection_history::Record, stop: watch::Sender<bool>, status: crate::native::HostStatus, completed: Option<bool> }
+struct Active { peer: String, record: crate::connection_history::Record, stop: watch::Sender<bool>, status: crate::native::HostStatus, completed: Option<bool>, control: Option<Arc<crate::native_control::HostControl>> }
 #[derive(Default)]
 pub struct SessionGate {
     active: Mutex<HashMap<String, Active>>,
@@ -104,7 +115,7 @@ impl SessionGate {
         let session = uuid::Uuid::new_v4().to_string();
         let (stop, receiver) = watch::channel(false);
         let record = self.history.begin(&session, peer, name);
-        active.insert(session.clone(), Active { peer: peer.into(), record, stop, status: crate::native::HostStatus::Starting, completed: None });
+        active.insert(session.clone(), Active { peer: peer.into(), record, stop, status: crate::native::HostStatus::Starting, completed: None, control: None });
         Ok(SessionLease { gate: self.clone(), session, receiver,temporary:None })
     }
     pub fn disconnect(&self) {
@@ -121,6 +132,27 @@ impl SessionGate {
     pub fn details(&self) -> Vec<(String, String, crate::native::HostStatus)> {
         let mut sessions: Vec<_> = self.active.lock().unwrap().iter().map(|(id,s)| (id.clone(),s.peer.clone(),s.status.clone())).collect();
         sessions.sort_by(|a,b|a.0.cmp(&b.0)); sessions
+    }
+    pub(crate) fn attach_control(&self, session: &str, control: Arc<crate::native_control::HostControl>) {
+        if let Some(active) = self.active.lock().unwrap().get_mut(session) { active.control = Some(control); }
+    }
+    pub fn session_control_snapshot(&self, session: &str) -> Option<SessionControlSnapshot> {
+        self.active.lock().unwrap().get(session).and_then(|active| active.control.as_ref()).map(|control| control.control_snapshot())
+    }
+    pub fn set_session_input(&self, session: &str, input: crate::device_trust::InputPermissions) -> Result<()> {
+        let control = self.active.lock().unwrap().get(session).and_then(|active| active.control.clone())
+            .context(uu_i18n::text("该会话尚未建立输入控制"))?;
+        control.set_input_permissions(input)
+    }
+    pub fn set_session_quality(&self, session: &str, update: crate::native_quality::Update) -> Result<()> {
+        let control = self.active.lock().unwrap().get(session).and_then(|active| active.control.clone())
+            .context(uu_i18n::text("该会话尚未建立画质控制"))?;
+        control.request_quality(update)
+    }
+    pub fn set_session_display(&self, session: &str, id: i32) -> Result<()> {
+        let control = self.active.lock().unwrap().get(session).and_then(|active| active.control.clone())
+            .context(uu_i18n::text("该会话尚未建立显示器控制"))?;
+        control.select_display(id)
     }
     pub fn disconnect_session(&self, id: &str) {
         if let Some(active) = self.active.lock().unwrap().get(id) { active.stop.send_replace(true); }

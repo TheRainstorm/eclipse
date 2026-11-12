@@ -496,7 +496,7 @@ impl super::App {
                         if screens.screens.is_empty(){ui.label(uu_i18n::text("等待显示器…"));}
                     });
                 });
-            let response=ui.add(super::theme::toolbar_button("+",super::theme::ButtonKind::Ghost)).on_hover_text(uu_i18n::text("选择远端显示器"));
+            let response=ui.add_enabled(!self.server_managed_media(),super::theme::toolbar_button("+",super::theme::ButtonKind::Ghost)).on_hover_text(uu_i18n::text("选择远端显示器"));
             if response.clicked(){self.displays.menu_open=!self.displays.menu_open;self.stream_menu.open=false;self.context.memory_mut(|m|m.close_popup());self.displays.anchor=response.rect.left_bottom();self.release_all_keys();}
         });
         if let Some((source,target,after))=reorder{self.reorder_display_tab(source,target,after);}
@@ -524,6 +524,16 @@ impl super::App {
     fn display_menu(&mut self, ui: &mut egui::Ui) {
         let screens=self.visible_remote_screens();
         ui.set_min_width(260.0);
+        if self.server_managed_media() {
+            ui.label(uu_i18n::text("显示器由被控端服务面板控制"));
+            for screen in &screens.screens {
+                let selected=self.displays.selected==Some(screen.id);
+                let label=if selected {uu_i18n::format!("✓ {}",self.screen_label(screen))}else{self.screen_label(screen)};
+                ui.add_enabled(false,egui::Label::new(label));
+            }
+            if !self.displays.notice.is_empty(){separator(ui);ui.label(&self.displays.notice);}
+            return;
+        }
         if !screens.screens.iter().any(|s|s.kind==uu_core::screen_control::PORTAL_CHOICE_KIND) {
             if let Some(tabs)=self.workspace_tabs.clone() {
                 if let Some(group)=tabs.groups.iter().find(|g|g.contains(tabs.active)) {
@@ -556,14 +566,17 @@ impl super::App {
     }
 
     fn picture_menu(&mut self, ui: &mut egui::Ui) {
+        let managed=self.server_managed_media();
         if self.uses_engine_controls() {
             let hdr=self.controller.as_ref().and_then(|h|*h.stats.native_hdr_response.lock().unwrap()).is_some();
             let displaying=eframe::glow_presentation::color_target_for(ui.ctx(),ui.ctx().viewport_id()).is_some_and(|c|c.hdr);
             let status=if self.controller.is_none(){"—"}else if hdr&&displaying{"HDR10"}else if hdr{"HDR → SDR"}else{"SDR"};
             let tip=if hdr&&displaying {uu_i18n::text("当前 HDR10 · 10 位 PQ / BT.2020")}else if hdr {uu_i18n::text("当前 HDR10 → SDR 映射")}else{uu_i18n::text("当前 SDR；HDR 需要两端显示输出和编解码支持")};
-            ui.add_enabled_ui(cfg!(windows),|ui|{if menu_toggle(ui,uu_i18n::text("优先 HDR"),self.preferences.hdr,status).on_hover_text(format!("{tip}\n{}",uu_i18n::text("需要两端显示输出、采集和编解码支持；连接时协商，无法使用时回退SDR。"))).clicked(){self.preferences.hdr=!self.preferences.hdr;self.persist_preferences();self.send_capture_settings();}});
+            ui.add_enabled_ui(cfg!(windows)&&!managed,|ui|{if menu_toggle(ui,uu_i18n::text("优先 HDR"),self.preferences.hdr,status).on_hover_text(format!("{tip}\n{}",uu_i18n::text("需要两端显示输出、采集和编解码支持；连接时协商，无法使用时回退SDR。"))).clicked(){self.preferences.hdr=!self.preferences.hdr;self.persist_preferences();self.send_capture_settings();}});
             separator(ui);
         }
+        if managed {ui.label(uu_i18n::text("画质由被控端服务面板控制"));}
+        else {
         if self.stream_menu.quality_detail.is_some_and(|(kind,_)|!matches!(kind,QualityDetail::Resolution|QualityDetail::FrameRate)) {self.stream_menu.quality_detail=None;}
         let response=menu_row(ui,uu_i18n::text("分辨率"),None,false,true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::Resolution,response.rect));}
@@ -584,6 +597,7 @@ impl super::App {
         let response=menu_row(ui,uu_i18n::text("其它帧数"),None,manual&&!uu_core::client_settings::COMMON_FRAME_RATES.contains(&self.preferences.fps),true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::FrameRate,response.rect));}
         separator(ui);
+        }
         let response=menu_toggle(ui,uu_i18n::text("垂直同步"),self.preferences.vsync,&self.preferences.hotkeys.label(super::shortcuts::Action::Vsync));
         if response.hovered(){self.stream_menu.quality_detail=None;}
         if response.clicked(){
@@ -593,6 +607,7 @@ impl super::App {
     }
 
     fn encoding_menu(&mut self, ui: &mut egui::Ui) {
+        if self.server_managed_media() {ui.label(uu_i18n::text("画质由被控端服务面板控制"));return;}
         if self.stream_menu.quality_detail.is_some_and(|(kind,_)|!matches!(kind,QualityDetail::Bitrate|QualityDetail::RateMode)) {self.stream_menu.quality_detail=None;}
         let options: &[(super::settings::CodecPreference,&str)]=if self.uses_engine_controls() {
             &[(super::settings::CodecPreference::Auto,uu_i18n::text("自动协商")),(super::settings::CodecPreference::H264,"H.264"),
@@ -681,6 +696,7 @@ impl super::App {
     }
 
     fn quality_detail(&mut self, ctx: &egui::Context, blocked: &mut Vec<Rect>) {
+        if self.server_managed_media(){self.stream_menu.quality_detail=None;return;}
         let Some((kind, row)) = self.stream_menu.quality_detail else {
             return;
         };

@@ -114,6 +114,8 @@ pub mod wlan_streaming;
 
 mod latest_capture;
 pub mod capture_overlap;
+#[cfg(any(windows,test))]
+mod shared_capture;
 
 pub mod hotkeys;
 

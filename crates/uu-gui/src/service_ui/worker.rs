@@ -61,6 +61,7 @@ pub(super) enum Event {
         completed: bool,
         result: Result<Response, String>,
     },
+    SessionControls(Result<Response, String>),
 }
 
 pub(super) struct Worker {
@@ -172,6 +173,17 @@ impl Worker {
                     endpoint_poll.completed(endpoint_poll_result(&endpoints),Instant::now());
                     let endpoints=endpoints.map_err(|error|format!("{error:#}"));
                     if send.send(Event::Endpoints {owner:endpoint_owner,result:endpoints}).is_err() { break; }
+                }
+                if state == SERVICE_RUNNING {
+                    let result = runtime
+                        .block_on(request_owner(Request::Admin {
+                            request: uu_core::host_admin::Request::SessionControls,
+                        }))
+                        .map_err(|e| format!("{e:#}"));
+                    if send.send(Event::SessionControls(result)).is_err() {
+                        break;
+                    }
+
                 }
                 if state == SERVICE_RUNNING && Instant::now() >= trust_at {
                     let result = runtime
