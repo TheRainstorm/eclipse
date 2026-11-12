@@ -18,7 +18,9 @@ use windows_sys::{
             HANDLE, INVALID_HANDLE_VALUE, LUID, POINTL, WAIT_ABANDONED, WAIT_OBJECT_0,
             WAIT_TIMEOUT,
         },
-        Graphics::Gdi::{DISPLAYCONFIG_PATH_ACTIVE, DISPLAYCONFIG_PATH_MODE_IDX_INVALID, DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE},
+        Graphics::Gdi::{DISPLAYCONFIG_PATH_ACTIVE, DISPLAYCONFIG_PATH_MODE_IDX_INVALID, DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE,
+            DISPLAYCONFIG_TARGET_FORCED_AVAILABILITY_BOOT, DISPLAYCONFIG_TARGET_FORCED_AVAILABILITY_PATH,
+            DISPLAYCONFIG_TARGET_FORCED_AVAILABILITY_SYSTEM},
         Security::{
             Authorization::{
                 ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -444,6 +446,14 @@ struct Topology {
     paths: Vec<DISPLAYCONFIG_PATH_INFO>,
     modes: Vec<DISPLAYCONFIG_MODE_INFO>,
 }
+const FORCED_OUTPUT: u32 = DISPLAYCONFIG_TARGET_FORCED_AVAILABILITY_BOOT
+    | DISPLAYCONFIG_TARGET_FORCED_AVAILABILITY_PATH
+    | DISPLAYCONFIG_TARGET_FORCED_AVAILABILITY_SYSTEM;
+
+fn monitorless_forced_output(status: u32, monitor_path: &[u16]) -> bool {
+    status & FORCED_OUTPUT != 0 && monitor_path.first().copied().unwrap_or(0) == 0
+}
+
 fn query(flags: u32) -> Result<Topology> {
     for _ in 0..4 {
         let (mut paths_count, mut modes_count) = (0, 0);
@@ -484,7 +494,20 @@ fn query(flags: u32) -> Result<Topology> {
         }
         paths.truncate(paths_count as usize);
         modes.truncate(modes_count as usize);
-        return Ok(Topology { paths, modes });
+        // A headless console can retain a forced output with cached EDID but
+        // no monitor interface. It is not a device to preserve or restore:
+        // Windows replaces it when the first real monitor is connected.
+        // Keep exact identity checks for every output backed by a monitor.
+        let mut monitors = Vec::with_capacity(paths.len());
+        for path in paths {
+            if path.targetInfo.statusFlags & FORCED_OUTPUT != 0
+                && monitorless_forced_output(path.targetInfo.statusFlags, &target_name(&path)?.monitorDevicePath)
+            {
+                continue;
+            }
+            monitors.push(path);
+        }
+        return Ok(Topology { paths: monitors, modes });
     }
     Err(Error::Platform(
         "display topology changed repeatedly while enumerating".into(),
@@ -510,7 +533,7 @@ fn set_source_mode_index(path: &mut DISPLAYCONFIG_PATH_INFO, index: usize) -> Re
     Ok(())
 }
 
-fn target_key(path: &DISPLAYCONFIG_PATH_INFO) -> Result<(TargetKey, String)> {
+fn target_name(path: &DISPLAYCONFIG_PATH_INFO) -> Result<DISPLAYCONFIG_TARGET_DEVICE_NAME> {
     let mut name: DISPLAYCONFIG_TARGET_DEVICE_NAME = unsafe { zeroed() };
     name.header = header::<DISPLAYCONFIG_TARGET_DEVICE_NAME>(
         DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
@@ -518,6 +541,10 @@ fn target_key(path: &DISPLAYCONFIG_PATH_INFO) -> Result<(TargetKey, String)> {
         path.targetInfo.id,
     );
     get_info(&mut name)?;
+    Ok(name)
+}
+fn target_key(path: &DISPLAYCONFIG_PATH_INFO) -> Result<(TargetKey, String)> {
+    let name = target_name(path)?;
     let monitor_path = text(&name.monitorDevicePath).to_ascii_lowercase();
     if monitor_path.is_empty() {
         return Err(Error::Platform("monitor identity is unavailable".into()));
@@ -1109,6 +1136,20 @@ fn deactivate_keys(keys: &BTreeSet<TargetKey>, require_other_active: bool, mode_
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn headless_forced_routes_do_not_turn_cached_edid_into_a_connected_monitor() {
+        // R reports IN_USE | FORCED_AVAILABILITY_SYSTEM and cached 27E1 EDID,
+        // but no monitor interface. BOOT/PATH forced outputs have the same
+        // lifecycle; the mere FORCIBLE capability does not establish it.
+        for forced in [DISPLAYCONFIG_TARGET_FORCED_AVAILABILITY_BOOT,
+                       DISPLAYCONFIG_TARGET_FORCED_AVAILABILITY_PATH,
+                       DISPLAYCONFIG_TARGET_FORCED_AVAILABILITY_SYSTEM] {
+            assert!(monitorless_forced_output(1 | forced, &[0; 128]));
+            assert!(!monitorless_forced_output(1 | forced, &[b'\\' as u16, 0]));
+        }
+        assert!(!monitorless_forced_output(1, &[0; 128]));
+        assert!(!monitorless_forced_output(1 | 2, &[0; 128]));
+    }
     #[test]
     fn compact_modes_drops_removed_adapters_and_preserves_foreign_virtual_clone_indices() {
         let mut modes=vec![unsafe{zeroed::<DISPLAYCONFIG_MODE_INFO>()};6];
