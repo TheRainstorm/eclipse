@@ -107,6 +107,49 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(json.loads((self.output / 'windows-latest.json').read_text())['archive'], self.windows)
         self.assertEqual(json.loads((self.output / 'linux-latest.json').read_text())['archive'], self.linux)
 
+    def use_tag_names(self, tag):
+        for attribute in ('windows', 'linux'):
+            old = getattr(self, attribute)
+            current = old.replace('uu-client-', 'eclipse-', 1).replace(self.revision[:12], tag)
+            (self.assets / old).rename(self.assets / current)
+            setattr(self, attribute, current)
+        self.hashes()
+
+    def test_tag_names_are_verified_against_requested_tag_and_source(self):
+        self.use_tag_names('v1.2.3')
+        with patch.object(download, 'gh', side_effect=self.fake_gh):
+            result = download.download('example/project', 'v1.2.3', self.output)
+        self.assertEqual(result['packages']['windows']['archive'], self.windows)
+        self.assertEqual(result['packages']['linux']['archive'], self.linux)
+
+    def test_rc_tag_names_use_the_same_complete_download_verification(self):
+        tag = 'v1.2.3-rc.1'
+        self.use_tag_names(tag)
+        def github(arguments):
+            result = self.fake_gh(arguments)
+            if arguments[:2] == ['release', 'view']:
+                record = json.loads(result)
+                record['tagName'] = tag
+                return json.dumps(record)
+            return result
+        with patch.object(download, 'gh', side_effect=github):
+            result = download.download('example/project', tag, self.output)
+        self.assertEqual(result['release_tag'], tag)
+        self.assertEqual(set(result['packages']), {'windows', 'linux'})
+
+    def test_a_different_tag_in_the_filename_is_rejected(self):
+        self.use_tag_names('v1.2.4')
+        with patch.object(download, 'gh', side_effect=self.fake_gh), self.assertRaisesRegex(ValueError, 'match its tag'):
+            download.download('example/project', 'v1.2.3', self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_tag_filename_does_not_replace_source_verification(self):
+        self.use_tag_names('v1.2.3')
+        self.revision = 'b' * 40
+        with patch.object(download, 'gh', side_effect=self.fake_gh), self.assertRaisesRegex(ValueError, 'source'):
+            download.download('example/project', 'v1.2.3', self.output)
+        self.assertFalse(list(self.output.glob('*latest.json')))
+
     def test_corrupt_second_platform_preserves_previous_pointer_and_packages(self):
         self.output.mkdir()
         previous = b'{"archive":"previous.zip"}\n'

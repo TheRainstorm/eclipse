@@ -517,8 +517,9 @@ jobs:
             echo 'Published packages match this tag and their checksums; retaining immutable release assets.'
             exit 0
           fi
-          cd release-assets
-          sha256sum -- *.zip *.tar.gz > SHA256SUMS
+          python3 tools/release/prepare_assets.py --tag "$RELEASE_TAG" --revision "$(git rev-parse HEAD)" \
+            --input-dir release-assets --output-dir tagged-release-assets
+          cd tagged-release-assets
           release_flags=()
           case "$RELEASE_TAG" in
             *-*) release_flags+=(--prerelease --latest=false) ;;

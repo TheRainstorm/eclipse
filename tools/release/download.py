@@ -22,8 +22,9 @@ _linux_installer = importlib.util.module_from_spec(_linux_spec)
 _linux_spec.loader.exec_module(_linux_installer)
 
 TAG = re.compile(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?')
-ARCHIVE = re.compile(r'(?:eclipse|uu-client)-(windows-x64|linux-x86_64)-([0-9a-f]{12})\.(zip|tar\.gz)')
-SIGNAL_ARCHIVE = re.compile(r'eclipse-signal-linux-x86_64-[0-9a-f]{12}\.tar\.gz')
+LABEL = rf'(?:[0-9a-f]{{12}}|{TAG.pattern})'
+ARCHIVE = re.compile(rf'(?:eclipse|uu-client)-(windows-x64|linux-x86_64)-({LABEL})\.(zip|tar\.gz)')
+SIGNAL_ARCHIVE = re.compile(rf'eclipse-signal-linux-x86_64-{LABEL}\.tar\.gz')
 
 
 def gh(arguments):
@@ -107,7 +108,7 @@ def download(repo, tag, output, platform='all'):
         target = 'windows' if match[1] == 'windows-x64' else 'linux'
         if platform != 'all' and target != platform:
             continue
-        if target in selected or match[2] != revision[:12] or match[3] != ('zip' if target == 'windows' else 'tar.gz'):
+        if target in selected or match[2] not in (revision[:12], tag) or match[3] != ('zip' if target == 'windows' else 'tar.gz'):
             raise ValueError('Release archive does not match its tag')
         selected[target] = name
     if set(selected) != ({'windows', 'linux'} if platform == 'all' else {platform}):
