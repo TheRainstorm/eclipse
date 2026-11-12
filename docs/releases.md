@@ -1,8 +1,8 @@
 # 构建与版本发布
 
-当前版本：[0.24.3](releases/v0.24.3.md)；上一版：[0.24.2](releases/v0.24.2.md)，下载以 GitHub Releases 实际发布为准。此前开发版：[0.23.5-dev.20261104](releases/v0.23.5-dev.20261104.md)、[0.23.4-dev.20261104](releases/v0.23.4-dev.20261104.md)、[0.23.3-dev.20261104](releases/v0.23.3-dev.20261104.md)、[0.23.2-dev.20261104](releases/v0.23.2-dev.20261104.md)。此前源码里程碑：[Eclipse v0.23.1](releases/v0.23.1.md)、[v0.21.2](releases/v0.21.2.md)。历史开发版：[0.21.3-dev.20261103](releases/v0.21.3-dev.20261103.md)。
+当前版本：[0.24.4](releases/v0.24.4.md)；上一版：[0.24.3](releases/v0.24.3.md)，下载以 GitHub Releases 实际发布为准。此前开发版：[0.23.5-dev.20261104](releases/v0.23.5-dev.20261104.md)、[0.23.4-dev.20261104](releases/v0.23.4-dev.20261104.md)、[0.23.3-dev.20261104](releases/v0.23.3-dev.20261104.md)、[0.23.2-dev.20261104](releases/v0.23.2-dev.20261104.md)。此前源码里程碑：[Eclipse v0.23.1](releases/v0.23.1.md)、[v0.21.2](releases/v0.21.2.md)。历史开发版：[0.21.3-dev.20261103](releases/v0.21.3-dev.20261103.md)。
 
-新增待实机验收开发功能：[服务端会话控制与多客户端同屏](releases/v0.25.0-dev.20261112.md)，按提交编号交付，未递增正式版本。
+服务端会话控制与多客户端同屏已合入0.24.4；[早期开发说明](releases/v0.25.0-dev.20261112.md)保留最初迭代背景，当前行为以正式版本说明为准。
 
 功能里程碑以及每组可交付的小功能或修复使用 `v主版本.次版本.修订号` 标签；小组更新递增修订号，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 提供。
 

@@ -47,7 +47,7 @@ Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应
 
 ## 开始使用
 
-**0.24.3** 整理设备与空白处右键菜单、浮动批量管理及居中详情，增加连接历史分页、最近100张壁纸缓存、串流时长统计和F5刷新。详见[0.24.3版本说明](docs/releases/v0.24.3.md)。本版通过GitHub CI构建Windows和Linux完整包。自建连接服务说明见[部署指南](docs/connection-service.md)。
+**0.24.4** 增加服务端逐会话权限、共享游戏厅、本机键鼠优先和悬浮球会话中心，支持Windows多客户端同屏；老板键只隐藏串流窗口。详见[0.24.4版本说明](docs/releases/v0.24.4.md)。Windows和Linux完整包由GitHub CI构建，正式资产以Releases为准。自建连接服务说明见[部署指南](docs/connection-service.md)。
 
 从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包，保留包内全部运行库与清单。
 
