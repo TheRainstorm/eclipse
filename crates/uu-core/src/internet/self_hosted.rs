@@ -69,7 +69,9 @@ async fn open(config: &Config, request: Request) -> Result<Socket> {
     };
     let (mut socket, _) = timeout(
         Duration::from_secs(15),
-        tokio_tungstenite::connect_async_tls_with_config(http, Some(ws_config()), false, connector),
+        // Signaling exchanges small request/response messages; do not defer
+        // them behind TCP's small-packet coalescing and delayed ACKs.
+        tokio_tungstenite::connect_async_tls_with_config(http, Some(ws_config()), true, connector),
     )
     .await
     .context("self-hosted signaling connection timed out")??;

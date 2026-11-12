@@ -346,6 +346,7 @@ pub async fn serve(config: Config, mut stop: watch::Receiver<bool>) -> Result<()
                 tasks.spawn(async move {
                     let _permit=permit;
                     let result=async {
+                        tcp.set_nodelay(true)?;
                         let tls=timeout(Duration::from_secs(10),acceptor.accept(tcp)).await??;
                         let mut group = None;
                         let ws=timeout(Duration::from_secs(10),accept_hdr_async_with_config(tls, |req:&HttpRequest,response:Response| {
