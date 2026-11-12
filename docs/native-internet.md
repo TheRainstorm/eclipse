@@ -38,24 +38,24 @@ UU 的 `2001` 表示被控设备不在线：先检查对方是否开始共享，
 
 ## 自建服务与协议兼容
 
-`eclipse-signal` 是独立信令进程，不访问桌面；coturn 提供 STUN 与媒体中转。完整构建包、systemd、反向代理与云端端口配置见[连接服务部署](connection-service.md#部署服务器)。
+`eclipse-signal` 是独立信令进程，不访问桌面；coturn 提供 STUN 与媒体中转。完整构建包、systemd、反向代理与云端端口配置见[连接服务部署](connection-service.md#管理员首次安装的资料)。
 
-新主机用版本 3 注册，支持展示名称、在线目录及会话临时 ICE 凭据；仅在服务明确报告不支持时才降为版本 2 或版本 1。版本 2 已按会话路由，版本 1 只有单观看端。新观看端用版本 2 加入，双方都支持时才接收新会话配置，旧观看端仍收到原来的严格事件。它不是任意 WebRTC 客户端均可使用的通用信令协议。
+每个用户使用独立设备组。WSS 地址必须带唯一的 `group` 编号，并提交该组凭据；服务端没有无组默认入口或跨组通用接入码。新主机用版本 3 注册，支持展示名称、在线目录及会话临时 ICE 凭据；仅在服务明确报告不支持时才降为版本 2 或版本 1。版本 2 已按会话路由，版本 1 只有单观看端。新观看端用版本 2 加入，双方都支持时才接收新会话配置，旧观看端仍收到原来的严格事件。它不是任意 WebRTC 客户端均可使用的通用信令协议。
 
 WSS 代理需透传 `Authorization` 和 WebSocket Upgrade，并将外部路径映射到 `/v1/signal`；默认心跳为 10 秒，代理空闲超时应大于 35 秒。STUN/TURN 是独立 UDP 服务，HTTP 反向代理不能代替开放 UDP。单独运行旧内置 STUN 仍可用于直连，但无法提供 TURN 中转。
 
 ## 旧 PSK CLI 诊断
 
-以下保留旧预共享密钥协议，用于已有 CLI 诊断；不是新版 GUI 公钥授权的操作方式，不能用它连接新版共享入口。配置中的路径由使用者填写：
+以下保留旧预共享密钥协议，用于已有 CLI 诊断；不是新版 GUI 公钥授权的操作方式，不能用它连接新版共享入口。配置中的路径由使用者填写，组编号替换为管理员提供的实际 UUID；`my-group.token` 是该组的凭据文件：
 
 ```json
 {
   "provider": "self_hosted",
-  "server": "signal.example:8443",
+  "server": "wss://signal.example:9443/v1/signal?group=组编号",
   "device": "my-desktop",
   "access_key": "access.key",
-  "server_token": "server.token",
-  "server_ca": "server.pem",
+  "server_token": "my-group.token",
+  "server_ca": "ca.pem",
   "development_relay": false
 }
 ```
