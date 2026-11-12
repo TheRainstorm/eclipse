@@ -633,7 +633,11 @@ async fn send_video(
         else{return Ok(HostReport::default());};
     config.codec=codec;
     config.bitrate_kbps=encoder_settings.bitrate_kbps;
-    let permissions=config.session.as_ref().map_or(crate::device_trust::Permissions::CONTROL,|s|s.permissions);
+    let mut permissions=config.session.as_ref().map_or(crate::device_trust::Permissions::CONTROL,|s|s.permissions);
+    if config.session.as_ref().is_some_and(|session|session.session_id.as_ref().is_some_and(|id|session.access.sessions.guest(id))) {
+        let mut details=permissions.details();details.clipboard=false;
+        permissions=permissions.with_details(details);
+    }
     if !permissions.details().clipboard {config.clipboard=None;}
     let mut track=peer.sender_for_color(refresh.clone(),codec,encoder_settings.hdr).await?;
     let mut audio_sender=if let Some(red)=audio_mode {Some(peer.audio_sender(red).await?)}else{None};

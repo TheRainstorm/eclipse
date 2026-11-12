@@ -33,7 +33,7 @@ impl RemoteAdminUi {
                 },
                 Response::Applied=>{self.notice=uu_i18n::text("连接权限已更新；受影响设备需重新连接。").into();},
                 Response::Error{message}=>self.notice=message,
-                Response::SessionControls{..}=>{},
+                Response::SessionControls{..}|Response::SessionCenter{..}=>{},
             }
         }
         if self.pending.is_some_and(|(_,at)|at.elapsed()>Duration::from_secs(10)) {

@@ -153,3 +153,4 @@ mod tests {
 }
 
 pub mod gamepad;
+pub mod local_activity;

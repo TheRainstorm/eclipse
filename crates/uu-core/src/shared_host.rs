@@ -16,6 +16,9 @@ pub struct SessionControlSnapshot {
     pub bitrate_kbps: u32,
     pub display: Option<i32>,
     pub displays: Vec<crate::screen_control::RemoteScreen>,
+    pub keyboard_mouse_active: bool,
+    pub gamepads: usize,
+    pub gamepad_error: Option<String>,
 }
 
 /// One running host per private configuration, including separate launcher
@@ -51,7 +54,7 @@ pub struct SessionContext {
     /// The authenticated session lease, independent of peer/device identity.
     pub session_id: Option<String>,
 }
-struct Active { peer: String, record: crate::connection_history::Record, stop: watch::Sender<bool>, status: crate::native::HostStatus, completed: Option<bool>, control: Option<Arc<crate::native_control::HostControl>> }
+struct Active { peer: String, record: crate::connection_history::Record, stop: watch::Sender<bool>, status: crate::native::HostStatus, completed: Option<bool>, control: Option<Arc<crate::native_control::HostControl>>, input: crate::device_trust::InputPermissions, guest: bool }
 #[derive(Default)]
 pub struct SessionGate {
     active: Mutex<HashMap<String, Active>>,
@@ -115,7 +118,9 @@ impl SessionGate {
         let session = uuid::Uuid::new_v4().to_string();
         let (stop, receiver) = watch::channel(false);
         let record = self.history.begin(&session, peer, name);
-        active.insert(session.clone(), Active { peer: peer.into(), record, stop, status: crate::native::HostStatus::Starting, completed: None, control: None });
+        let guest=self.input.priority.policy().game_room;
+        let input = if guest { crate::device_trust::InputPermissions::NONE } else { crate::device_trust::InputPermissions::ALL };
+        active.insert(session.clone(), Active { peer: peer.into(), record, stop, status: crate::native::HostStatus::Starting, completed: None, control: None, input, guest });
         Ok(SessionLease { gate: self.clone(), session, receiver,temporary:None })
     }
     pub fn disconnect(&self) {
@@ -134,15 +139,39 @@ impl SessionGate {
         sessions.sort_by(|a,b|a.0.cmp(&b.0)); sessions
     }
     pub(crate) fn attach_control(&self, session: &str, control: Arc<crate::native_control::HostControl>) {
-        if let Some(active) = self.active.lock().unwrap().get_mut(session) { active.control = Some(control); }
+        if let Some(active) = self.active.lock().unwrap().get_mut(session) {
+            let input = active.input.intersection(control.max_input_permissions());
+            let _ = control.set_input_permissions(input);
+            control.set_server_managed(self.input.priority.policy().game_room);
+            active.control = Some(control);
+        }
     }
     pub fn session_control_snapshot(&self, session: &str) -> Option<SessionControlSnapshot> {
-        self.active.lock().unwrap().get(session).and_then(|active| active.control.as_ref()).map(|control| control.control_snapshot())
+        let control = self.active.lock().unwrap().get(session).and_then(|active| active.control.clone());
+        control.map(|control| control.control_snapshot())
+    }
+    pub fn input_state(&self) -> crate::host_input::Snapshot { self.input.priority.snapshot() }
+    pub(crate) fn guest(&self, id: &str) -> bool {self.active.lock().unwrap().get(id).is_some_and(|session|session.guest)}
+    pub(crate) fn configure_input_policy(&self, policy: crate::host_input::Policy) {
+        let active = self.active.lock().unwrap();
+        self.input.priority.configure(policy);
+        for control in active.values().filter_map(|session| session.control.as_ref()) { control.set_server_managed(policy.game_room); }
+    }
+    pub(crate) fn pause_keyboard_mouse(&self, paused: bool) { self.input.priority.pause(paused); }
+    pub(crate) fn all_view_only(&self) -> Result<()> {
+        let mut active = self.active.lock().unwrap();
+        for session in active.values_mut() {
+            session.input = crate::device_trust::InputPermissions::NONE;
+            if let Some(control) = &session.control { control.set_input_permissions(crate::device_trust::InputPermissions::NONE)?; }
+        }
+        Ok(())
     }
     pub fn set_session_input(&self, session: &str, input: crate::device_trust::InputPermissions) -> Result<()> {
-        let control = self.active.lock().unwrap().get(session).and_then(|active| active.control.clone())
-            .context(uu_i18n::text("该会话尚未建立输入控制"))?;
-        control.set_input_permissions(input)
+        let mut active=self.active.lock().unwrap();
+        let session=active.get_mut(session).context(uu_i18n::text("会话已经结束"))?;
+        session.control.as_ref().context(uu_i18n::text("该会话尚未建立输入控制"))?.set_input_permissions(input)?;
+        session.input=input;
+        Ok(())
     }
     pub fn set_session_quality(&self, session: &str, update: crate::native_quality::Update) -> Result<()> {
         let control = self.active.lock().unwrap().get(session).and_then(|active| active.control.clone())

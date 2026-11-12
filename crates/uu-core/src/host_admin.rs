@@ -14,13 +14,17 @@ pub enum Request {
     Save {revision:String,settings:Sharing,restart:bool},
     Permissions {peer:String,permissions:Permissions},
     SessionControls,
+    SessionCenter,
+    SetHostInput {policy:crate::host_input::Policy},
+    PauseHostInput {paused:bool},
+    AllViewOnly,
     SessionPermissions {session:String,input:InputPermissions},
     SessionQuality {session:String,update:crate::native_quality::Update},
     SessionDisplay {session:String,id:i32},
     Disconnect {session:String},
 }
 impl Request {
-    pub fn is_mutation(&self)->bool { !matches!(self,Self::Inspect|Self::SessionControls) }
+    pub fn is_mutation(&self)->bool { !matches!(self,Self::Inspect|Self::SessionControls|Self::SessionCenter) }
 }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +47,12 @@ pub struct SessionControl {
 }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct SessionCenter {
+    pub input:crate::host_input::Snapshot,
+    pub sessions:Vec<SessionControl>,
+}
+#[derive(Clone,Debug,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerSettings {
     pub active:Sharing,
     pub saved:Sharing,
@@ -62,6 +72,7 @@ pub struct Snapshot {
 pub enum Response {
     Snapshot {snapshot:Snapshot},
     SessionControls {sessions:Vec<SessionControl>},
+    SessionCenter {center:SessionCenter},
     Saved {restart:bool},
     Applied,
     Error {message:String},
@@ -153,9 +164,12 @@ impl Service {
                 }else{None};
                 Ok(Response::Snapshot{snapshot:Snapshot{own_permissions:grant,connections,server}})
             },
-            Request::Save{revision:expected,settings,restart}=>{
+            Request::Save{revision:expected,mut settings,restart}=>{
                 settings.validate()?;
                 let mut active=self.active.lock().unwrap();
+                // The live control center owns these settings; an unrelated
+                // media-settings draft must not revert its newer policy.
+                settings.host_input=active.host_input;
                 ensure!(expected.len()==64,"{}", uu_i18n::format!("服务配置版本无效，请重新读取"));
                 self.store.edit(|book| {
                     ensure!(revision(&book.sharing)?==expected,"{}", uu_i18n::format!("服务配置已被其它窗口修改，请重新读取后保存"));
@@ -181,7 +195,8 @@ impl Service {
                 access.set_permissions(&peer,permissions)?;
                 Ok(Response::Applied)
             },
-            Request::SessionControls=>{
+            Request::SessionControls|Request::SessionCenter=>{
+                let center=matches!(request,Request::SessionCenter);
                 let sessions=access.sessions.details().into_iter().map(|(id,peer,status)| {
                     let record=access.peer_permissions(&peer).ok().flatten();
                     let name=record.as_ref().map_or_else(||uu_i18n::text("已授权设备").into(),|(device,_)|device.name.clone());
@@ -192,7 +207,23 @@ impl Service {
                     };
                     SessionControl{id:id.clone(),peer,name,status,permissions,control:access.sessions.session_control_snapshot(&id)}
                 }).collect();
-                Ok(Response::SessionControls{sessions})
+                if center {Ok(Response::SessionCenter{center:SessionCenter{input:access.sessions.input_state(),sessions}})}
+                else {Ok(Response::SessionControls{sessions})}
+            },
+            Request::SetHostInput{policy}=>{
+                let mut active=self.active.lock().unwrap();
+                self.store.edit(|book| {book.sharing.host_input=policy;Ok(())})?;
+                active.host_input=policy;
+                access.sessions.configure_input_policy(policy);
+                Ok(Response::Applied)
+            },
+            Request::PauseHostInput{paused}=>{
+                access.sessions.pause_keyboard_mouse(paused);
+                Ok(Response::Applied)
+            },
+            Request::AllViewOnly=>{
+                access.sessions.all_view_only()?;
+                Ok(Response::Applied)
             },
             Request::SessionPermissions{session,input}=>{
                 access.sessions.set_session_input(&session,input)?;
@@ -273,6 +304,16 @@ mod tests {
         assert!(live.ipv6_enabled,"a saved IPv6 setting must not claim the listener has changed before restart");
         assert!(initial.audio,"already admitted media retains its immutable settings");
         assert!(service.execute_local_manager(&context.access,Request::Save{revision:server.revision,settings:Sharing::default(),restart:false}).unwrap_err().to_string().contains("其它窗口"));
+        let policy=crate::host_input::Policy{game_room:true,..Default::default()};
+        for request in [Request::SessionCenter,Request::SetHostInput{policy},Request::PauseHostInput{paused:true},Request::AllViewOnly] {
+            assert!(service.execute(&context,request).is_err(),"a network client cannot change host admission or local input priority");
+        }
+        service.execute_local_manager(&context.access,Request::SetHostInput{policy}).unwrap();
+        assert_eq!(store.read().unwrap().sharing.host_input,policy);
+        assert_eq!(context.access.sessions.input_state().policy,policy);
+        let current=store.read().unwrap().sharing;
+        service.execute_local_manager(&context.access,Request::Save{revision:revision(&current).unwrap(),settings:Sharing::default(),restart:false}).unwrap();
+        assert_eq!(store.read().unwrap().sharing.host_input,policy,"an unrelated media draft cannot undo the control center policy");
         trust.revoke(&client.id()).unwrap();
         assert!(service.execute(&context,Request::Inspect).is_err());
         std::fs::remove_dir_all(root).unwrap();

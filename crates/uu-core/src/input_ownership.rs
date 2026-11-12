@@ -4,10 +4,13 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 struct State { owner: Option<u64>, failed_release: bool, next: u64 }
 #[derive(Default)]
-pub struct Authority(Mutex<State>);
+pub struct Authority {
+    state: Mutex<State>,
+    pub(crate) priority: Arc<crate::host_input::State>,
+}
 impl Authority {
     pub(crate) fn claim(self: &Arc<Self>) -> Option<Lease> {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         if state.owner.is_some() || state.failed_release { return None; }
         state.next = state.next.wrapping_add(1);
         let id = state.next;
@@ -18,11 +21,11 @@ impl Authority {
 pub(crate) struct Lease { authority: Arc<Authority>, id: u64 }
 impl Lease {
     /// A failed OS release cannot safely hand held keys to another session.
-    pub(crate) fn poison(&self) { self.authority.0.lock().unwrap().failed_release = true; }
+    pub(crate) fn poison(&self) { self.authority.state.lock().unwrap().failed_release = true; }
 }
 impl Drop for Lease {
     fn drop(&mut self) {
-        let mut state = self.authority.0.lock().unwrap();
+        let mut state = self.authority.state.lock().unwrap();
         if state.owner == Some(self.id) { state.owner = None; }
     }
 }

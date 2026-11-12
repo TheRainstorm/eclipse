@@ -58,3 +58,5 @@ Windows 同一物理输出只能被一个 DXGI duplication 持有。后台媒体
 SCM 异常恢复的等待时间依次为 1、5、15 秒；正常停止不触发恢复。服务通过私有 Job 对象管理自有媒体进程，停止先请求正常收尾，超时只终止该服务拥有的进程。
 
 平台约束参见微软的[服务与交互界面](https://learn.microsoft.com/en-us/windows/win32/services/interactive-services)、[DXGI 桌面复制](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput)、[命名管道权限](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)和[服务访问权限](https://learn.microsoft.com/en-us/windows/win32/services/service-security-and-access-rights)。服务和桌面生命周期设计参考 Sunshine，代码独立实现。
+
+托盘右键的“悬浮会话中心”可独立于主窗口管理当前连接。共享游戏厅、本机键鼠优先与手动暂停的行为见[会话中心与共享游戏厅](host-session-control.md)。

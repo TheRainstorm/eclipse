@@ -63,6 +63,7 @@ pub struct Runner {
     services: Vec<(Settings, watch::Sender<EndpointStatus>)>,
     emit: Arc<dyn Fn(Event) + Send + Sync>,
     _owner: HostOwner,
+    _input_activity: Option<uu_input::local_activity::Monitor>,
     persistent: bool,
 }
 
@@ -119,6 +120,14 @@ fn prepare_inner(
         pairing: Arc::new(PairingControl::new(requests)),
         sessions: Arc::new(SessionGate::with_history(config.at("device-trust/connection-history.json"))),
     });
+    access.sessions.configure_input_policy(book.sharing.host_input);
+    #[cfg(all(windows,not(test)))]
+    let input_activity=match uu_input::local_activity::start() {
+        Ok(observer)=>Some(observer),
+        Err(error)=>{tracing::warn!(%error,"physical input observation unavailable; manual pause remains available");None}
+    };
+    #[cfg(any(not(windows),test))]
+    let input_activity=None;
     if let Err(error)=crate::virtual_display::Manager::shared().configure_saved_displays(config.at("device-trust")) {
         tracing::warn!(%error,"saved virtual display settings could not be loaded; sharing continues");
     }
@@ -186,6 +195,7 @@ fn prepare_inner(
             services,
             emit: Arc::new(emit),
             _owner: owner,
+            _input_activity: input_activity,
             persistent,
         },
     })
@@ -214,6 +224,7 @@ impl Runner {
             services,
             emit,
             _owner,
+            _input_activity,
             persistent,
         } = self;
         let sharing = book.sharing;
@@ -334,6 +345,7 @@ impl Runner {
         if let Err(error)=preparation.await {tracing::warn!(%error,"virtual display preparation worker failed");}
         let history = access.sessions.history.clone();
         let _ = tokio::task::spawn_blocking(move || history.close()).await;
+        drop(_input_activity);
         drop(_owner);
         Ok(())
     }

@@ -87,6 +87,14 @@ pub fn sync_input_desktop() -> io::Result<bool> {
     sync_desktop(DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP)
 }
 
+pub(crate) fn input_desktop_changed() -> io::Result<bool> {
+    let input = unsafe { OpenInputDesktop(0, 0, DESKTOP_READOBJECTS) };
+    if input.is_null() { return Err(io::Error::last_os_error()); }
+    let result = name(unsafe { GetThreadDesktop(GetCurrentThreadId()) }).and_then(|current| Ok(current != name(input)?));
+    unsafe { CloseDesktop(input); }
+    result
+}
+
 /// SendInput also requires journal playback access on the attached desktop.
 /// This is a desktop handle right, not a journal hook or a token privilege.
 pub fn sync_injection_desktop() -> io::Result<bool> {

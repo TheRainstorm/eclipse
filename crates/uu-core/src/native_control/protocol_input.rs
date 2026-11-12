@@ -18,7 +18,7 @@ impl InputSession {
     pub fn request(&self,enabled:bool) {self.0.request(enabled);}
     pub fn touch(&self) {self.0.touch();}
     pub fn available(&self)->bool {self.0.available()}
-    pub fn granted(&self)->bool {self.0.state.enabled.load(Ordering::Acquire)&&self.0.available()}
+    pub fn granted(&self)->bool {self.0.keyboard_mouse_ready()}
     pub fn submit(&self,command:crate::native_input::InputCommand)->bool {self.0.push(command)}
     pub fn supports_text(&self)->bool {self.0.state.text_supported.load(Ordering::Acquire)}
     pub fn text(&self,value:&str)->bool {self.0.push_text(value)}
