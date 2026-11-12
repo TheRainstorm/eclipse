@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-12T07:25:25Z",
+  "updated_at": "2026-11-12T08:07:48Z",
   "files": {
     ".cargo/config.toml": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "607594b1f43509487d55d25cb3df3e40aade396ac0794db70726d0f30674707a",
-      "size": 243116,
-      "normalized_sha256": "607594b1f43509487d55d25cb3df3e40aade396ac0794db70726d0f30674707a"
+      "sha256": "7888b351f5193e9dc90e3cf3230d550f44c873a01c3e834c327f6c9ad54c0954",
+      "size": 243270,
+      "normalized_sha256": "7888b351f5193e9dc90e3cf3230d550f44c873a01c3e834c327f6c9ad54c0954"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1709,9 +1709,9 @@
     },
     "crates/uu-gui/src/stream_menu.rs": {
       "role": "index",
-      "sha256": "664b291c525e4d4ff2096d2bba92d303835e54cff5b70ac4e948424546f80455",
-      "size": 88284,
-      "normalized_sha256": "664b291c525e4d4ff2096d2bba92d303835e54cff5b70ac4e948424546f80455"
+      "sha256": "0a78a29a0254def52178f2d697f63de61b5d9021cdb38e239e748449787e1d34",
+      "size": 88692,
+      "normalized_sha256": "0a78a29a0254def52178f2d697f63de61b5d9021cdb38e239e748449787e1d34"
     },
     "crates/uu-gui/src/stream_tabs_ui.rs": {
       "role": "index",
@@ -1931,9 +1931,9 @@
     },
     "crates/uu-gui/src/workspace_ui.rs": {
       "role": "index",
-      "sha256": "efdb3f790cb8cdc5e7844d0ccde3b2ff85c323819c027c8ff09986b9559fac23",
-      "size": 124122,
-      "normalized_sha256": "efdb3f790cb8cdc5e7844d0ccde3b2ff85c323819c027c8ff09986b9559fac23"
+      "sha256": "c127b778f094d71e8a8defd40457176e5441a21c2d18fc0db1a851c3037e2fe0",
+      "size": 125792,
+      "normalized_sha256": "c127b778f094d71e8a8defd40457176e5441a21c2d18fc0db1a851c3037e2fe0"
     },
     "crates/uu-i18n-macros/Cargo.toml": {
       "role": "index",
@@ -1961,9 +1961,9 @@
     },
     "crates/uu-i18n/catalogue.json": {
       "role": "index",
-      "sha256": "3e715be9528e08a9b1ef816afb7175ef37563a360323eb82064f3eef58291f98",
-      "size": 226083,
-      "normalized_sha256": "3e715be9528e08a9b1ef816afb7175ef37563a360323eb82064f3eef58291f98"
+      "sha256": "763c0c66728c1b869335956be062b3a717081bbb643b3bf9b77acab4952173f3",
+      "size": 226326,
+      "normalized_sha256": "763c0c66728c1b869335956be062b3a717081bbb643b3bf9b77acab4952173f3"
     },
     "crates/uu-i18n/src/catalogue.rs": {
       "role": "index",
@@ -2623,9 +2623,9 @@
     },
     "crates/uu-plugin-sdk/src/ui.rs": {
       "role": "index",
-      "sha256": "e979f459b516c0926e5b45812a56285114bd3ed8b8ba5ee2c0098b77009cef40",
-      "size": 12665,
-      "normalized_sha256": "e979f459b516c0926e5b45812a56285114bd3ed8b8ba5ee2c0098b77009cef40"
+      "sha256": "dcb38c597514d057399f63575f56312a6bc24db6da28215678dd1d1e69f07182",
+      "size": 13499,
+      "normalized_sha256": "dcb38c597514d057399f63575f56312a6bc24db6da28215678dd1d1e69f07182"
     },
     "crates/uu-plugin-sdk/tests/runtime_loading.rs": {
       "role": "observe",
@@ -4222,9 +4222,9 @@
     },
     "crates/uu-gui/src/workspace_ui/device_menus.rs": {
       "role": "index",
-      "sha256": "3c1113e72a7b34325a2dc75f834408549c5a51c8b5815e2271dd70324e7bea9f",
-      "size": 11578,
-      "normalized_sha256": "3c1113e72a7b34325a2dc75f834408549c5a51c8b5815e2271dd70324e7bea9f"
+      "sha256": "7d52eead36d58f8281e2ae3506581155fcaa029232dbdfaebf9eb5b49a31769b",
+      "size": 12509,
+      "normalized_sha256": "7d52eead36d58f8281e2ae3506581155fcaa029232dbdfaebf9eb5b49a31769b"
     },
     "crates/uu-gui/src/stream_statistics.rs": {
       "role": "index",
@@ -4240,9 +4240,9 @@
     },
     "crates/uu-gui/src/workspace_ui/device_details.rs": {
       "role": "index",
-      "sha256": "46e320f1bec2eec0fe42ffeb1fb5884ee71d04c5be2f93b33672d3cf1e8d6fa5",
-      "size": 7197,
-      "normalized_sha256": "46e320f1bec2eec0fe42ffeb1fb5884ee71d04c5be2f93b33672d3cf1e8d6fa5"
+      "sha256": "2a2cf8e5b4664ab6d89579fe70fe3e12e459c99ac8d38f551a3a3e7b0eed23c0",
+      "size": 8145,
+      "normalized_sha256": "2a2cf8e5b4664ab6d89579fe70fe3e12e459c99ac8d38f551a3a3e7b0eed23c0"
     }
   },
   "managed_scope": {
