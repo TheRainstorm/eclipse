@@ -63,10 +63,17 @@ mod tests {
         let recorded=events.clone();
         let a=InputSession(InputWorker::with_timing_factory(rect,move||Ok(Box::new(Injector(recorded))),Arc::default(),authority.clone()).await.unwrap());
         let b=InputSession(InputWorker::with_timing_factory(rect,||Ok(Box::new(Injector(Arc::default()))),Arc::default(),authority).await.unwrap());
-        a.request(true);b.request(true);assert!(a.granted());assert!(!b.granted());
+        a.request(true);b.request(true);assert!(a.granted());assert!(b.granted());
         assert!(a.submit(InputCommand::Key {usage:4,pressed:true}));
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(events.lock().unwrap().len(),1);
-        a.stop().await;b.request(true);assert!(b.granted());b.stop().await;
+        let (ack,blocked)=oneshot::channel();
+        assert!(b.0.push_with_ack(InputCommand::Relative{dx:1,dy:1},Some(ack)));
+        assert!(blocked.await.is_err(),"a held key preserves the current owner across protocols");
+        a.stop().await;
+        let (ack,applied)=oneshot::channel();
+        assert!(b.0.push_with_ack(InputCommand::Relative{dx:1,dy:1},Some(ack)));
+        assert!(applied.await.is_ok(),"stopping the previous owner allows immediate input without regranting");
+        assert!(b.granted());b.stop().await;
     }
 }

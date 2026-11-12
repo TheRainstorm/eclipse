@@ -9,6 +9,7 @@ pub struct HeldInput {
     buttons: Vec<MouseButton>,
 }
 impl HeldInput {
+    pub fn is_empty(&self) -> bool { self.keys.is_empty() && self.buttons.is_empty() }
     pub fn should_emit(&self, event: InputEvent) -> bool {
         match event {
             InputEvent::Key {

@@ -27,6 +27,7 @@ use webrtc::{
 
 const MAX_CONTROL: usize = 16 * 1024;
 const LEASE: Duration = Duration::from_secs(5);
+const KEYBOARD_MOUSE_IDLE: Duration = Duration::from_millis(500);
 mod protocol_input;
 pub use protocol_input::InputSession;
 #[derive(Serialize, Deserialize)]
@@ -77,6 +78,16 @@ async fn send(channel: &RTCDataChannel, packet: Packet) -> Result<()> {
     Ok(())
 }
 
+struct KeyboardOwner {
+    lease: crate::input_ownership::Lease,
+    last_activity: Instant,
+    held: uu_input::HeldInput,
+}
+impl KeyboardOwner {
+    fn new(lease: crate::input_ownership::Lease) -> Self {
+        Self { lease, last_activity: Instant::now(), held: Default::default() }
+    }
+}
 struct WorkerState {
     text_supported: AtomicBool,
     mapping:Mutex<Option<uu_capture::DesktopMapping>>,
@@ -85,7 +96,7 @@ struct WorkerState {
     gamepads: Mutex<Option<Arc<crate::native_gamepad::Worker>>>,
     gamepad_error: Mutex<Option<String>>,
     authority: Arc<crate::input_ownership::Authority>,
-    ownership: Mutex<Option<crate::input_ownership::Lease>>,
+    ownership: Mutex<Option<KeyboardOwner>>,
     available: AtomicBool,
     enabled: AtomicBool,
     stop: AtomicBool,
@@ -112,8 +123,8 @@ impl WorkerState {
         if final_release {if let Some(pads)=pads {pads.stop();}}
         // Keep ownership while retrying cleanup. Only an unrecoverable final
         // shutdown poisons the host; a temporary desktop transition must not.
-        if !result && final_release {if let Some(lease)=ownership.as_ref(){lease.poison();}}
-        if result && (final_release || !self.enabled.load(Ordering::Acquire) || self.allowed.load(Ordering::Acquire)&3==0) { ownership.take(); }
+        if !result && final_release {if let Some(owner)=ownership.as_ref(){owner.lease.poison();}}
+        if result { ownership.take(); }
         result
     }
     fn suspend(&self,error:String) {
@@ -248,21 +259,42 @@ impl InputWorker {
                             actor.suspend(error.to_string());
                             continue;
                         }
+                        actor.ownership.lock().unwrap().take();
                     }
                     keyboard_paused = priority.paused;
                     keyboard_cutoff = priority.accept_after;
+                    let idle = actor.ownership.lock().unwrap().as_ref().is_some_and(|owner|
+                        owner.held.is_empty() && owner.last_activity.elapsed() >= KEYBOARD_MOUSE_IDLE);
+                    if idle {
+                        // Only this actor releases its injector before retiring
+                        // the lease. Other clients cannot inject while cleanup
+                        // is pending, and held keys/buttons prevent idle handover.
+                        if let Err(error) = injector.release_all() {
+                            actor.suspend(error.to_string());
+                            continue;
+                        }
+                        actor.ownership.lock().unwrap().take();
+                    }
                     match received {
                         Ok(job)
                             if job.epoch == epoch && actor.enabled.load(Ordering::Acquire)
                                 && job.mapping_epoch==mapping_guard.as_ref().map(|bounds|bounds.1) =>
                         {
                             if job.command.is_none() && job.text.is_none() {continue;}
-                            if priority.paused || job.queued < priority.accept_after || actor.ownership.lock().unwrap().is_none() {continue;}
+                            if priority.paused || job.queued < priority.accept_after {continue;}
                             let required=match job.command {Some(InputCommand::Key{..})|None=>1,Some(InputCommand::ReleaseAll{})=>0,_=>2};
                             if required!=0 && actor.allowed.load(Ordering::Acquire)&required==0 {continue;}
+                            {
+                                let mut ownership = actor.ownership.lock().unwrap();
+                                if ownership.is_none() && required != 0 {
+                                    *ownership = actor.authority.claim().map(KeyboardOwner::new);
+                                }
+                                if ownership.is_none() { continue; }
+                            }
                             let queue_us=job.queued.elapsed().as_micros().min(u32::MAX as u128) as u32;
                             let started=Instant::now();
-                            let result = if let Some(text)=job.text {injector.text(&text)} else {match job.command.unwrap().event(rect) {
+                            let event = job.command.and_then(|command| command.event(rect));
+                            let result = if let Some(text)=job.text {injector.text(&text)} else {match event {
                                 Some(event) => injector.inject(event),
                                 None => injector.release_all(),
                             }};
@@ -272,6 +304,14 @@ impl InputWorker {
                                     tracing::debug!(%error,"unsupported native input event skipped");
                                 }else{actor.suspend(error.to_string());}
                                 continue;
+                            }
+                            {
+                                let mut ownership = actor.ownership.lock().unwrap();
+                                if required == 0 { ownership.take(); }
+                                else if let Some(owner) = ownership.as_mut() {
+                                    owner.last_activity = Instant::now();
+                                    if let Some(event) = event { owner.held.applied(event); }
+                                }
                             }
                             let inject_us=started.elapsed().as_micros().min(u32::MAX as u128) as u32;
                             let injected=job.reply.as_ref().and_then(|_|actor.timing.video_e2e.input_clock_stamp());
@@ -312,7 +352,6 @@ impl InputWorker {
     fn keyboard_mouse_ready(&self) -> bool {
         self.available() && self.state.enabled.load(Ordering::Acquire)
             && self.state.allowed.load(Ordering::Acquire)&3!=0
-            && self.state.ownership.lock().unwrap().is_some()
             && !self.state.authority.priority.keyboard_mouse().paused
     }
     fn wake(&self) {
@@ -326,13 +365,11 @@ impl InputWorker {
             self.wake();
             return;
         }
-        // An OS release can take time; the network task must never wait for it.
-        let Ok(mut ownership) = self.state.ownership.try_lock() else { return; };
         let allowed=self.state.allowed.load(Ordering::Acquire);
-        if ownership.is_none() && allowed&3!=0 { *ownership = self.state.authority.claim(); }
-        // Only desktop keyboard/mouse needs the exclusive lease. Each viewer
-        // owns its virtual gamepads, even while another viewer controls a mouse.
-        let active=ownership.is_some()&&allowed&3!=0 || allowed&4!=0;
+        // A connection requests permission, not perpetual mouse ownership.
+        // The input actor claims the shared lease only for real activity.
+        // Gamepads remain independent of keyboard/mouse arbitration.
+        let active=allowed!=0;
         if self.state.enabled.swap(active,Ordering::AcqRel)==active {return;}
         self.state.epoch.fetch_add(1, Ordering::AcqRel);
         self.wake();
@@ -547,7 +584,8 @@ impl HostControl {
         let (display,displays)=displays.map_or((None,Vec::new()),|host|{
             let catalog=host.catalog();(Some(catalog.current_id),catalog.screens)
         });
-        let keyboard_mouse_active=self.worker.as_ref().is_some_and(|worker|worker.keyboard_mouse_ready());
+        let keyboard_mouse_active=self.worker.as_ref().is_some_and(|worker|worker.keyboard_mouse_ready()
+            && worker.state.ownership.lock().unwrap().is_some());
         let pads=self.worker.as_ref().map(|worker|worker.gamepad_status());
         crate::shared_host::SessionControlSnapshot{input:self.input_permissions(),max_input:self.max_input_permissions(),fps,bitrate_kbps,display,displays,
             keyboard_mouse_active,gamepads:pads.as_ref().map_or(0,|pads|pads.connected),gamepad_error:pads.and_then(|pads|pads.error),
@@ -1118,6 +1156,7 @@ mod tests {
         wait(|| {
             worker.request(true);
             worker.keyboard_mouse_ready()
+                && worker.state.applied_epoch.load(Ordering::Acquire)==worker.state.epoch.load(Ordering::Acquire)
         })
         .await;
     }
@@ -1174,7 +1213,11 @@ mod tests {
         cleanup.store(false,Ordering::Release);fail.store(true,Ordering::Release);
         assert!(a.push(InputCommand::Relative{dx:1,dy:1}));
         wait(||!a.available()).await;
-        b.request(true);assert!(!b.keyboard_mouse_ready(),"failed releases retain the previous keyboard/mouse owner");
+        b.request(true);
+        let (ack, blocked)=oneshot::channel();
+        assert!(b.push_with_ack(InputCommand::Relative{dx:1,dy:1},Some(ack)));
+        assert!(blocked.await.is_err(),"failed releases retain the previous keyboard/mouse owner");
+        assert_eq!(b.state.applied.load(Ordering::Acquire),0);
         assert!(!a.push(InputCommand::Key{usage:5,pressed:true}));
         cleanup.store(true,Ordering::Release);wait(||a.available()).await;
         assert!(!a.state.enabled.load(Ordering::Acquire),"backend recovery does not grant control itself");
@@ -1335,9 +1378,12 @@ mod tests {
         let a=InputWorker::with_timing_factory(rect,move||Ok(Box::new(BlockingRelease{entered:Some(entered),gate:block,armed})),Arc::default(),authority.clone()).await.unwrap();
         let b=InputWorker::with_timing_factory(rect,||Ok(Box::new(Fixture{events:Arc::default(),releases:Arc::default()})),Arc::default(),authority).await.unwrap();
         a.request(true);assert!(a.push(InputCommand::Key{usage:4,pressed:true}));wait(||state.load(Ordering::Acquire)).await;
-        b.request(true);assert!(!b.push(InputCommand::Relative{dx:1,dy:1}));
+        b.request(true);
+        let (ack,blocked)=oneshot::channel();assert!(b.push_with_ack(InputCommand::Relative{dx:1,dy:1},Some(ack)));
+        assert!(blocked.await.is_err());
         a.request(false);wait_release.await.unwrap();
-        b.request(true);let blocked=!b.push(InputCommand::Relative{dx:1,dy:1});
+        let (ack,blocked)=oneshot::channel();assert!(b.push_with_ack(InputCommand::Relative{dx:1,dy:1},Some(ack)));
+        let blocked=blocked.await.is_err();
         *gate.0.lock().unwrap()=true;gate.1.notify_all();
         assert!(blocked,"ownership must outlive OS release");
         wait(||a.state.ownership.lock().unwrap().is_none()).await;
@@ -1508,19 +1554,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn simultaneous_gamepad_permissions_do_not_grant_a_second_keyboard_lease() {
+    async fn idle_client_handover_keeps_gamepad_generation_and_never_steals_held_keys() {
         let authority=Arc::new(crate::input_ownership::Authority::default());
         let make=||InputWorker::with_timing_factory(DesktopRect::new(0,0,640,480).unwrap(),||Ok(Box::new(Fixture{events:Arc::default(),releases:Arc::default()})),Arc::default(),authority.clone());
         let a=make().await.unwrap();let b=make().await.unwrap();
-        wait_for_grant(&a).await;b.request(true);
-        assert!(a.keyboard_mouse_ready());assert!(!b.keyboard_mouse_ready());
+        wait_for_grant(&a).await;wait_for_grant(&b).await;
+        assert!(a.keyboard_mouse_ready());assert!(b.keyboard_mouse_ready());
+        assert!(a.state.ownership.lock().unwrap().is_none());
+        assert!(b.state.ownership.lock().unwrap().is_none(),"opening a client does not reserve the mouse");
         assert!(b.state.enabled.load(Ordering::Acquire),"a separate gamepad session must stay active without the mouse lease");
-        assert!(!b.push(InputCommand::Key{usage:4,pressed:true}));
+        assert!(a.push(InputCommand::Relative{dx:1,dy:1}));wait(||a.state.applied.load(Ordering::Acquire)==1).await;
+        let (ack,blocked)=oneshot::channel();assert!(b.push_with_ack(InputCommand::Relative{dx:1,dy:1},Some(ack)));
+        assert!(blocked.await.is_err(),"concurrent clients must not move the mouse together");
         let generation=b.state.epoch.load(Ordering::Acquire);
-        a.stop().await;b.request(true);
-        assert!(b.keyboard_mouse_ready());
+        wait(||a.state.ownership.lock().unwrap().is_none()).await;
+        assert!(a.state.enabled.load(Ordering::Acquire),"idle handover keeps the previous connection enabled");
+        assert!(b.push(InputCommand::Key{usage:4,pressed:true}));wait(||b.state.applied.load(Ordering::Acquire)==1).await;
+        b.state.ownership.lock().unwrap().as_mut().unwrap().last_activity=Instant::now()-KEYBOARD_MOUSE_IDLE-Duration::from_secs(1);
+        b.wake();tokio::time::sleep(Duration::from_millis(60)).await;
+        let (ack,blocked)=oneshot::channel();assert!(a.push_with_ack(InputCommand::Relative{dx:2,dy:2},Some(ack)));
+        assert!(blocked.await.is_err(),"a held key keeps its original owner even without repeat events");
+        assert!(b.push(InputCommand::Key{usage:4,pressed:false}));wait(||b.state.applied.load(Ordering::Acquire)==2).await;
+        assert!(b.push(InputCommand::ReleaseAll{}));wait(||b.state.ownership.lock().unwrap().is_none()).await;
+        assert!(a.push(InputCommand::Relative{dx:3,dy:3}));wait(||a.state.applied.load(Ordering::Acquire)==2).await;
         assert_eq!(generation,b.state.epoch.load(Ordering::Acquire),"keyboard handover must not retire the active gamepad generation");
-        b.stop().await;
+        b.stop().await;a.stop().await;
     }
     #[tokio::test]
     async fn session_quality_failures_are_visible_and_old_receipts_cannot_replace_new_results() {
