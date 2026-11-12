@@ -73,12 +73,21 @@ impl Subscriber {
     fn publish(&self, frame: &RawFrame) {
         let mut slot = self.slot.lock().unwrap();
         if slot.closed { return; }
+        slot.error = None;
         slot.frame = Some(frame.clone());
         self.changed.notify_one();
+    }
+    fn suspend(&self, reason: &str) {
+        let mut slot = self.slot.lock().unwrap();
+        if slot.closed { return; }
+        slot.frame = None;
+        slot.error = Some(reason.into());
+        self.changed.notify_all();
     }
     fn close(&self, error: Option<String>) {
         let mut slot = self.slot.lock().unwrap();
         if slot.closed { return; }
+        slot.frame = None;
         slot.closed = true;
         slot.error = error;
         self.changed.notify_all();
@@ -87,11 +96,12 @@ impl Subscriber {
         let deadline = wait.map(|limit| Instant::now() + limit);
         let mut slot = self.slot.lock().unwrap();
         loop {
-            if let Some(frame) = slot.frame.take() { return Ok(Some(frame)); }
             if slot.closed {
                 let message = slot.error.clone().unwrap_or_else(|| uu_i18n::text("共享采集源已经关闭").into());
-                return Err(CaptureError::Suspended(message));
+                return Err(CaptureError::Backend(message));
             }
+            if let Some(error) = &slot.error { return Err(CaptureError::Suspended(error.clone())); }
+            if let Some(frame) = slot.frame.take() { return Ok(Some(frame)); }
             slot = match deadline {
                 None => self.changed.wait(slot).unwrap(),
                 Some(deadline) => {
@@ -175,6 +185,11 @@ impl Owner {
         let subscribers: Vec<_> = self.subscribers.lock().unwrap().values().cloned().collect();
         for subscriber in subscribers { subscriber.publish(frame); }
     }
+    fn suspend(&self, reason: &str) {
+        self.metadata.lock().unwrap().frame_info = None;
+        let subscribers: Vec<_> = self.subscribers.lock().unwrap().values().cloned().collect();
+        for subscriber in subscribers { subscriber.suspend(reason); }
+    }
     fn close(&self, error: Option<String>) {
         let subscribers: Vec<_> = self.subscribers.lock().unwrap().values().cloned().collect();
         for subscriber in subscribers { subscriber.close(error.clone()); }
@@ -234,7 +249,7 @@ fn run_owner(owner: Weak<Owner>) {
         cancelled: initial.stop.clone(),
     };
     let capture = uu_capture::open_with_options(&initial.source, options);
-    let mut capture = match capture {
+    let capture = match capture {
         Ok(capture) => capture,
         Err(error) => {
             fail(&initial, error.to_string());
@@ -242,6 +257,12 @@ fn run_owner(owner: Weak<Owner>) {
             return;
         }
     };
+    drop(initial);
+    run_capture(owner, capture, configured_fps);
+}
+
+fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps: u32) {
+    let Some(initial) = owner.upgrade() else { return; };
     if let Err(error) = capture.set_frame_rate(configured_fps) {
         fail(&initial, error.to_string());
         drop(initial);
@@ -291,7 +312,14 @@ fn run_owner(owner: Weak<Owner>) {
         }
         let frame = match capture.next_frame() {
             Ok(frame) => frame,
-            Err(CaptureError::Suspended(error)) => { fail(&owner, error); break; }
+            Err(CaptureError::Suspended(error)) => {
+                // The source owns desktop recovery. Retain it across sign-in,
+                // UAC and hotplug waits, but retire every subscriber's old image.
+                owner.suspend(&error);
+                std::thread::sleep(Duration::from_millis(25));
+                next = Instant::now();
+                continue;
+            }
             Err(error) => { fail(&owner, error.to_string()); break; }
         };
         {
@@ -459,5 +487,46 @@ mod tests {
         assert_eq!(Key::new(&CaptureSource::Primary), Key::new(&CaptureSource::Desktop { initial_monitor: None }));
         assert_eq!(Key::new(&CaptureSource::Monitor("display-a".into())), Key::new(&CaptureSource::Desktop { initial_monitor: Some("display-a".into()) }));
         assert_ne!(Key::new(&CaptureSource::Monitor("display-a".into())), Key::new(&CaptureSource::Monitor("display-b".into())));
+    }
+
+    #[test]
+    fn paused_source_retires_queued_images_and_recovers_for_both_viewers() {
+        struct Source(std::sync::mpsc::Receiver<Result<RawFrame, CaptureError>>);
+        impl Capture for Source {
+            fn resolution(&self) -> (u32, u32) { (2, 2) }
+            fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
+                self.0.recv_timeout(Duration::from_millis(25))
+                    .unwrap_or_else(|_| Err(CaptureError::Suspended("waiting for fixture desktop".into())))
+            }
+        }
+        let source = CaptureSource::Primary;
+        let owner = Owner::new(Key::new(&source), source, options(60));
+        let first = owner.subscribe(60);
+        let second = owner.subscribe(60);
+        let (send, receive) = std::sync::mpsc::channel();
+        let weak = Arc::downgrade(&owner);
+        *owner.thread.lock().unwrap() = Some(std::thread::spawn(move || run_capture(weak, Box::new(Source(receive)), 60)));
+        owner.wait_ready().unwrap();
+        let picture = |pts| RawFrame::new_i420(2, 2, vec![0; 6], uu_media::Timestamp(pts));
+        send.send(Ok(picture(1))).unwrap();
+        assert_eq!(first.take(Some(Duration::from_secs(1))).unwrap().unwrap().pts.0, 1);
+        // The second viewer deliberately leaves this old picture queued.
+        send.send(Err(CaptureError::Suspended("desktop switch".into()))).unwrap();
+        assert!(matches!(first.take(Some(Duration::from_secs(1))), Err(CaptureError::Suspended(_))));
+        assert!(matches!(second.take(Some(Duration::from_secs(1))), Err(CaptureError::Suspended(_))));
+        send.send(Ok(picture(2))).unwrap();
+        for subscriber in [&first, &second] {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                match subscriber.take(Some(Duration::from_millis(20))) {
+                    Ok(Some(frame)) => { assert_eq!(frame.pts.0, 2); break; }
+                    Err(CaptureError::Suspended(_)) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
+                    other => panic!("source did not recover: {other:?}"),
+                }
+            }
+        }
+        send.send(Err(CaptureError::Backend("device removed".into()))).unwrap();
+        assert!(matches!(first.take(Some(Duration::from_secs(1))), Err(CaptureError::Backend(reason)) if reason.contains("device removed")));
+        owner.stop_and_join();
     }
 }
