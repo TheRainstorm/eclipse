@@ -5,9 +5,9 @@
   "files": {
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "033258cbfef75f2bbb545071e3049e139a6bb8595a82f817c0f2903becfc59e9",
-      "size": 124327,
-      "normalized_sha256": "033258cbfef75f2bbb545071e3049e139a6bb8595a82f817c0f2903becfc59e9"
+      "sha256": "2147efea2fac017c82762aae373daa53ad3f9a8dfd238ec6658287ddd8b7a66f",
+      "size": 124354,
+      "normalized_sha256": "2147efea2fac017c82762aae373daa53ad3f9a8dfd238ec6658287ddd8b7a66f"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -437,9 +437,9 @@
     },
     "crates/uu-core/src/native.rs": {
       "role": "index",
-      "sha256": "1b6b8a3028bd84b6bae5ab57235f0844ef88ca880f865b8b92e7c915ab0a1ace",
-      "size": 93823,
-      "normalized_sha256": "1b6b8a3028bd84b6bae5ab57235f0844ef88ca880f865b8b92e7c915ab0a1ace"
+      "sha256": "3fe0f0e23cc1ffb41b38588d77af4242d4cac866adc4cfc68ce2c135e8171f20",
+      "size": 94039,
+      "normalized_sha256": "3fe0f0e23cc1ffb41b38588d77af4242d4cac866adc4cfc68ce2c135e8171f20"
     },
     "crates/uu-core/src/native/encoded_capture.rs": {
       "role": "index",
@@ -449,9 +449,9 @@
     },
     "crates/uu-core/src/native/encoder_startup.rs": {
       "role": "index",
-      "sha256": "4d5eb778214464119ae8333ffd05cd8968dc0623182cd3de32a3ea2c34139a6e",
-      "size": 9963,
-      "normalized_sha256": "4d5eb778214464119ae8333ffd05cd8968dc0623182cd3de32a3ea2c34139a6e"
+      "sha256": "d485e4f4e23db989822ee65b650a0e6edf7f74efe310aee341731a8f5e26a591",
+      "size": 12484,
+      "normalized_sha256": "d485e4f4e23db989822ee65b650a0e6edf7f74efe310aee341731a8f5e26a591"
     },
     "crates/uu-core/src/native_audio.rs": {
       "role": "index",
@@ -1583,9 +1583,9 @@
     },
     "crates/uu-core/src/shared_capture.rs": {
       "role": "index",
-      "sha256": "1bbe0e6824aa5c6acae3f108653f48843f7ac1b32b8805d54d945d98e40ff0db",
-      "size": 18991,
-      "normalized_sha256": "1bbe0e6824aa5c6acae3f108653f48843f7ac1b32b8805d54d945d98e40ff0db"
+      "sha256": "26a30fc29aca6eb77ddd7ca11547a5a99f7d805e2b3fa1386da2683dbfdde890",
+      "size": 22586,
+      "normalized_sha256": "26a30fc29aca6eb77ddd7ca11547a5a99f7d805e2b3fa1386da2683dbfdde890"
     },
     "crates/uu-core/src/host_input.rs": {
       "role": "index",
