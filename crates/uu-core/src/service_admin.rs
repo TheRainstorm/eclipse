@@ -26,6 +26,7 @@ pub enum Request {
         request: Box<Request>,
     },
     Status,
+    Endpoints,
     ConnectionHistory { revision: Option<u64> },
     ConfigurationSwitch { token: String, release: bool },
     Approve {
@@ -72,6 +73,7 @@ impl Request {
         !matches!(
             self,
             Self::Status
+                | Self::Endpoints
                 | Self::ConnectionHistory { .. }
                 | Self::Trust {
                     request: TrustRequest::Inspect
@@ -179,6 +181,9 @@ pub enum Response {
         pending: Vec<Pairing>,
         snapshot: host_admin::Snapshot,
     },
+    Endpoints {
+        endpoints: Vec<crate::host_runtime::EndpointSnapshot>,
+    },
     Admin {
         response: host_admin::Response,
     },
@@ -260,6 +265,33 @@ mod tests {
         assert!(Request::Restart.for_profile(None).is_ok());
         assert!(!scoped("active", Request::Status).is_mutation());
         assert!(scoped("active", Request::Restart).is_mutation());
+    }
+    #[test]
+    fn endpoint_queries_are_read_only_and_profile_bound() {
+        let query = Request::Endpoints;
+        assert!(!query.is_mutation());
+        assert_eq!(query.response_timeout(), Some(std::time::Duration::from_secs(5)));
+        assert!(query.clone().for_profile(Some("active")).is_err());
+        let scoped = |profile: &str| Request::Scoped { profile: profile.into(), request: Box::new(query.clone()) };
+        assert!(scoped("other").for_profile(Some("active")).is_err());
+        assert!(matches!(scoped("active").for_profile(Some("active")).unwrap(), Request::Endpoints));
+        assert_eq!(serde_json::to_value(query).unwrap(), serde_json::json!({"action":"endpoints"}));
+    }
+    #[test]
+    fn endpoint_wire_preserves_runtime_identity_and_typed_status() {
+        use crate::{device_internet::EndpointStatus, host_runtime::{EndpointIdentity, EndpointSnapshot}};
+        let identity = EndpointIdentity::Server { id: "runtime-id".into(), address: "wss://signal.example:9443/v1/signal?group=runtime".into() };
+        let snapshot = EndpointSnapshot { identity: identity.clone(), name: "Runtime group".into(), status: EndpointStatus::Error("generated failure".into()) };
+        let response = Response::Endpoints { endpoints: vec![snapshot] };
+        let encoded = serde_json::to_value(response).unwrap();
+        assert_eq!(encoded["result"], "endpoints");
+        assert_eq!(encoded["endpoints"][0]["status"], serde_json::json!({"state":"error","message":"generated failure"}));
+        let Response::Endpoints { endpoints } = serde_json::from_value(encoded).unwrap() else { panic!() };
+        assert_eq!(endpoints[0].identity, identity);
+        assert_eq!(endpoints[0].name, "Runtime group");
+        assert_eq!(endpoints[0].status, EndpointStatus::Error("generated failure".into()));
+        // A new, separate result leaves the old strict Status envelope intact.
+        assert!(serde_json::from_value::<Response>(serde_json::json!({"result":"endpoints","endpoints":[],"extra":true})).is_err());
     }
     #[tokio::test]
     async fn framed_administration_rejects_large_truncated_and_unknown_messages() {

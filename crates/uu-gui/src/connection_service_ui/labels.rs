@@ -37,6 +37,31 @@ pub(crate) fn display_name(names: &Names, address: &str) -> String {
     }
     uu_i18n::text("连接服务器").into()
 }
+/// A route and an entrance describe the same configured service. Keep their
+/// presentation independent of the runtime endpoint's identity and group name.
+pub(crate) fn route_name(names: &Names, address: &str, group_name: &str) -> String {
+    let parsed = url::Url::parse(address)
+        .or_else(|_| url::Url::parse(&format!("wss://{address}")));
+    let location = parsed.as_ref().ok().and_then(|url| {
+        let host = url.host()?;
+        Some(match url.port() {
+            Some(port) => format!("{}://{host}:{port}", url.scheme()),
+            None => format!("{}://{host}", url.scheme()),
+        })
+    }).unwrap_or_else(|| uu_i18n::text("连接服务器").into());
+    let group = if group_name.trim().is_empty() {
+        parsed.as_ref().ok().and_then(|url| {
+            uu_core::internet::server::groups::query_group(url.query().unwrap_or("")).ok()
+        }).map(|group| group.to_string()[..8].to_owned()).unwrap_or_default()
+    } else { group_name.trim().to_owned() };
+    let prefix = uu_i18n::text("自建服务器");
+    match names.get(&address_key(address)).filter(|alias| !alias.trim().is_empty()) {
+        Some(alias) if !group.is_empty() => format!("{prefix} · {alias} ({location} | {group})"),
+        Some(alias) => format!("{prefix} · {alias} ({location})"),
+        None if !group.is_empty() => format!("{prefix} · {location} ({group})"),
+        None => format!("{prefix} · {location}"),
+    }
+}
 pub(crate) fn load_names(config: &Config) -> anyhow::Result<Names> {
     match crate::settings::read_bounded(&config.at("connection-service-aliases.json"), 64 * 1024) {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
@@ -190,6 +215,21 @@ impl Labels {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn route_context_uses_group_identity_and_hides_url_credentials_and_query() {
+        let group = uuid::Uuid::new_v4();
+        let address = uu_core::internet::enrollment::group_url(
+            "wss://signal.example:9443/v1/signal?extra=private-context", &group,
+        ).unwrap();
+        let mut names = Names::new();
+        names.insert(address_key(&address), "家庭服务器".into());
+        assert_eq!(route_name(&names, &address, "我的设备"), "自建服务器 · 家庭服务器 (wss://signal.example:9443 | 我的设备)");
+        assert_eq!(route_name(&Names::new(), &address, "我的设备"), "自建服务器 · wss://signal.example:9443 (我的设备)");
+        let other = uu_core::internet::enrollment::group_url("wss://signal.example:9443/v1/signal", &uuid::Uuid::new_v4()).unwrap();
+        assert!(!route_name(&names, &other, "其他设备").contains("家庭服务器"));
+        let ipv6 = route_name(&Names::new(), "wss://user:secret@[2001:db8::1]:9443/v1/signal?extra=hidden", "工作设备");
+        assert_eq!(ipv6, "自建服务器 · wss://[2001:db8::1]:9443 (工作设备)");
+    }
     fn settled(labels: &mut Labels, config: &Config, ctx: &egui::Context) {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {

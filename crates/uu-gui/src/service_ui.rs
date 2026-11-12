@@ -476,6 +476,7 @@ struct Manager {
     plugins:Option<PluginSnapshot>,
     service_connections: connections::State,
     endpoints: Vec<(String, String)>,
+    endpoint_status: crate::connection_service_ui::endpoint::Cache,
     pending: Vec<uu_core::service_admin::Pairing>,
     draft: Sharing,
     revision: String,
@@ -525,6 +526,7 @@ impl Manager {
             plugins:None,
             service_connections: Default::default(),
             endpoints: vec![],
+            endpoint_status: Default::default(),
             pending: vec![],
             draft: Sharing::default(),
             revision: String::new(),
@@ -584,11 +586,20 @@ impl Manager {
                     self.keep_displays = None;
                     self.snapshot = None;
                     self.busy = false;
+                    self.endpoint_status.retire();
+                    self.endpoints.clear();
                     self.connection_error = uu_i18n::text("后台管理工作线程已结束").into();
                     break;
                 }
             };
             match event {
+                Event::Endpoints {owner, result} => {
+                    self.endpoint_status.update(owner, match result {
+                        Ok(Response::Endpoints { endpoints }) => Ok(endpoints),
+                        Ok(Response::Error { message }) | Err(message) => Err(message),
+                        _ => Err("unexpected endpoint status response".into()),
+                    });
+                }
                 Event::History(result) => self.connection_history.update(match result {
                     Ok(Response::ConnectionHistory { snapshot }) => Ok(snapshot),
                     Ok(Response::Error { message }) | Err(message) => Err(message),
@@ -599,6 +610,8 @@ impl Manager {
                     build,
                     response,
                 } => {
+                    let current_owner=build.as_ref().map(|build|(build.process_id,build.profile.clone()));
+                    self.endpoint_status.observe(current_owner,state==SERVICE_RUNNING);
                     self.state = state;
                     self.build = build;
                     self.checked = true;
@@ -641,11 +654,13 @@ impl Manager {
                             self.service_connections.snapshot = None;
                             self.pending.clear();
                             self.endpoints.clear();
+                            self.endpoint_status.retire();
                             self.connection_error = message;
                         }
                         _ => {
                             self.ready = false;
                             self.snapshot = None;
+                            self.endpoint_status.retire();
                         }
                     }
                 }
@@ -892,10 +907,18 @@ impl Manager {
         match self.section {
             Section::Management => {
                 section_card(ui, uu_i18n::text("连接入口"), |ui| {
-                    for (name, state) in &self.endpoints {
-                        ui.label(format!("{name} · {state}"));
+                    if let Some(endpoints) = &self.endpoint_status.values {
+                        for endpoint in endpoints {
+                            crate::connection_service_ui::endpoint::show(ui,endpoint,self.service_connections.servers.labels().names());
+                        }
+                    } else if !self.endpoints.is_empty() {
+                        for (name, _) in &self.endpoints { crate::connection_service_ui::endpoint::unknown(ui,name); }
+                        ui.weak(uu_i18n::text("连接入口状态尚未确认；若主机仍是旧版本，请更新并重启服务。"));
+                        if !self.endpoint_status.error.is_empty() {
+                            ui.collapsing(uu_i18n::text("诊断详情"),|ui|{ui.label(&self.endpoint_status.error);});
+                        }
                     }
-                    if self.endpoints.is_empty() {
+                    if self.endpoint_status.values.as_ref().map_or(self.endpoints.is_empty(),Vec::is_empty) {
                         ui.weak(uu_i18n::text("当前没有可用的连接入口。"));
                     }
                     ui.horizontal_wrapped(|ui| {

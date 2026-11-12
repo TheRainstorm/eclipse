@@ -1,4 +1,12 @@
 {
+  "连接入口状态尚未确认；若主机仍是旧版本，请更新并重启服务。": "Entrance status is not confirmed. If the host uses an older version, update and restart the service.",
+  "状态未知": "Status unknown",
+  "入口已就绪；从其它网络连接仍取决于网络路由、防火墙和连接服务。": "The entrance is ready. Access from another network also depends on routing, firewall rules, and the connection service.",
+  "服务器详情": "Server details",
+  "请选择可用连接方式": "Select an available connection method",
+  "别名": "Alias",
+  "Group ID": "Group ID",
+  "在线设备（{count}）": "Online devices ({count})",
   "此连接方式需要安装所属插件后编辑": "Install the required plugin to edit this connection.",
   "客户端服务器配置已被其他窗口修改，已保留该配置，请刷新后重试": "The client server settings changed in another window and were kept. Refresh and try again.",
   "主机已移除服务器，客户端配置仍保留；请处理错误后重试清理": "The host removed the server, but its client settings were kept. Resolve the error and retry cleanup.",

@@ -257,6 +257,7 @@ impl Drop for Worker {
 struct Endpoint {
     name: String,
     provider:Option<String>,
+    identity: uu_core::host_runtime::EndpointIdentity,
     state: watch::Receiver<EndpointStatus>,
 }
 struct Pending {
@@ -349,6 +350,11 @@ impl HostUi {
             .iter()
             .map(|e| (e.name.clone(), e.state.borrow().clone()))
             .collect()
+    }
+    pub fn endpoint_snapshots(&self) -> Vec<uu_core::host_runtime::EndpointSnapshot> {
+        self.endpoints.iter().map(|endpoint| uu_core::host_runtime::EndpointSnapshot {
+            identity:endpoint.identity.clone(),name:endpoint.name.clone(),status:endpoint.state.borrow().clone(),
+        }).collect()
     }
     pub fn sessions(&self) -> Vec<SessionView> {
         let Some(access)=&self.access else{return Vec::new();};
@@ -470,7 +476,7 @@ impl HostUi {
         )?;
         let access = prepared.access;
         let pair_requests = prepared.requests;
-        let endpoints = prepared.endpoints.into_iter().map(|entry| Endpoint {name:entry.name,state:entry.state,provider:entry.provider}).collect();
+        let endpoints = prepared.endpoints.into_iter().map(|entry| Endpoint {name:entry.name,state:entry.state,provider:entry.provider,identity:entry.identity}).collect();
         self.restart_context = Some((config, access.store.clone()));
         let (stop, receiver) = watch::channel(false);
         let context = ctx.clone();

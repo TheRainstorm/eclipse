@@ -5,12 +5,13 @@ mod servers;
 mod labels;
 pub(crate) mod removal;
 pub(crate) mod device_picker;
+pub(crate) mod endpoint;
 #[cfg(any(windows, test))]
 mod pending;
 pub(crate) use directory::Directory;
 pub(crate) use enrollment::Join;
 pub(crate) use servers::{Server, ServerAction, Servers};
-pub(crate) use labels::{address_key, display_name, load_names, Labels, Names};
+pub(crate) use labels::{address_key, display_name, route_name, load_names, Labels, Names};
 use std::sync::mpsc;
 
 pub(crate) fn received<T>(job: &Option<mpsc::Receiver<T>>) -> Option<Result<T, String>> {

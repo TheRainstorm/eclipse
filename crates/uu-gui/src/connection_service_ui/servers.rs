@@ -24,24 +24,45 @@ pub(crate) enum ServerAction {
     SetEnabled { id: String, enabled: bool },
     Remove { id: String },
 }
-struct AliasEditor {
-    address: String,
+struct AliasDraft {
     value: String,
-    submitted: bool,
-    saved_generation: u64,
+    baseline: String,
+    saving: Option<(u64, String)>,
+}
+impl AliasDraft {
+    fn sync(&mut self, saved: &str, generation: u64, ready: bool) {
+        if let Some((before, submitted)) = &self.saving {
+            if generation > *before {
+                if self.value.trim() == submitted.trim() {
+                    self.value = saved.into();
+                }
+                self.baseline = saved.into();
+                self.saving = None;
+            } else if ready {
+                self.saving = None;
+            }
+        }
+        if self.value == self.baseline && self.baseline != saved {
+            self.value = saved.into();
+            self.baseline = saved.into();
+        }
+    }
+    fn dirty(&self, saved: &str) -> bool {
+        self.value.trim() != saved
+    }
 }
 #[derive(Default)]
 pub(crate) struct Servers {
     join: Join,
     directory: Directory,
     labels: Labels,
-    alias: Option<AliasEditor>,
+    drafts: std::collections::HashMap<String, AliasDraft>,
     open: Option<crate::sessions::StreamTarget>,
     config_changed: bool,
 }
 impl Servers {
     pub(crate) fn is_open(&self) -> bool {
-        self.join.is_open() || self.alias.is_some()
+        self.join.is_open()
     }
     #[cfg(test)]
     pub(crate) fn fixture() -> (Self, Vec<Server>) {
@@ -130,62 +151,6 @@ impl Servers {
     }
     pub(crate) fn dialogs(&mut self, ctx: &egui::Context, config: Option<&Config>) {
         self.join.show(ctx, config);
-        if self.alias.as_ref().is_some_and(|editor| {
-            editor.submitted && self.labels.saved_generation() > editor.saved_generation
-        }) {
-            self.alias = None;
-        }
-        if let Some(editor) = &mut self.alias {
-            let mut open = true;
-            let mut cancel = false;
-            egui::Window::new(uu_i18n::text("服务器别名"))
-                .id("connection-server-alias".into())
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .default_width(360.)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.label(uu_i18n::text("仅在本机显示，留空使用地址和设备组编号。"));
-                    ui.add(
-                        crate::theme::Input::new(&mut editor.value)
-                            .char_limit(64)
-                            .desired_width(f32::INFINITY),
-                    );
-                    if !self.labels.error.is_empty() {
-                        ui.colored_label(
-                            crate::theme::palette(ui.visuals()).danger,
-                            &self.labels.error,
-                        );
-                    }
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(
-                                config.is_some() && self.labels.ready(),
-                                crate::theme::primary_button(uu_i18n::text("保存")),
-                            )
-                            .clicked()
-                        {
-                            self.labels.save(
-                                ctx,
-                                config.unwrap(),
-                                editor.address.clone(),
-                                editor.value.clone(),
-                            );
-                            editor.submitted = true;
-                        }
-                        if ui
-                            .add(crate::theme::secondary_button(uu_i18n::text("取消")))
-                            .clicked()
-                        {
-                            cancel = true;
-                        }
-                    });
-                });
-            if !open || cancel {
-                self.alias = None;
-            }
-        }
     }
     pub(crate) fn show(
         &mut self,
@@ -227,16 +192,40 @@ impl Servers {
                 ));
             }
             for server in servers {
-                ui.push_id(&server.id, |ui| {
-                    ui.add_space(8.);
+                let key = super::address_key(&server.address);
+                let saved = self.labels.alias(&server.address).to_owned();
+                let draft = self
+                    .drafts
+                    .entry(key.clone())
+                    .or_insert_with(|| AliasDraft {
+                        value: saved.clone(),
+                        baseline: saved.clone(),
+                        saving: None,
+                    });
+                draft.sync(&saved, self.labels.saved_generation(), self.labels.ready());
+                ui.push_id(&key, |ui| {
+                    ui.add_space(6.);
                     ui.separator();
-                    ui.horizontal_wrapped(|ui| {
-                        ui.strong(self.labels.display_name(&server.address));
+                    ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let mut host_enabled = server.host_enabled;
+                            let switched = ui
+                                .add_enabled_ui(enabled, |ui| {
+                                    crate::theme::switch(ui, &mut host_enabled, "")
+                                })
+                                .inner
+                                .on_hover_text(uu_i18n::text("允许通过此服务器连接本机"));
+                            ui.label(uu_i18n::text("启用"));
+                            if switched.changed() {
+                                action = Some(ServerAction::SetEnabled {
+                                    id: server.id.clone(),
+                                    enabled: host_enabled,
+                                });
+                            }
                             if ui
                                 .add_enabled(
                                     enabled,
-                                    crate::theme::secondary_button(uu_i18n::text("移除")).small(),
+                                    crate::theme::secondary_button(uu_i18n::text("删除")).small(),
                                 )
                                 .clicked()
                             {
@@ -246,57 +235,89 @@ impl Servers {
                             }
                             if ui
                                 .add_enabled(
-                                    enabled && self.labels.ready(),
-                                    crate::theme::secondary_button(uu_i18n::text("修改别名"))
-                                        .small(),
+                                    enabled
+                                        && config.is_some()
+                                        && self.labels.ready()
+                                        && draft.saving.is_none()
+                                        && draft.dirty(&saved),
+                                    crate::theme::secondary_button(uu_i18n::text("保存")).small(),
                                 )
                                 .clicked()
                             {
                                 self.labels.clear_error();
-                                self.alias = Some(AliasEditor {
-                                    address: server.address.clone(),
-                                    value: self.labels.alias(&server.address).into(),
-                                    submitted: false,
-                                    saved_generation: self.labels.saved_generation(),
-                                });
+                                draft.saving =
+                                    Some((self.labels.saved_generation(), draft.value.clone()));
+                                self.labels.save(
+                                    ui.ctx(),
+                                    config.unwrap(),
+                                    server.address.clone(),
+                                    draft.value.clone(),
+                                );
                             }
-                            if ui
-                                .add(crate::theme::secondary_button(uu_i18n::text("刷新")).small())
-                                .clicked()
-                            {
-                                self.directory.refresh();
-                                self.labels.refresh();
-                            }
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.label(uu_i18n::text("别名"));
+                                    ui.add_enabled(
+                                        enabled,
+                                        crate::theme::Input::new(&mut draft.value)
+                                            .char_limit(64)
+                                            .desired_width(ui.available_width())
+                                            .hint_text(super::display_name(
+                                                &Default::default(),
+                                                &server.address,
+                                            )),
+                                    )
+                                    .on_hover_text(
+                                        uu_i18n::text("仅在本机显示，留空使用地址和设备组编号。"),
+                                    );
+                                },
+                            );
                         });
                     });
-                    ui.horizontal(|ui| {
-                        ui.weak(uu_i18n::text("设备组"));
-                        ui.label(&server.name);
-                    });
-                    let mut host_enabled = server.host_enabled;
-                    if ui
-                        .add_enabled_ui(enabled, |ui| {
-                            crate::theme::switch(
-                                ui,
-                                &mut host_enabled,
-                                uu_i18n::text("允许通过此服务器连接本机"),
-                            )
-                        })
-                        .inner
-                        .changed()
-                    {
-                        action = Some(ServerAction::SetEnabled {
-                            id: server.id.clone(),
-                            enabled: host_enabled,
+                    egui::CollapsingHeader::new(uu_i18n::text("服务器详情"))
+                        .id_salt(("connection-server-details", &key))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.weak("WSS");
+                                ui.label(&server.address);
+                                if ui
+                                    .add(
+                                        crate::theme::secondary_button(uu_i18n::text("复制"))
+                                            .small(),
+                                    )
+                                    .clicked()
+                                {
+                                    ui.ctx().copy_text(server.address.clone());
+                                }
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.weak(uu_i18n::text("设备组"));
+                                ui.label(&server.name);
+                            });
+                            if let Ok(url) = url::Url::parse(&server.address) {
+                                if let Ok(group) = uu_core::internet::server::groups::query_group(
+                                    url.query().unwrap_or(""),
+                                ) {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.weak("Group ID");
+                                        ui.monospace(group.to_string());
+                                        if ui
+                                            .add(
+                                                crate::theme::secondary_button(uu_i18n::text(
+                                                    "复制",
+                                                ))
+                                                .small(),
+                                            )
+                                            .clicked()
+                                        {
+                                            ui.ctx().copy_text(group.to_string());
+                                        }
+                                    });
+                                }
+                            }
                         });
-                    }
-                    ui.weak(uu_i18n::text(if host_enabled {
-                        "本机以设备名称自动上线；访问桌面仍需配对授权。"
-                    } else {
-                        "本机不在此服务器上线，仍可连接下方在线设备。"
-                    }));
-                    ui.add_space(6.);
-                    ui.label(uu_i18n::text("在线设备"));
                     if let Some(target) = self.directory.show_service(ui, config, &server.address) {
                         self.open = Some(target);
                     }
@@ -310,6 +331,137 @@ impl Servers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct FormHarness {
+        state: Servers,
+        rows: Vec<Server>,
+        context: egui::Context,
+        config: Config,
+        root: std::path::PathBuf,
+        time: f64,
+        painted: Vec<(String, egui::Pos2)>,
+    }
+    impl FormHarness {
+        fn new() -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("eclipse-inline-servers-{}", uuid::Uuid::new_v4()));
+            let config = Config {
+                data_dir: root.join("data"),
+                state_dir: root.join("state"),
+                signaling_host: String::new(),
+            };
+            let (state, rows) = Servers::fixture();
+            let context = egui::Context::default();
+            crate::theme::apply(&context);
+            context.style_mut(|style| style.animation_time = 0.);
+            let mut harness = Self {
+                state,
+                rows,
+                context,
+                config,
+                root,
+                time: 0.,
+                painted: Vec::new(),
+            };
+            harness.frame(vec![]);
+            harness.frame(vec![]);
+            harness
+        }
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            self.time += 0.2;
+            let output = self.context.run(
+                egui::RawInput {
+                    time: Some(self.time),
+                    focused: true,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 1000.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        self.state.show(ui, Some(&self.config), &self.rows, true);
+                    });
+                    self.state.dialogs(ctx, Some(&self.config));
+                },
+            );
+            fn collect(shape: &egui::Shape, values: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Text(text) => values.push((
+                        text.galley.job.text.clone(),
+                        text.pos + text.galley.size() * 0.5,
+                    )),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, values);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.painted.clear();
+            for shape in output.shapes {
+                collect(&shape.shape, &mut self.painted);
+            }
+        }
+        fn click(&mut self, text: &str, index: usize) {
+            let pos = self
+                .painted
+                .iter()
+                .filter(|(label, _)| label == text)
+                .nth(index)
+                .unwrap_or_else(|| panic!("missing {text}: {:?}", self.painted))
+                .1;
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            self.frame(vec![egui::Event::PointerMoved(pos), button(true)]);
+            self.frame(vec![button(false)]);
+        }
+        fn replace_alias(&mut self, current: &str, replacement: &str) {
+            self.click(current, 0);
+            let key = |key, pressed, modifiers| egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat: false,
+                modifiers,
+            };
+            let command = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+            let mut events = vec![key(egui::Key::A, true, command), key(egui::Key::A, false, command)];
+            if replacement.is_empty() {
+                events.extend([
+                    key(egui::Key::Backspace, true, Default::default()),
+                    key(egui::Key::Backspace, false, Default::default()),
+                ]);
+            } else {
+                events.push(egui::Event::Text(replacement.into()));
+            }
+            self.frame(events);
+            self.frame(vec![]);
+        }
+        fn wait_saved(&mut self, generation: u64) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while self.state.labels.saved_generation() < generation || !self.state.labels.ready() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "inline alias save did not finish"
+                );
+                self.frame(vec![]);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            self.frame(vec![]);
+        }
+    }
+    impl Drop for FormHarness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
     fn texts(output: egui::FullOutput) -> Vec<String> {
         fn collect(shape: &egui::Shape, values: &mut Vec<String>) {
             match shape {
@@ -353,10 +505,18 @@ mod tests {
                 .position(|label| label == value)
                 .unwrap_or_else(|| panic!("missing {value}: {labels:?}"))
         };
-        assert!(index("家里的服务器") < index("我的设备"));
-        assert!(index("我的设备") < index("笔记本电脑"));
-        assert!(index("笔记本电脑") < index("工作设备"));
-        assert!(index("工作设备") < index("办公室电脑"));
+        assert!(index("家里的服务器") < index("笔记本电脑"));
+        assert!(index("笔记本电脑") < index("办公室电脑"));
+        assert!(!labels
+            .iter()
+            .any(|label| label == "我的设备" || label == "工作设备" || label.contains("wss://")));
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|label| *label == "在线设备（1）")
+                .count(),
+            2
+        );
         assert!(!labels
             .iter()
             .any(|label| label.contains("route-id") || label.contains("本机（不应显示）")));
@@ -379,48 +539,70 @@ mod tests {
         )));
     }
     #[test]
-    fn failed_alias_save_keeps_the_draft_when_a_later_refresh_succeeds() {
-        let root =
-            std::env::temp_dir().join(format!("eclipse-alias-draft-{}", uuid::Uuid::new_v4()));
-        let config = Config {
-            data_dir: root.join("data"),
-            state_dir: root.join("state"),
-            signaling_host: String::new(),
-        };
-        std::fs::create_dir_all(&config.data_dir).unwrap();
-        let path = config.at("connection-service-aliases.json");
-        std::fs::write(&path, b"invalid fixture").unwrap();
-        let (mut state, rows) = Servers::fixture();
-        let ctx = egui::Context::default();
-        state.alias = Some(AliasEditor {
-            address: rows[0].address.clone(),
+    fn inline_alias_drafts_keep_unsaved_edits_across_refresh_and_confirm_only_a_successful_save() {
+        let mut draft = AliasDraft {
             value: "unsaved draft".into(),
-            submitted: true,
-            saved_generation: state.labels.saved_generation(),
-        });
-        state.labels.save(
-            &ctx,
-            &config,
-            rows[0].address.clone(),
-            "unsaved draft".into(),
-        );
-        let settle = |state: &mut Servers| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !state.labels.ready() {
-                state.labels.poll(&ctx, Some(&config));
-                assert!(std::time::Instant::now() < deadline);
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            baseline: "saved alias".into(),
+            saving: Some((4, "unsaved draft".into())),
         };
-        settle(&mut state);
-        assert!(!state.labels.error.is_empty());
-        std::fs::write(&path, b"{}").unwrap();
-        state.labels.refresh();
-        state.labels.poll(&ctx, Some(&config));
-        settle(&mut state);
-        let _ = ctx.run(Default::default(), |ctx| state.dialogs(ctx, Some(&config)));
-        assert_eq!(state.alias.as_ref().unwrap().value, "unsaved draft");
-        assert!(!state.labels.error.is_empty());
-        std::fs::remove_dir_all(root).unwrap();
+        draft.sync("saved alias", 4, true);
+        assert_eq!(draft.value, "unsaved draft");
+        assert!(draft.dirty("saved alias") && draft.saving.is_none());
+        draft.sync("alias changed in another window", 4, true);
+        assert_eq!(draft.value, "unsaved draft");
+        draft.saving = Some((4, "unsaved draft".into()));
+        draft.sync("unsaved draft", 5, true);
+        assert_eq!(draft.baseline, "unsaved draft");
+        assert!(!draft.dirty("unsaved draft"));
+        draft.value.clear();
+        assert!(draft.dirty("unsaved draft"));
+    }
+    #[test]
+    fn inline_save_requires_an_edit_and_clearing_an_alias_restores_the_default() {
+        let mut harness = FormHarness::new();
+        harness.click("保存", 0);
+        assert_eq!(harness.state.labels.saved_generation(), 0);
+        assert!(!harness
+            .config
+            .at("connection-service-aliases.json")
+            .exists());
+        harness.replace_alias("家里的服务器", "新的别名");
+        harness.click("保存", 0);
+        harness.wait_saved(1);
+        assert_eq!(
+            harness.state.labels.alias(&harness.rows[0].address),
+            "新的别名"
+        );
+        harness.replace_alias("新的别名", "");
+        harness.click("保存", 0);
+        harness.wait_saved(2);
+        assert!(harness
+            .state
+            .labels
+            .alias(&harness.rows[0].address)
+            .is_empty());
+        assert!(harness
+            .state
+            .labels
+            .display_name(&harness.rows[0].address)
+            .starts_with("203.0.113.10:9443"));
+    }
+    #[test]
+    fn server_details_start_collapsed_and_remember_each_servers_expansion() {
+        let mut harness = FormHarness::new();
+        let contains =
+            |h: &FormHarness, text: &str| h.painted.iter().any(|(label, _)| label == text);
+        assert!(!contains(&harness, "我的设备") && !contains(&harness, "工作设备"));
+        harness.click("服务器详情", 0);
+        harness.frame(vec![]);
+        assert!(contains(&harness, "我的设备") && !contains(&harness, "工作设备"));
+        assert!(contains(&harness, &harness.rows[0].address));
+        harness.frame(vec![]);
+        assert!(contains(&harness, "我的设备") && !contains(&harness, "工作设备"));
+        harness.click("服务器详情", 1);
+        harness.frame(vec![]);
+        harness.click("服务器详情", 0);
+        harness.frame(vec![]);
+        assert!(!contains(&harness, "我的设备") && contains(&harness, "工作设备"));
     }
 }

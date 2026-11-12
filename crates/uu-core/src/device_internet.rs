@@ -16,7 +16,8 @@ use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 // Bound provisional peers without counting authenticated media sessions.
 const MAX_PENDING_DEVICE_AUTH: usize = 4;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", content = "message", rename_all = "snake_case")]
 pub enum EndpointStatus {
     Starting,
     Ready,

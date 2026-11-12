@@ -12,6 +12,19 @@ use uu_core::service_admin::{
     PluginRequest, Request, Response, TrustRequest,
 };
 use windows_sys::Win32::System::Services::SERVICE_RUNNING;
+use crate::connection_service_ui::endpoint::{Poll as EndpointPoll, PollResult};
+
+fn endpoint_poll_result(result: &anyhow::Result<Response>) -> PollResult {
+    match result {
+        Ok(Response::Endpoints { .. }) => PollResult::Supported,
+        Ok(Response::Error { message }) if message.contains("unknown variant `endpoints`")
+            || message.contains("unsupported endpoint") => PollResult::Unsupported,
+        Err(error) if error.chain().filter_map(|error|error.downcast_ref::<std::io::Error>()).any(|error|
+            matches!(error.kind(),std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset)
+            || matches!(error.raw_os_error(),Some(109 | 232))) => PollResult::Closed,
+        _ => PollResult::Transient,
+    }
+}
 
 pub(super) enum Job {
     Refresh,
@@ -35,6 +48,7 @@ pub(super) enum Event {
     },
     Done(Result<Response, String>),
     History(Result<Response, String>),
+    Endpoints { owner: Option<(u32, Option<String>)>, result: Result<Response, String> },
     Trust {
         completed: bool,
         result: Result<Response, String>,
@@ -75,6 +89,7 @@ impl Worker {
             let mut plugins_at = Instant::now();
             let mut history_at = Instant::now();
             let mut history_revision = None;
+            let mut endpoint_poll = EndpointPoll::new(Instant::now());
             while !stopped.load(Ordering::Acquire) {
                 match jobs.recv_timeout(Duration::from_millis(750)) {
                     Ok(Job::Refresh) => {}
@@ -133,6 +148,8 @@ impl Worker {
                         }
                         Err(_) => u32::MAX,
                     });
+                let endpoint_owner=build.as_ref().map(|build|(build.process_id,build.profile.clone()));
+                endpoint_poll.observe(endpoint_owner.clone(),build.as_ref().and_then(|build|build.running.as_ref()).map(|version|version.revision.clone()),state==SERVICE_RUNNING,Instant::now());
                 let response = if state == SERVICE_RUNNING {
                     runtime
                         .block_on(request_owner(Request::Status))
@@ -149,6 +166,12 @@ impl Worker {
                     .is_err()
                 {
                     break;
+                }
+                if endpoint_poll.due(Instant::now()) {
+                    let endpoints = runtime.block_on(request_owner(Request::Endpoints));
+                    endpoint_poll.completed(endpoint_poll_result(&endpoints),Instant::now());
+                    let endpoints=endpoints.map_err(|error|format!("{error:#}"));
+                    if send.send(Event::Endpoints {owner:endpoint_owner,result:endpoints}).is_err() { break; }
                 }
                 if state == SERVICE_RUNNING && Instant::now() >= trust_at {
                     let result = runtime

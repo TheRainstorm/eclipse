@@ -230,6 +230,9 @@ async fn connection(
             }
         };
         match request {
+            Request::Endpoints => Ok((Response::Endpoints {
+                endpoints: endpoints.iter().map(|endpoint|endpoint.snapshot()).collect(),
+            }, false)),
             Request::ConfigurationSwitch { token, release } => {
                 access.sessions.reserve_configuration_switch(&token, release)?;
                 Ok((Response::Applied, false))

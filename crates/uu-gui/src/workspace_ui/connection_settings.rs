@@ -100,7 +100,7 @@ impl Workspace {
                         ui.end_row();
                     });
             });
-            self.endpoint_state(ui, uu_i18n::text("IP 直连"));
+            self.endpoint_state(ui, &uu_core::host_runtime::EndpointIdentity::Ip);
             ui.collapsing(uu_i18n::text("本机地址"), |ui| {
                 if let Ok(addresses) = crate::native_interfaces::enumerate() {
                     for address in addresses
@@ -188,7 +188,7 @@ impl Workspace {
                         }
                     }
                 });
-                self.endpoint_state(ui, provider.name);
+                self.endpoint_state(ui, &uu_core::host_runtime::EndpointIdentity::Plugin {id:provider.id.into()});
                 connection(ui, Some(provider.id));
             });
         }

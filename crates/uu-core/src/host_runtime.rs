@@ -24,7 +24,29 @@ pub enum Event {
 pub struct Endpoint {
     pub name: String,
     pub provider:Option<String>,
+    pub identity: EndpointIdentity,
     pub state: watch::Receiver<EndpointStatus>,
+}
+/// Runtime identity is independent of labels and local aliases. No credential
+/// paths or settings are exposed in the read-only management snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EndpointIdentity {
+    Ip,
+    Plugin { id: String },
+    Server { id: String, address: String },
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EndpointSnapshot {
+    pub identity: EndpointIdentity,
+    pub name: String,
+    pub status: EndpointStatus,
+}
+impl Endpoint {
+    pub fn snapshot(&self) -> EndpointSnapshot {
+        EndpointSnapshot { identity:self.identity.clone(),name:self.name.clone(),status:self.state.borrow().clone() }
+    }
 }
 pub struct Prepared {
     pub access: Arc<Access>,
@@ -114,19 +136,21 @@ fn prepare_inner(
         endpoints.push(Endpoint {
             name: uu_i18n::text("IP 直连").into(),
             provider:None,
+            identity: EndpointIdentity::Ip,
             state,
         });
     }
     let mut services = Vec::new();
-    let mut add = |name: String, settings: Settings| {
+    let mut add = |name: String, identity: EndpointIdentity, settings: Settings| {
         let (status, state) = watch::channel(EndpointStatus::Starting);
         let provider=match &settings.provider {Provider::Plugin(id)=>Some(id.clone()),Provider::SelfHosted=>None};
-        endpoints.push(Endpoint { name, state,provider });
+        endpoints.push(Endpoint { name, state,provider,identity });
         services.push((settings, status));
     };
     for (id,name) in providers {
         add(
             name,
+            EndpointIdentity::Plugin { id:id.clone() },
             Settings {
                 provider: Provider::Plugin(id),
                 device_auth: true,
@@ -137,6 +161,7 @@ fn prepare_inner(
     for service in book.services.iter().filter(|s| s.host_enabled) {
         add(
             service.name.clone(),
+            EndpointIdentity::Server { id:service.id.clone(),address:service.address.clone() },
             Settings {
                 provider: Provider::SelfHosted,
                 device_auth: true,
