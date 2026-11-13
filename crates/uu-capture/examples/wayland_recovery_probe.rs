@@ -4,9 +4,11 @@ use uu_capture::{Capture, CaptureError, CaptureSource, OpenOptions};
 
 fn stream(index: usize) -> anyhow::Result<()> {
     let mut capture = uu_capture::wayland::WaylandCapture::open(
-        &CaptureSource::Monitor("HEADLESS-1".into()), OpenOptions::default())?;
+        &CaptureSource::Monitor("HEADLESS-1".into()), OpenOptions { allow_input: true, ..OpenOptions::default() })?;
     let mapping = capture.desktop_mapping().unwrap();
     let expected = mapping.get().unwrap();
+    let revision = mapping.live_revision();
+    let mut injector = capture.input_injector().ok_or_else(|| anyhow::anyhow!("owned output has no input backend"))?;
     let started = Instant::now();
     let mut frames = 0usize;
     let mut pauses = 0usize;
@@ -23,7 +25,12 @@ fn stream(index: usize) -> anyhow::Result<()> {
                 resumed |= pauses > 0;
             }
             Err(CaptureError::Suspended(_)) => {
-                anyhow::ensure!(mapping.get().is_none(), "paused source left its input mapping live");
+                anyhow::ensure!(mapping.get() == Some(expected) && mapping.live_revision() == revision,
+                    "waiting for an unchanged output unnecessarily retired input");
+                let input_started = Instant::now();
+                injector.inject(uu_input::InputEvent::MouseMoveRelative { dx: 1, dy: 0 })?;
+                anyhow::ensure!(input_started.elapsed() < Duration::from_millis(250),
+                    "pending screen copy delayed the independent input worker");
                 pauses += 1;
             }
             Err(error) => return Err(error.into()),

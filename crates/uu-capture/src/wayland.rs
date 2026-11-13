@@ -475,6 +475,8 @@ pub struct WaylandCapture {
     target: uu_input::wayland::OutputTarget,
     transform: wl_output::Transform,
     buffer: Option<Buffer>,
+    pending: Option<Frame>,
+    copy_requested: bool,
     size: (u32, u32),
     started: Instant,
     retry_after: Instant,
@@ -482,6 +484,9 @@ pub struct WaylandCapture {
 }
 impl WaylandCapture {
     pub fn open(source: &CaptureSource, options: OpenOptions) -> Result<Self, CaptureError> {
+        Self::open_first(source, options).map(|(capture, _)| capture)
+    }
+    fn open_first(source: &CaptureSource, options: OpenOptions) -> Result<(Self, RawFrame), CaptureError> {
         let mut session = Session::discover(&options.cancelled)?;
         if session.state.manager.is_none() || session.state.shm.is_none() {
             return Err(CaptureError::NoBackend);
@@ -514,6 +519,8 @@ impl WaylandCapture {
             target,
             transform,
             buffer: None,
+            pending: None,
+            copy_requested: false,
             size: (0, 0),
             started: Instant::now(),
             retry_after: Instant::now(),
@@ -522,15 +529,17 @@ impl WaylandCapture {
         let first = this.read_frame()?;
         this.size = (first.width, first.height);
         this.mapping = Some(DesktopMapping::new(this.rect()));
-        Ok(this)
+        Ok((this, first))
     }
     fn rect(&self) -> DesktopRect {
         DesktopRect { x: 0, y: 0, width: self.size.0, height: self.size.1 }
     }
     fn retire(&mut self) {
         if let Some(mapping) = &self.mapping { mapping.update(None); }
-        // A timed-out copy may still own its shm buffer. Retire its entire
-        // connection; never reuse memory or accept a late Ready after resuming.
+        // Explicit failure retires the entire connection. An ordinary wait
+        // timeout keeps the pending copy and its buffer until Ready/Failed.
+        self.pending = None;
+        self.copy_requested = false;
         self.buffer = None;
         self.output = None;
         self.session = None;
@@ -541,13 +550,13 @@ impl WaylandCapture {
             return Err(CaptureError::Suspended("等待合成器恢复屏幕采集".into()));
         }
         self.retry_after = Instant::now() + Duration::from_millis(250);
-        let mut replacement = Self::open(&CaptureSource::Monitor(self.name.clone()), self.options.clone())?;
+        let (mut replacement, mut frame) = Self::open_first(&CaptureSource::Monitor(self.name.clone()), self.options.clone())?;
         if replacement.size != self.size || replacement.transform != self.transform {
             return Err(error("显示器尺寸或方向已变化，请重新连接"));
         }
         // Keep the stream PTS clock and the original input mapping ownership.
         replacement.started = self.started;
-        let frame = replacement.read_frame()?;
+        frame.pts = Timestamp(self.started.elapsed().as_micros().min(u64::MAX as u128) as u64);
         replacement.mapping = self.mapping.take();
         if let Some(mapping) = &replacement.mapping { mapping.update(Some(replacement.rect())); }
         *self = replacement;
@@ -556,24 +565,28 @@ impl WaylandCapture {
     fn read_frame(&mut self) -> Result<RawFrame, CaptureError> {
         let s = self.session.as_mut().expect("active Wayland capture");
         let deadline = Instant::now() + Duration::from_secs(2);
-        if self.buffer.is_some() {
-            while !s.state.released {
-                s.dispatch(&self.options.cancelled, deadline)?;
+        if self.pending.is_none() {
+            if self.buffer.is_some() {
+                while !s.state.released {
+                    s.dispatch(&self.options.cancelled, deadline)?;
+                }
             }
+            s.state.layout = None;
+            s.state.formats_done = false;
+            s.state.ready = false;
+            s.state.failed = false;
+            s.state.inverted = false;
+            self.pending = Some(Frame(s.state.manager.as_ref().unwrap().capture_output(
+                1,
+                self.output.as_ref().unwrap(),
+                &s.queue.handle(),
+                (),
+            )));
+            self.copy_requested = false;
         }
-        s.state.layout = None;
-        s.state.formats_done = false;
-        s.state.ready = false;
-        s.state.failed = false;
-        s.state.inverted = false;
-        let frame = Frame(s.state.manager.as_ref().unwrap().capture_output(
-            1,
-            self.output.as_ref().unwrap(),
-            &s.queue.handle(),
-            (),
-        ));
+        let frame = &self.pending.as_ref().unwrap().0;
         while !s.state.failed
-            && !(s.state.layout.is_some() && (frame.0.version() < 3 || s.state.formats_done))
+            && !(s.state.layout.is_some() && (frame.version() < 3 || s.state.formats_done))
         {
             // Version 3 may advertise only DMA-BUF; do not wait for a buffer
             // event that cannot arrive in this CPU-backed implementation.
@@ -594,8 +607,11 @@ impl WaylandCapture {
                 &s.queue.handle(),
             )?);
         }
-        s.state.released = false;
-        frame.0.copy(&self.buffer.as_ref().unwrap().buffer);
+        if !self.copy_requested {
+            s.state.released = false;
+            frame.copy(&self.buffer.as_ref().unwrap().buffer);
+            self.copy_requested = true;
+        }
         while !s.state.ready && !s.state.failed {
             s.dispatch(&self.options.cancelled, deadline)?;
         }
@@ -608,6 +624,8 @@ impl WaylandCapture {
             s.state.inverted,
             self.transform,
         )?;
+        self.pending = None;
+        self.copy_requested = false;
         Ok(RawFrame {
             width,
             height,
@@ -724,10 +742,26 @@ impl Capture for WaylandCapture {
     }
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
         let result = if self.session.is_some() { self.read_frame() } else { self.resume() };
+        if let Some(session) = &self.session {
+            let selected = session.state.outputs.iter().find(|output| Some(output.global) == session.state.selected);
+            if selected.is_none_or(|output| output.size() != self.size
+                || output.transform.unwrap_or(wl_output::Transform::Normal) != self.transform
+                || output.target().logical_size != self.target.logical_size)
+            {
+                self.retire();
+                return Err(error("显示器尺寸或方向已变化，请重新连接"));
+            }
+        }
         let frame = match result {
             Ok(frame) => frame,
             Err(error) => {
-                if self.session.is_some() { self.retire(); }
+                // Waiting for a compositor image does not revoke an unchanged
+                // output's input mapping. Otherwise an idle desktop can block
+                // the very input that would wake it. Keep exactly one pending
+                // copy; a later Ready belongs to that copy, never a new buffer.
+                let waiting = matches!(error, CaptureError::Suspended(_))
+                    && self.session.as_ref().is_some_and(|session| !session.state.failed);
+                if self.session.is_some() && !waiting { self.retire(); }
                 return Err(error);
             }
         };

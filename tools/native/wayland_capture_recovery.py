@@ -100,7 +100,8 @@ def main():
             if probe.returncode or sum(bool(row.get('ok')) for row in rows) != 2:
                 raise RuntimeError('Capture pause/resume failed; see '+str(output))
             print(json.dumps(dict(ok=True, streams=2, real_wayland_recovery=True,
-                                  mapping_retired=True, pts_monotonic=True, no_user_desktop=True)))
+                                  input_live_during_wait=True, mapping_retired_on_stop=True,
+                                  pts_monotonic=True, no_user_desktop=True)))
     finally:
         if compositor_paused and compositor and compositor.poll() is None:
             compositor.send_signal(signal.SIGCONT)
