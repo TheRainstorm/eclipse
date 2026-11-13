@@ -61,7 +61,7 @@ def main():
         logs.append(file)
         return file
 
-    def wait(check, seconds=15):
+    def wait(check, seconds=15, *, description=None):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             if gui and gui.poll() is not None:
@@ -70,11 +70,16 @@ def main():
             if value:
                 return value
             time.sleep(.1)
-        raise TimeoutError('Owned native Wayland condition timed out')
+        failure = dict(condition=description or check.__name__,
+                       gui_exit=gui.poll() if gui else None,
+                       host_exit=host.poll() if host else None,
+                       compositor_exit=sway.poll() if sway else None)
+        (out / 'wait-failure.json').write_text(json.dumps(failure, indent=2))
+        raise TimeoutError('Owned native Wayland condition timed out: ' + json.dumps(failure))
 
     def ipc(command, kind=None):
         command = ['swaymsg', '-r'] + (['-t', kind] if kind else [command])
-        value = json.loads(subprocess.check_output(command, env=env, text=True))
+        value = json.loads(subprocess.check_output(command, env=env, text=True, timeout=3))
         if isinstance(value, list) and any(not item.get('success', True) for item in value):
             raise RuntimeError('Owned compositor command failed')
         return value
@@ -145,7 +150,8 @@ def main():
         outputs = ipc('', 'get_outputs')
         output = next(output for output in outputs if output['name'] == name)
         (out / ('dpi-' + name + '.json')).write_text(json.dumps(outputs, indent=2))
-        wait(lambda: abs(latest_geometry().get('pixels_per_point', 0) - output['scale']) < .01)
+        wait(lambda: abs(latest_geometry().get('pixels_per_point', 0) - output['scale']) < .01,
+             description='viewer scale after moving to ' + name)
         moved = window()['rect'].copy()
         if any(abs(moved[key] - before[key]) > 2 for key in ('width', 'height')):
             raise RuntimeError('Moving an owned window must preserve its compositor size')
@@ -165,7 +171,7 @@ def main():
                     and abs(bounds[2] - bounds[0] - width) <= 2
                     and abs(bounds[3] - bounds[1] - height) <= 2
                     and abs(geometry.get('pixels_per_point', 0) - output['scale']) < .01)
-        wait(configured_size)
+        wait(configured_size, description='viewer accepts compositor size on ' + name)
         window_command('move position center')
         configured = window()['rect'].copy()
         hold_geometry(configured)
@@ -191,20 +197,20 @@ def main():
         host = subprocess.Popen([str(args.cli.resolve()), 'native-host', '--synthetic', '--invitation-file', str(invitation), '--max-seconds', str(90 + args.soak_seconds)], env=env, stdout=log('host.log'), stderr=subprocess.STDOUT)
         wait(invitation.exists)
         gui = subprocess.Popen([str(args.gui.resolve()), '--native-invitation', str(invitation)], env=env, stdout=log('gui.log'), stderr=subprocess.STDOUT)
-        wait(window)
-        wait(lambda: any(event.get('event') == 'first_frame' for event in events()))
-        wait(lambda: window().get('focused'))
+        wait(window, description='mapped stream surface')
+        wait(lambda: any(event.get('event') == 'first_frame' for event in events()), description='first decoded stream frame')
+        wait(lambda: window().get('focused'), description='focused stream surface')
         screenshot('window')
         keys('s'); keys('s')
         if not json.loads((data / 'gui-settings.json').read_text()).get('muted'):
             raise RuntimeError('A native viewing shortcut overwrote the saved audio preference')
         keys('x')
-        wait(lambda: window().get('fullscreen_mode') == 1)
+        wait(lambda: window().get('fullscreen_mode') == 1, description='enter fullscreen')
         screenshot('fullscreen')
         keys('c', ('logo',))
-        wait(marker.exists)
+        wait(marker.exists, description='readonly viewer leaves compositor shortcut local')
         keys('x')
-        wait(lambda: window().get('fullscreen_mode') == 0)
+        wait(lambda: window().get('fullscreen_mode') == 0, description='exit fullscreen')
         result = dict(native_viewer=True, fullscreen=True, local_system_shortcut_in_readonly=True)
         if args.multi_dpi:
             try:
@@ -264,8 +270,8 @@ def main():
         window_id = None
         gui = subprocess.Popen([str(args.gui.resolve())], env=env,
                                stdout=log('home.log'), stderr=subprocess.STDOUT)
-        wait(window)
-        wait(lambda: window().get('focused'))
+        wait(window, description='mapped home surface after stream exit')
+        wait(lambda: window().get('focused'), description='focused home surface')
         screenshot('home')
         window_command('kill')
         gui.wait(timeout=8)
