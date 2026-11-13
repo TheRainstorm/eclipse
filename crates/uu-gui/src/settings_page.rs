@@ -344,7 +344,7 @@ impl SoftwareSection {
         let defaults=Settings::default();
         match self {
             Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;s.close_to_tray=defaults.close_to_tray;}
-            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.color_theme=defaults.color_theme;s.device_icon_size=defaults.device_icon_size;s.device_text_size=defaults.device_text_size;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_refresh=defaults.wallpaper_refresh;s.wallpaper_refresh_hours=defaults.wallpaper_refresh_hours;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;}
+            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.color_theme=defaults.color_theme;s.device_icon_size=defaults.device_icon_size;s.device_text_size=defaults.device_text_size;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_refresh=defaults.wallpaper_refresh;s.wallpaper_refresh_hours=defaults.wallpaper_refresh_hours;s.wallpaper_source=defaults.wallpaper_source;s.wallhaven_page=defaults.wallhaven_page;s.wallhaven_categories=defaults.wallhaven_categories;s.wallhaven_purity=defaults.wallhaven_purity;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
         }
@@ -422,11 +422,33 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
                 ui.add(egui::DragValue::new(&mut s.wallpaper_refresh_hours).range(1..=8760).suffix(uu_i18n::text(" 小时")));
             }
         });
+        if s.wallpaper_source == WallpaperSource::Wallhaven {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(uu_i18n::text("Wallhaven 页面"));
+                crate::theme::Select::from_id_salt("wallhaven-page").selected_text(s.wallhaven_page.label()).show_ui(ui,|ui| {
+                    for page in super::settings::WallhavenPage::ALL {crate::theme::selectable_value(ui,&mut s.wallhaven_page,page,page.label());}
+                });
+            });
+            ui.label(uu_i18n::text("Wallhaven 分类"));
+            ui.horizontal_wrapped(|ui| {
+                crate::theme::switch(ui,&mut s.wallhaven_categories.general,uu_i18n::text("综合"));
+                crate::theme::switch(ui,&mut s.wallhaven_categories.anime,uu_i18n::text("动漫"));
+                crate::theme::switch(ui,&mut s.wallhaven_categories.people,uu_i18n::text("人物"));
+            });
+            ui.label(uu_i18n::text("Wallhaven 内容筛选"));
+            ui.horizontal_wrapped(|ui| {
+                crate::theme::switch(ui,&mut s.wallhaven_purity.sfw,uu_i18n::text("SFW"));
+                crate::theme::switch(ui,&mut s.wallhaven_purity.sketchy,uu_i18n::text("Sketchy"));
+            });
+            if !s.wallhaven_categories.any() || !s.wallhaven_purity.any() {
+                ui.colored_label(crate::theme::palette(ui.visuals()).warning,uu_i18n::text("至少选择一种 Wallhaven 分类和内容筛选"));
+            }
+        }
         if s.wallpaper_source == WallpaperSource::CustomApi {
             ui.label(uu_i18n::text("壁纸图片接口"));
             ui.add(crate::theme::Input::new(&mut s.wallpaper_api).desired_width(f32::INFINITY).hint_text("https://example.com/image"));
         }
-        note(ui,uu_i18n::text("摄影使用 Lorem Picsum，二次元使用 Pipw；自定义 API 可填 JPEG / PNG / WebP 图片地址。首次无缓存时会加载一张，之后遵循刷新策略，失败保留已有壁纸；收藏按顺序轮换。"));
+        note(ui,uu_i18n::text("摄影使用 Lorem Picsum，二次元使用 Pipw；Wallhaven 使用公开搜索 API，可选择榜单、热门或最新及分类筛选；自定义 API 可填 JPEG / PNG / WebP 图片地址。首次无缓存时会加载一张，之后遵循刷新策略，失败保留已有壁纸；收藏按顺序轮换。"));
         if ui.add(crate::theme::secondary_button(uu_i18n::text("刷新壁纸"))).clicked(){actions.refresh_wallpaper=true;}
     });
     },

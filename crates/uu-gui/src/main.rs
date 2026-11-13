@@ -72,6 +72,7 @@ mod lan_host_ui;
 mod native_keys;
 mod native_host_ui;
 mod native_interfaces;
+mod wallhaven;
 mod wallpapers;
 mod wallpaper_favorites;
 mod wallpaper_cache;

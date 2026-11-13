@@ -1,4 +1,5 @@
 //! Optional previews never gate the device list or retain full desktop pixels.
+use super::wallhaven;
 use anyhow::Context as _;
 use std::{
     io::Cursor,
@@ -37,6 +38,25 @@ pub(super) struct Request {
     pub url: String,
 }
 
+pub(super) struct WallhavenRequest {
+    pub device_id: String,
+    pub source: String,
+    pub query: wallhaven::Query,
+}
+
+enum Job {
+    Direct(Request),
+    Wallhaven(WallhavenRequest),
+}
+impl Job {
+    fn identity(&self) -> (String, String) {
+        match self {
+            Self::Direct(request) => (request.device_id.clone(), request.url.clone()),
+            Self::Wallhaven(request) => (request.device_id.clone(), request.source.clone()),
+        }
+    }
+}
+
 pub(super) struct Thumbnail {
     pub device_id: String,
     pub url: String,
@@ -68,13 +88,19 @@ impl Worker {
         let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
         Self::start_for(vec![request], context, Rendition::Wallpaper(side))
     }
-    fn start_for(requests:Vec<Request>, context:eframe::egui::Context, rendition:Rendition)->anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
+    pub fn start_wallhaven(request:WallhavenRequest, context:eframe::egui::Context)->anyhow::Result<Self> {
+        let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
+        Self::with_jobs(vec![Job::Wallhaven(request)], context, Self::client()?, Rendition::Wallpaper(side))
+    }
+    fn client() -> anyhow::Result<reqwest::Client> {
+        Ok(reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(12))
             .redirect(reqwest::redirect::Policy::limited(3))
-            .build()?;
-        Self::with_rendition(requests, context, client, rendition)
+            .build()?)
+    }
+    fn start_for(requests:Vec<Request>, context:eframe::egui::Context, rendition:Rendition)->anyhow::Result<Self> {
+        Self::with_jobs(requests.into_iter().map(Job::Direct).collect(), context, Self::client()?, rendition)
     }
 
     #[cfg(test)]
@@ -86,6 +112,9 @@ impl Worker {
         Self::with_rendition(requests, context, client, Rendition::Preview)
     }
     fn with_rendition(requests:Vec<Request>, context:eframe::egui::Context, client:reqwest::Client, rendition:Rendition)->anyhow::Result<Self> {
+        Self::with_jobs(requests.into_iter().map(Job::Direct).collect(), context, client, rendition)
+    }
+    fn with_jobs(jobs:Vec<Job>, context:eframe::egui::Context, client:reqwest::Client, rendition:Rendition)->anyhow::Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::channel(2);
         let (cancel, cancelled) = tokio::sync::oneshot::channel();
         let finished = Arc::new(AtomicBool::new(false));
@@ -101,7 +130,7 @@ impl Worker {
                         tokio::select! {
                             biased;
                             _ = cancelled => {},
-                            _ = download_all(requests, client, tx, context.clone(), rendition) => {},
+                            _ = download_all(jobs, client, tx, context.clone(), rendition) => {},
                         }
                     });
                     // A cancelled image decode may finish on a blocking worker; it
@@ -140,25 +169,25 @@ impl Drop for Worker {
 }
 
 async fn download_all(
-    requests: Vec<Request>,
+    jobs: Vec<Job>,
     client: reqwest::Client,
     tx: tokio::sync::mpsc::Sender<Result<Thumbnail, Failure>>,
     context: eframe::egui::Context,
     rendition:Rendition,
 ) {
-    let mut requests = requests.into_iter();
+    let mut requests = jobs.into_iter();
     let mut jobs = tokio::task::JoinSet::new();
     loop {
         while jobs.len() < CONCURRENCY {
             let Some(request) = requests.next() else {
                 break;
             };
+            let (device_id,url)=request.identity();
             let client = client.clone();
             jobs.spawn(async move {
-                let identity=(request.device_id.clone(),request.url.clone());
-                let result=tokio::time::timeout(DOWNLOAD_DEADLINE,download_for(client,request,rendition)).await
+                let result=tokio::time::timeout(DOWNLOAD_DEADLINE,download_job(client,request,rendition)).await
                     .unwrap_or_else(|_|Err(anyhow::anyhow!("image download exceeded 30 s")));
-                result.map_err(|error|Failure{device_id:identity.0,url:identity.1,error:format!("{error:#}")})
+                result.map_err(|error|Failure{device_id,url,error:format!("{error:#}")})
             });
         }
         let Some(result) = jobs.join_next().await else {
@@ -175,8 +204,21 @@ async fn download_all(
 
 #[cfg(test)]
 async fn download(client:reqwest::Client,request:Request)->anyhow::Result<Thumbnail> { download_for(client,request,Rendition::Preview).await }
+async fn download_job(client:reqwest::Client, job:Job, rendition:Rendition) -> anyhow::Result<Thumbnail> {
+    match job {
+        Job::Direct(request)=>download_for(client,request,rendition).await,
+        Job::Wallhaven(request)=>{
+            let image_url=wallhaven::resolve(&client,&request.query).await?;
+            download_for_image(client,Request{device_id:request.device_id,url:request.source},image_url,rendition).await
+        }
+    }
+}
 async fn download_for(client: reqwest::Client, request: Request, rendition:Rendition) -> anyhow::Result<Thumbnail> {
-    let url = reqwest::Url::parse(&request.url).context("invalid image URL")?;
+    let image_url=request.url.clone();
+    download_for_image(client,request,image_url,rendition).await
+}
+async fn download_for_image(client: reqwest::Client, request: Request, image_url:String, rendition:Rendition) -> anyhow::Result<Thumbnail> {
+    let url = reqwest::Url::parse(&image_url).context("invalid image URL")?;
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
             && url.username().is_empty() && url.password().is_none(),
@@ -388,6 +430,34 @@ mod tests {
         assert_eq!(thumbnail.url, url);
         assert_eq!((thumbnail.width, thumbnail.height), (64, 36));
         assert_eq!(&thumbnail.rgba[..4], &[20, 100, 180, 255]);
+    }
+
+    #[test]
+    #[ignore = "requires the public Wallhaven API and image CDN"]
+    fn wallhaven_worker_resolves_and_downloads_a_matching_wallpaper() {
+        use crate::settings::{WallhavenCategories,WallhavenPage,WallhavenPurity};
+        let source="wallhaven://toplist/111/100".to_string();
+        let request=WallhavenRequest{
+            device_id:"background".into(),
+            source:source.clone(),
+            query:wallhaven::Query{
+                page:WallhavenPage::Toplist,
+                categories:WallhavenCategories::default(),
+                purity:WallhavenPurity{sfw:true,sketchy:false},
+            },
+        };
+        let mut worker=Worker::start_wallhaven(request,Default::default()).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(20);
+        let image=loop {
+            if let Some(result)=worker.try_recv() {
+                break match result {Ok(image)=>image,Err(failure)=>panic!("{}",failure.error)};
+            }
+            assert!(Instant::now()<deadline,"Wallhaven worker exceeded deadline");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(image.url,source);
+        assert!(image.original.width>=1&&image.original.height>=1);
+        assert!(!image.encoded.is_empty());
     }
 
     #[test]

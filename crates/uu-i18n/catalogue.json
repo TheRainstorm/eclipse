@@ -2330,5 +2330,18 @@
   "主机管理尚未就绪。": "Host management is not ready.",
   "新会话默认仅观看": "New sessions start view-only",
   "空闲 3 秒后恢复": "Resume after 3 idle seconds",
-  "主机画质更新已经取消": "Host quality update was cancelled"
+  "主机画质更新已经取消": "Host quality update was cancelled",
+  "榜单": "Toplist",
+  "热门": "Hot",
+  "最新": "Latest",
+  "Wallhaven 页面": "Wallhaven listing",
+  "Wallhaven 分类": "Wallhaven categories",
+  "综合": "General",
+  "动漫": "Anime",
+  "人物": "People",
+  "Wallhaven 内容筛选": "Wallhaven content filter",
+  "至少选择一种 Wallhaven 分类和内容筛选": "Select at least one Wallhaven category and content filter.",
+  "至少选择一种 Wallhaven 分类": "Select at least one Wallhaven category.",
+  "至少选择 SFW 或 Sketchy": "Select SFW or Sketchy.",
+  "摄影使用 Lorem Picsum，二次元使用 Pipw；Wallhaven 使用公开搜索 API，可选择榜单、热门或最新及分类筛选；自定义 API 可填 JPEG / PNG / WebP 图片地址。首次无缓存时会加载一张，之后遵循刷新策略，失败保留已有壁纸；收藏按顺序轮换。": "Photography uses Lorem Picsum and Anime uses Pipw. Wallhaven uses its public search API and offers Toplist, Hot, or Latest plus category filters. Custom APIs may return JPEG, PNG, or WebP. An image is loaded if no cache exists; subsequent updates follow the refresh policy. Failures retain the existing image. Favorites rotate in order."
 }

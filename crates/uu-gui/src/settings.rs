@@ -57,7 +57,53 @@ pub(super) const ANIME_WALLPAPER: &str = "https://img-api.pipw.top";
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WallpaperSource { #[default] Photography, Anime, CustomApi, Favorites }
+pub enum WallpaperSource { #[default] Photography, Anime, Wallhaven, CustomApi, Favorites }
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all="snake_case")]
+pub enum WallhavenPage { #[default] Toplist, Hot, Latest }
+impl WallhavenPage {
+    pub const ALL:[Self;3]=[Self::Toplist,Self::Hot,Self::Latest];
+    pub fn label(self)->&'static str {uu_i18n::text(match self {Self::Toplist=>"榜单",Self::Hot=>"热门",Self::Latest=>"最新"})}
+    pub(super) fn key(self)->&'static str {match self {Self::Toplist=>"toplist",Self::Hot=>"hot",Self::Latest=>"latest"}}
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct WallhavenCategories { pub general:bool, pub anime:bool, pub people:bool }
+impl Default for WallhavenCategories {fn default()->Self {Self {general:true,anime:true,people:true}}}
+impl WallhavenCategories {
+    pub fn any(self)->bool {self.general||self.anime||self.people}
+    pub(super) fn mask(self)->Option<&'static str> {
+        match (self.general,self.anime,self.people) {
+            (false,false,false)=>None,
+            (false,false,true)=>Some("001"),
+            (false,true,false)=>Some("010"),
+            (false,true,true)=>Some("011"),
+            (true,false,false)=>Some("100"),
+            (true,false,true)=>Some("101"),
+            (true,true,false)=>Some("110"),
+            (true,true,true)=>Some("111"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct WallhavenPurity { pub sfw:bool, pub sketchy:bool }
+impl Default for WallhavenPurity {fn default()->Self {Self {sfw:true,sketchy:false}}}
+impl WallhavenPurity {
+    pub fn any(self)->bool {self.sfw||self.sketchy}
+    pub(super) fn mask(self)->Option<&'static str> {
+        match (self.sfw,self.sketchy) {
+            (false,false)=>None,
+            (true,false)=>Some("100"),
+            (false,true)=>Some("010"),
+            (true,true)=>Some("110"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all="snake_case")]
 pub enum WallpaperRefresh { Never, OnOpen, #[default] EveryHours }
@@ -66,10 +112,10 @@ impl WallpaperRefresh {
     pub fn label(self)->&'static str {uu_i18n::text(match self {Self::Never=>"不刷新",Self::OnOpen=>"每次打开",Self::EveryHours=>"每 X 小时"})}
 }
 impl WallpaperSource {
-    pub const ALL: [Self; 4] = [Self::Photography, Self::Anime, Self::CustomApi, Self::Favorites];
+    pub const ALL: [Self; 5] = [Self::Photography, Self::Anime, Self::Wallhaven, Self::CustomApi, Self::Favorites];
     pub fn label(self) -> &'static str {
         uu_i18n::text(match self {
-            Self::Photography => "摄影", Self::Anime => "二次元", Self::CustomApi => "自定义 API", Self::Favorites => "收藏",
+            Self::Photography => "摄影", Self::Anime => "二次元", Self::Wallhaven => "Wallhaven", Self::CustomApi => "自定义 API", Self::Favorites => "收藏",
         })
     }
     fn legacy(api: &str) -> Self {
@@ -114,6 +160,12 @@ pub struct Settings {
     pub virtual_display_presets: super::virtual_display_presets::Presets,
     #[serde(default)]
     pub wallpaper_source: WallpaperSource,
+    #[serde(default)]
+    pub wallhaven_page: WallhavenPage,
+    #[serde(default)]
+    pub wallhaven_categories: WallhavenCategories,
+    #[serde(default)]
+    pub wallhaven_purity: WallhavenPurity,
     pub wallpaper_favorite: Option<String>,
     /// Retained while built-in sources are selected, so returning to Custom API
     /// restores the user's own URL.
@@ -127,7 +179,7 @@ impl Default for Settings {
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
             device_view:DeviceView::Cards, devices_hidden:false, device_icon_size:230.0, device_text_size:17.0, wallpaper_enabled:true, app_autostart:false,close_to_tray:true,virtual_display_presets:Default::default(),
-            wallpaper_source:WallpaperSource::Anime, wallpaper_refresh:WallpaperRefresh::EveryHours,wallpaper_refresh_hours:24,wallpaper_favorite:None, wallpaper_api:ANIME_WALLPAPER.into() }
+            wallpaper_source:WallpaperSource::Anime, wallpaper_refresh:WallpaperRefresh::EveryHours,wallpaper_refresh_hours:24,wallhaven_page:WallhavenPage::Toplist,wallhaven_categories:Default::default(),wallhaven_purity:Default::default(),wallpaper_favorite:None, wallpaper_api:ANIME_WALLPAPER.into() }
     }
 }
 impl std::ops::Deref for Settings {
@@ -147,13 +199,27 @@ impl Settings {
         match self.wallpaper_source {
             WallpaperSource::Photography => PHOTOGRAPHY_WALLPAPER,
             WallpaperSource::Anime => ANIME_WALLPAPER,
+            WallpaperSource::Wallhaven => "wallhaven",
             WallpaperSource::CustomApi => self.wallpaper_api.trim(),
             WallpaperSource::Favorites => "favorites",
         }
     }
+    pub fn wallhaven_query(&self)->Option<super::wallhaven::Query> {
+        if self.wallpaper_source!=WallpaperSource::Wallhaven
+            || !self.wallhaven_categories.any()
+            || !self.wallhaven_purity.any() {return None;}
+        Some(super::wallhaven::Query {
+            page:self.wallhaven_page,
+            categories:self.wallhaven_categories,
+            purity:self.wallhaven_purity,
+        })
+    }
     pub fn wallpaper_identity(&self)->String {
-        if self.wallpaper_source==WallpaperSource::Favorites {format!("favorites:{}",self.wallpaper_favorite.as_deref().unwrap_or_default())}
-        else {self.wallpaper_url().into()}
+        match self.wallpaper_source {
+            WallpaperSource::Favorites=>format!("favorites:{}",self.wallpaper_favorite.as_deref().unwrap_or_default()),
+            WallpaperSource::Wallhaven=>self.wallhaven_query().map(|query|query.identity()).unwrap_or_else(||"wallhaven://invalid".into()),
+            _=>self.wallpaper_url().into(),
+        }
     }
     pub fn application_hotkeys(&self)->&uu_core::hotkeys::Bindings {
         self.application_hotkeys.as_ref().unwrap_or(&self.client.hotkeys)
@@ -172,6 +238,10 @@ impl Settings {
             anyhow::ensure!(self.wallpaper_api.len()<=2048,"{}", uu_i18n::format!("壁纸接口地址过长"));
             let url=reqwest::Url::parse(self.wallpaper_url()).map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("请输入有效的壁纸图片 URL")))?;
             anyhow::ensure!(matches!(url.scheme(),"http"|"https")&&url.host_str().is_some()&&url.username().is_empty()&&url.password().is_none(),"{}", uu_i18n::format!("壁纸接口须为不含登录凭据的 HTTP / HTTPS 图片地址"));
+        }
+        if self.wallpaper_enabled && self.wallpaper_source == WallpaperSource::Wallhaven {
+            anyhow::ensure!(self.wallhaven_categories.any(),"{}", uu_i18n::format!("至少选择一种 Wallhaven 分类"));
+            anyhow::ensure!(self.wallhaven_purity.any(),"{}", uu_i18n::format!("至少选择 SFW 或 Sketchy"));
         }
         Ok(())
     }
@@ -698,6 +768,9 @@ impl super::App {
                 let defaults=Settings::default();
                 self.settings_draft.wallpaper_enabled=defaults.wallpaper_enabled;
                 self.settings_draft.wallpaper_source=defaults.wallpaper_source;
+                self.settings_draft.wallhaven_page=defaults.wallhaven_page;
+                self.settings_draft.wallhaven_categories=defaults.wallhaven_categories;
+                self.settings_draft.wallhaven_purity=defaults.wallhaven_purity;
                 self.settings_draft.wallpaper_favorite=defaults.wallpaper_favorite;
                 self.settings_draft.wallpaper_api=defaults.wallpaper_api;
                 self.settings_draft.lan_discovery=defaults.lan_discovery;
@@ -969,6 +1042,33 @@ mod tests {
         super::super::settings_page::SoftwareSection::Appearance.reset(&mut settings);
         assert_eq!(settings.wallpaper_source,WallpaperSource::Anime);
         assert_eq!(settings.wallpaper_url(),ANIME_WALLPAPER);
+    }
+
+    #[test]
+    fn wallhaven_defaults_round_trip_and_identity_tracks_filters() {
+        let mut settings=Settings::default();
+        settings.wallpaper_source=WallpaperSource::Wallhaven;
+        assert!(settings.validate().is_ok());
+        assert_eq!(settings.wallpaper_identity(),"wallhaven://toplist/111/100");
+        settings.wallhaven_page=WallhavenPage::Hot;
+        settings.wallhaven_categories=WallhavenCategories {general:false,anime:true,people:false};
+        settings.wallhaven_purity=WallhavenPurity {sfw:true,sketchy:true};
+        assert_eq!(settings.wallpaper_identity(),"wallhaven://hot/010/110");
+        assert!(settings.validate().is_ok());
+        let bytes=serde_json::to_vec(&settings).unwrap();
+        let reopened:Settings=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(reopened.wallhaven_page,WallhavenPage::Hot);
+        assert_eq!(reopened.wallhaven_categories,settings.wallhaven_categories);
+        assert_eq!(reopened.wallhaven_purity,settings.wallhaven_purity);
+        let legacy:Settings=serde_json::from_str(r#"{"wallpaper_source":"wallhaven"}"#).unwrap();
+        assert_eq!(legacy.wallhaven_page,WallhavenPage::Toplist);
+        assert_eq!(legacy.wallhaven_categories,WallhavenCategories::default());
+        assert_eq!(legacy.wallhaven_purity,WallhavenPurity::default());
+        settings.wallhaven_categories=WallhavenCategories {general:false,anime:false,people:false};
+        assert!(settings.validate().is_err());
+        settings.wallhaven_categories=WallhavenCategories::default();
+        settings.wallhaven_purity=WallhavenPurity {sfw:false,sketchy:false};
+        assert!(settings.validate().is_err());
     }
 
     #[test]

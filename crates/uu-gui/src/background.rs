@@ -1,5 +1,5 @@
 //! Optional background. Cached artwork and refresh failures never gate devices.
-use super::{settings::{Settings,WallpaperSource},wallpapers,wallpaper_favorites};
+use super::{settings::{Settings,WallpaperSource},wallhaven,wallpapers,wallpaper_favorites};
 use eframe::egui;
 use super::ui_feedback::{Feedback,Scope,Kind};
 use std::{path::PathBuf,sync::{mpsc,Arc},time::{Duration,Instant}};
@@ -38,6 +38,8 @@ pub(super) struct Background {
     cache_rx:Option<mpsc::Receiver<Option<(wallpapers::Thumbnail,Duration)>>>,
     source:String,
     texture_source:String,
+    wallhaven_source:bool,
+    wallhaven_query:Option<wallhaven::Query>,
     received:bool,
     failure:Option<String>,
     cache:Option<PathBuf>,
@@ -63,9 +65,13 @@ impl Background {
     pub fn archive_to(mut self,directory:Option<PathBuf>)->Self {self.archive=directory;self}
     pub fn sync(&mut self,s:&Settings,ctx:&egui::Context) {
         let mode_changed=self.favorites_mode!=(s.wallpaper_source==WallpaperSource::Favorites);
+        let next_source=s.wallpaper_identity();
+        let next_wallhaven=s.wallhaven_query();
         self.enabled=s.wallpaper_enabled;self.favorites_mode=s.wallpaper_source==WallpaperSource::Favorites;
+        self.wallhaven_source=s.wallpaper_source==WallpaperSource::Wallhaven;
+        self.wallhaven_query=next_wallhaven;
         self.schedule.configure(s.wallpaper_refresh,s.wallpaper_refresh_hours,Instant::now());
-        if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.current_encoded=None;self.painted_encoded.get_mut().take();self.painted_original.get_mut().take();self.original=None;self.initialized=false;return;}
+        if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.current_encoded=None;self.painted_encoded.get_mut().take();self.painted_original.get_mut().take();self.original=None;self.initialized=false;self.wallhaven_source=false;self.wallhaven_query=None;return;}
         if mode_changed {self.initialized=false;self.cache_rx=None;self.schedule.reset();self.failure=None;}
         if self.favorites_mode {
             self.worker=None;self.retry_at=None;
@@ -99,8 +105,8 @@ impl Background {
             }
             self.poll(ctx);return;
         }
-        if !self.initialized || self.source!=s.wallpaper_url() {
-            self.initialized=true;self.source=s.wallpaper_url().into();self.notice.clear();
+        if !self.initialized || self.source!=next_source {
+            self.initialized=true;self.source=next_source;self.notice.clear();
             self.schedule.reset();
             // A new source owns a new request; neither throttling nor a pending
             // result from the previous service can suppress its first refresh.
@@ -201,7 +207,22 @@ impl Background {
         // Source changes retire cache receivers in sync; set() prevents a late
         // cached image from replacing a successfully downloaded texture.
         self.worker=None;self.received=false;self.failure=None;
-        match wallpapers::Worker::start_wallpaper(wallpapers::Request{device_id:"background".into(),url:self.source.clone()},ctx.clone()) {
+        if self.wallhaven_source && self.wallhaven_query.is_none() {
+            self.failure=Some(uu_i18n::text("至少选择一种 Wallhaven 分类和内容筛选").into());
+            self.notice.error(Scope::Wallpaper,uu_i18n::text("至少选择一种 Wallhaven 分类和内容筛选"));
+            self.schedule.finished(false,Instant::now());
+            return;
+        }
+        let result=if self.wallhaven_source {
+            wallpapers::Worker::start_wallhaven(wallpapers::WallhavenRequest{
+                device_id:"background".into(),
+                source:self.source.clone(),
+                query:self.wallhaven_query.clone().expect("checked Wallhaven query"),
+            },ctx.clone())
+        } else {
+            wallpapers::Worker::start_wallpaper(wallpapers::Request{device_id:"background".into(),url:self.source.clone()},ctx.clone())
+        };
+        match result {
             Ok(worker)=>{self.worker=Some(worker);self.notice.report(Scope::Wallpaper,Kind::Progress,uu_i18n::text("正在更新壁纸…"));},Err(e)=>self.notice.error(Scope::Wallpaper,uu_i18n::format!("壁纸加载失败：{e}"))
         }
     }
