@@ -88,6 +88,9 @@ impl Runtime {
     pub fn active(&self)->Vec<(String,Arc<Loaded>)> {
         self.records.iter().filter(|(_,r)|r.enabled).filter_map(|(id,r)|r.loaded.clone().map(|p|(id.clone(),p))).collect()
     }
+    pub fn service_manifests(&self)->Vec<Manifest> {
+        self.records.values().filter(|r|r.enabled&&r.registered).map(|r|r.manifest.clone()).collect()
+    }
 }
 /// GUI instances and the CLI use the same directory rule. No plugin is bundled
 /// or enabled implicitly; installed manifest IDs are the only discovery keys.

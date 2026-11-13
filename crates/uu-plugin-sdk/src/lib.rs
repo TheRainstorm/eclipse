@@ -19,6 +19,7 @@ pub mod loader;
 pub mod ui;
 pub mod theme;
 pub mod runtime;
+pub mod wallpaper;
 pub const API_VERSION:u32=1;
 pub const SDK_ID:&str=env!("ECLIPSE_PLUGIN_SDK_ID");
 
@@ -89,6 +90,7 @@ impl Default for ClientSupport {
 /// Implementations own protocol/account/UI state. The host knows descriptors
 /// and engine session contracts, and never identifies a particular provider.
 pub trait Plugin:Send+Sync {
+    fn wallpaper_provider(&self)->Option<Arc<dyn wallpaper::Provider>> {None}
     fn client_support(&self)->ClientSupport {ClientSupport::default()}
     /// Called after explicit persisted opt-in, before opening new entrances.
     /// Disabling must not terminate already admitted sessions.

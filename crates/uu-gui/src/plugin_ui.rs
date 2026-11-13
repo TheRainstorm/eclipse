@@ -20,6 +20,9 @@ struct Watch {
 }
 impl Drop for Watch {fn drop(&mut self){self.stop.store(true,Ordering::Release);self.thread.thread().unpark();}}
 impl Manager {
+    pub(super) fn active_plugins(&self)->Vec<(String,Arc<uu_plugin_sdk::loader::Loaded>)> {
+        self.runtime.as_ref().map(|runtime|runtime.lock().unwrap().active()).unwrap_or_default()
+    }
     pub fn new(config:Option<&Config>,ctx:&egui::Context)->Self {
         let value=config.ok_or_else(||"configuration directory unavailable".to_owned()).and_then(|c|Preferences::load(c).map_err(|e|e.to_string()));
         let (preferences,error)=match value {Ok(value)=>(value,String::new()),Err(error)=>(Preferences::default(),error)};
@@ -56,7 +59,7 @@ impl Manager {
     pub fn enabled(&self,id:&str)->bool {self.runtime.as_ref().is_some_and(|r|r.lock().unwrap().get(id).is_ok())}
     #[cfg(windows)]
     pub fn loaded_manifests(&self)->Vec<uu_plugin_sdk::Manifest> {
-        self.runtime.as_ref().map(|r|r.lock().unwrap().active().into_iter().map(|(_,loaded)|loaded.manifest.clone()).collect()).unwrap_or_default()
+        self.runtime.as_ref().map(|runtime|runtime.lock().unwrap().service_manifests()).unwrap_or_default()
     }
     #[cfg(windows)]
     pub fn service_preferences(&self)->Option<Preferences> {
@@ -133,7 +136,7 @@ impl Manager {
                             .and_then(|config|runtime.lock().unwrap().save(config,&id,&expected,value));
                         match result {
                             Ok(value)=> {
-                                self.preferences=value;self.notice=uu_i18n::text(if cfg!(windows){"插件设置已保存；现有串流继续，服务将在空闲时自动应用。"}else{"插件设置已保存；现有串流继续，主机入口需重启共享服务生效。"}).into();
+                                self.preferences=value;self.notice=uu_i18n::text("插件设置已保存").into();
                                 if let Some(watch)=&self.watch {watch.epoch.fetch_add(1,Ordering::AcqRel);watch.thread.thread().unpark();}
                                 ui.ctx().request_repaint();
                             },

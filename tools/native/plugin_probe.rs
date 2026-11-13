@@ -11,6 +11,13 @@ fn main()->Result<()> {
     ensure!(runtime.get(id).is_err(),"extension was enabled without opt-in");
     runtime.save(&config,id,&Default::default(),PluginPreferences{enabled:true,..Default::default()})?;
     let loaded=runtime.get(id)?;
+    if let Some(provider)=loaded.plugin.wallpaper_provider() {
+        let sources=provider.sources();
+        ensure!(!sources.is_empty(),"wallpaper extension exposes no sources");
+        let ids=sources.iter().map(|source|&source.id).collect::<std::collections::BTreeSet<_>>();
+        ensure!(ids.len()==sources.len(),"wallpaper source IDs are not unique");
+        ensure!(sources.iter().all(|source|!source.id.is_empty()&&!source.name.is_empty()),"wallpaper descriptor is incomplete");
+    }
     let pages=loaded.plugin.pages();
     if let Some(page)=pages.iter().find(|p|p.placement==uu_plugin_sdk::Placement::Settings) {
         let mut gui=loaded.plugin.gui()?;let ctx=uu_plugin_sdk::egui::Context::default();

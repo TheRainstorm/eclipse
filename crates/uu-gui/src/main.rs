@@ -72,7 +72,7 @@ mod lan_host_ui;
 mod native_keys;
 mod native_host_ui;
 mod native_interfaces;
-mod wallhaven;
+mod wallpaper_plugins;
 mod wallpapers;
 mod wallpaper_favorites;
 mod wallpaper_cache;
@@ -1406,6 +1406,7 @@ impl App {
         self.sessions.reap();
         self.poll_application_settings();
         self.plugins.poll();
+        self.background.set_plugin_sources(self.plugins.wallpapers());
         #[cfg(windows)]
         {
             let startup=self.stream_target.is_none() && self.workspace_tabs.is_none()

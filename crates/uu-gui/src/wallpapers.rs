@@ -1,5 +1,4 @@
 //! Optional previews never gate the device list or retain full desktop pixels.
-use super::wallhaven;
 use anyhow::Context as _;
 use std::{
     io::Cursor,
@@ -38,21 +37,22 @@ pub(super) struct Request {
     pub url: String,
 }
 
-pub(super) struct WallhavenRequest {
+pub(super) struct PluginRequest {
     pub device_id: String,
     pub source: String,
-    pub query: wallhaven::Query,
+    pub source_id: String,
+    pub provider: Arc<dyn uu_plugin_sdk::wallpaper::Provider>,
 }
 
 enum Job {
     Direct(Request),
-    Wallhaven(WallhavenRequest),
+    Plugin(PluginRequest),
 }
 impl Job {
     fn identity(&self) -> (String, String) {
         match self {
             Self::Direct(request) => (request.device_id.clone(), request.url.clone()),
-            Self::Wallhaven(request) => (request.device_id.clone(), request.source.clone()),
+            Self::Plugin(request) => (request.device_id.clone(), request.source.clone()),
         }
     }
 }
@@ -88,9 +88,9 @@ impl Worker {
         let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
         Self::start_for(vec![request], context, Rendition::Wallpaper(side))
     }
-    pub fn start_wallhaven(request:WallhavenRequest, context:eframe::egui::Context)->anyhow::Result<Self> {
+    pub fn start_plugin(request:PluginRequest, context:eframe::egui::Context)->anyhow::Result<Self> {
         let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
-        Self::with_jobs(vec![Job::Wallhaven(request)], context, Self::client()?, Rendition::Wallpaper(side))
+        Self::with_jobs(vec![Job::Plugin(request)], context, Self::client()?, Rendition::Wallpaper(side))
     }
     fn client() -> anyhow::Result<reqwest::Client> {
         Ok(reqwest::Client::builder()
@@ -207,8 +207,8 @@ async fn download(client:reqwest::Client,request:Request)->anyhow::Result<Thumbn
 async fn download_job(client:reqwest::Client, job:Job, rendition:Rendition) -> anyhow::Result<Thumbnail> {
     match job {
         Job::Direct(request)=>download_for(client,request,rendition).await,
-        Job::Wallhaven(request)=>{
-            let image_url=wallhaven::resolve(&client,&request.query).await?;
+        Job::Plugin(request)=>{
+            let image_url=request.provider.resolve(client.clone(),&request.source_id).await?;
             download_for_image(client,Request{device_id:request.device_id,url:request.source},image_url,rendition).await
         }
     }
@@ -433,31 +433,28 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the public Wallhaven API and image CDN"]
-    fn wallhaven_worker_resolves_and_downloads_a_matching_wallpaper() {
-        use crate::settings::{WallhavenCategories,WallhavenPage,WallhavenPurity};
-        let source="wallhaven://toplist/111/100".to_string();
-        let request=WallhavenRequest{
-            device_id:"background".into(),
-            source:source.clone(),
-            query:wallhaven::Query{
-                page:WallhavenPage::Toplist,
-                categories:WallhavenCategories::default(),
-                purity:WallhavenPurity{sfw:true,sketchy:false},
-            },
-        };
-        let mut worker=Worker::start_wallhaven(request,Default::default()).unwrap();
-        let deadline=Instant::now()+Duration::from_secs(20);
-        let image=loop {
-            if let Some(result)=worker.try_recv() {
-                break match result {Ok(image)=>image,Err(failure)=>panic!("{}",failure.error)};
+    fn plugin_discovery_uses_the_same_bounded_image_worker_and_source_identity() {
+        struct Provider(String);
+        impl uu_plugin_sdk::wallpaper::Provider for Provider {
+            fn sources(&self)->Vec<uu_plugin_sdk::wallpaper::Source>{Vec::new()}
+            fn resolve<'a>(&'a self,_:reqwest::Client,source:&'a str)->uu_plugin_sdk::wallpaper::Resolution<'a>{
+                Box::pin(async move {assert_eq!(source,"artwork");Ok(self.0.clone())})
             }
-            assert!(Instant::now()<deadline,"Wallhaven worker exceeded deadline");
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        assert_eq!(image.url,source);
-        assert!(image.original.width>=1&&image.original.height>=1);
-        assert!(!image.encoded.is_empty());
+        }
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let bytes=png(20,10);
+        let server=std::thread::spawn(move|| {
+            let (mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request=[0;4096];let _=stream.read(&mut request).unwrap();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();
+        });
+        let source="plugin://example/artwork".to_string();
+        let request=PluginRequest{device_id:"background".into(),source:source.clone(),source_id:"artwork".into(),provider:Arc::new(Provider(format!("http://{address}/image")))};
+        let mut worker=Worker::with_jobs(vec![Job::Plugin(request)],Default::default(),reqwest::Client::builder().no_proxy().build().unwrap(),Rendition::Wallpaper(256)).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(5);
+        let image=loop {if let Some(result)=worker.try_recv(){break match result{Ok(image)=>image,Err(failure)=>panic!("{}",failure.error)}};assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));};
+        assert_eq!(image.url,source);assert_eq!((image.original.width,image.original.height),(20,10));assert!(!image.encoded.is_empty());
+        drop(worker);server.join().unwrap();
     }
 
     #[test]
@@ -466,7 +463,7 @@ mod tests {
         uu_core::install_crypto_provider();
         let samples=std::env::var("ECLIPSE_WALLPAPER_TEST_SAMPLES").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(3).clamp(1,30);
         let mut failures=Vec::new();
-        for url in ["https://img-api.pipw.top","https://picsum.photos/1920/1080"] {
+        for url in ["https://picsum.photos/1920/1080"] {
             for sample in 0..samples {
                 let mut worker=Worker::start(vec![request(url.into())],Default::default()).unwrap();
                 let deadline=Instant::now()+Duration::from_secs(35);

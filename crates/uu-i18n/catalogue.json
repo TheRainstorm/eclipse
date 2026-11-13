@@ -1,5 +1,10 @@
 {
   "本机服务与当前程序版本不同，可在服务管理中手动更新。": "The local service uses a different version. Update it manually in Service management.",
+  "插件设置已保存": "Plugin settings saved",
+  "插件来源不可用": "Plugin source unavailable",
+  "壁纸来源及筛选条件由已启用的插件提供，可在插件设置中调整。": "Enabled plugins provide wallpaper sources and filters. Change them in plugin settings.",
+  "摄影使用 Lorem Picsum；更多来源由插件提供。自定义 API 可填写图片地址，首次显示缓存后再按策略刷新；失败保留已有壁纸，收藏按顺序轮换。": "Photography uses Lorem Picsum; plugins provide more sources. Custom API accepts image URLs. The last wallpaper appears before scheduled updates; failures preserve it, and favorites rotate in order.",
+  "壁纸插件未启用或来源不可用，请在插件设置中检查。已有壁纸会保留。": "The wallpaper plugin is disabled or its source is unavailable. Check plugin settings. Your existing wallpaper is preserved.",
   "关闭后不会随软件自动启动或更新本机服务；已运行的服务继续运行，也可在服务管理中手动启停。": "When disabled, opening Eclipse will not start or update the local service. Running services stay active; use Service management to start or stop them manually.",
   "当前桌面不支持隐藏主窗口，已保持共享": "This desktop cannot hide the main window. Sharing is still running.",
   "退出 Eclipse 并停止共享": "Quit Eclipse and stop sharing",

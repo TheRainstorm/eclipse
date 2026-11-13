@@ -1380,6 +1380,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "eclipse-wallpapers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rand 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uu-plugin-sdk",
+]
+
+[[package]]
 name = "ecolor"
 version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5637,6 +5650,7 @@ dependencies = [
  "image",
  "libloading",
  "regex-automata",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",

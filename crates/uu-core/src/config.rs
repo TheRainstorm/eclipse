@@ -120,6 +120,10 @@ impl Config {
     pub fn at(&self, rel: impl AsRef<Path>) -> PathBuf {
         self.data_dir.join(rel)
     }
+    /// Atomically persist data in this selected application or plugin profile.
+    pub fn write_data(&self, rel: impl AsRef<Path>, bytes: &[u8]) -> std::io::Result<()> {
+        crate::private_file::write_atomic(&self.at(rel), bytes)
+    }
 }
 
 fn profile_directory(explicit: Option<&OsStr>, executable: &Path) -> Result<Option<PathBuf>, CoreError> {

@@ -1,5 +1,5 @@
 //! Optional background. Cached artwork and refresh failures never gate devices.
-use super::{settings::{Settings,WallpaperSource},wallhaven,wallpapers,wallpaper_favorites};
+use super::{settings::{Settings,WallpaperSource},wallpapers,wallpaper_favorites,wallpaper_plugins};
 use eframe::egui;
 use super::ui_feedback::{Feedback,Scope,Kind};
 use std::{path::PathBuf,sync::{mpsc,Arc},time::{Duration,Instant}};
@@ -38,8 +38,9 @@ pub(super) struct Background {
     cache_rx:Option<mpsc::Receiver<Option<(wallpapers::Thumbnail,Duration)>>>,
     source:String,
     texture_source:String,
-    wallhaven_source:bool,
-    wallhaven_query:Option<wallhaven::Query>,
+    plugin_mode:bool,
+    plugin_sources:Vec<wallpaper_plugins::Available>,
+    provider:Option<wallpaper_plugins::Available>,
     received:bool,
     failure:Option<String>,
     cache:Option<PathBuf>,
@@ -63,15 +64,20 @@ pub(super) struct Background {
 impl Background {
     pub fn new(cache:Option<PathBuf>)->Self {Self{cache,..Default::default()}}
     pub fn archive_to(mut self,directory:Option<PathBuf>)->Self {self.archive=directory;self}
+    pub fn set_plugin_sources(&mut self,sources:Vec<wallpaper_plugins::Available>) {self.plugin_sources=sources;}
     pub fn sync(&mut self,s:&Settings,ctx:&egui::Context) {
         let mode_changed=self.favorites_mode!=(s.wallpaper_source==WallpaperSource::Favorites);
         let next_source=s.wallpaper_identity();
-        let next_wallhaven=s.wallhaven_query();
+        let next_provider=if s.wallpaper_source==WallpaperSource::Plugin {
+            self.plugin_sources.iter().find(|item|Some(&item.selection)==s.wallpaper_plugin.as_ref()).cloned()
+        }else{None};
+        let provider_changed=self.initialized && self.provider.as_ref().map(|p|(&p.selection,&p.source.revision))
+            != next_provider.as_ref().map(|p|(&p.selection,&p.source.revision));
         self.enabled=s.wallpaper_enabled;self.favorites_mode=s.wallpaper_source==WallpaperSource::Favorites;
-        self.wallhaven_source=s.wallpaper_source==WallpaperSource::Wallhaven;
-        self.wallhaven_query=next_wallhaven;
+        self.plugin_mode=s.wallpaper_source==WallpaperSource::Plugin;
+        self.provider=next_provider;
         self.schedule.configure(s.wallpaper_refresh,s.wallpaper_refresh_hours,Instant::now());
-        if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.current_encoded=None;self.painted_encoded.get_mut().take();self.painted_original.get_mut().take();self.original=None;self.initialized=false;self.wallhaven_source=false;self.wallhaven_query=None;return;}
+        if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.current_encoded=None;self.painted_encoded.get_mut().take();self.painted_original.get_mut().take();self.original=None;self.initialized=false;self.plugin_mode=false;self.provider=None;return;}
         if mode_changed {self.initialized=false;self.cache_rx=None;self.schedule.reset();self.failure=None;}
         if self.favorites_mode {
             self.worker=None;self.retry_at=None;
@@ -105,7 +111,7 @@ impl Background {
             }
             self.poll(ctx);return;
         }
-        if !self.initialized || self.source!=next_source {
+        if !self.initialized || self.source!=next_source || provider_changed {
             self.initialized=true;self.source=next_source;self.notice.clear();
             self.schedule.reset();
             // A new source owns a new request; neither throttling nor a pending
@@ -115,6 +121,7 @@ impl Background {
                 let source=self.source.clone();let side=ctx.input(|i|i.max_texture_side);let (tx,rx)=mpsc::channel();self.cache_rx=Some(rx);
                 std::thread::spawn(move|| {let _=tx.send(read_cache(&path,&source,side).ok());});
             }else {self.refresh(ctx);}
+            if provider_changed {self.refresh(ctx);}
         }
         self.poll(ctx);
     }
@@ -207,17 +214,18 @@ impl Background {
         // Source changes retire cache receivers in sync; set() prevents a late
         // cached image from replacing a successfully downloaded texture.
         self.worker=None;self.received=false;self.failure=None;
-        if self.wallhaven_source && self.wallhaven_query.is_none() {
-            self.failure=Some(uu_i18n::text("至少选择一种 Wallhaven 分类和内容筛选").into());
-            self.notice.error(Scope::Wallpaper,uu_i18n::text("至少选择一种 Wallhaven 分类和内容筛选"));
+        if self.plugin_mode && self.provider.is_none() {
+            self.failure=Some(uu_i18n::text("壁纸插件未启用或来源不可用，请在插件设置中检查。已有壁纸会保留。").into());
+            self.notice.error(Scope::Wallpaper,uu_i18n::text("壁纸插件未启用或来源不可用，请在插件设置中检查。已有壁纸会保留。"));
             self.schedule.finished(false,Instant::now());
             return;
         }
-        let result=if self.wallhaven_source {
-            wallpapers::Worker::start_wallhaven(wallpapers::WallhavenRequest{
+        let result=if let Some(provider)=&self.provider {
+            wallpapers::Worker::start_plugin(wallpapers::PluginRequest{
                 device_id:"background".into(),
                 source:self.source.clone(),
-                query:self.wallhaven_query.clone().expect("checked Wallhaven query"),
+                source_id:provider.source.id.clone(),
+                provider:provider.provider.clone(),
             },ctx.clone())
         } else {
             wallpapers::Worker::start_wallpaper(wallpapers::Request{device_id:"background".into(),url:self.source.clone()},ctx.clone())
@@ -263,6 +271,51 @@ impl Background {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plugin_disable_cancels_pending_work_and_keeps_the_displayed_wallpaper() {
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        struct Pending(Arc<AtomicUsize>);
+        impl uu_plugin_sdk::wallpaper::Provider for Pending {
+            fn sources(&self)->Vec<uu_plugin_sdk::wallpaper::Source>{Vec::new()}
+            fn resolve<'a>(&'a self,_:reqwest::Client,_:&'a str)->uu_plugin_sdk::wallpaper::Resolution<'a>{
+                Box::pin(async move {self.0.fetch_add(1,Ordering::Relaxed);std::future::pending().await})
+            }
+        }
+        let ctx=egui::Context::default();
+        let selection=wallpaper_plugins::Selection{plugin:"example".into(),source:"art".into()};
+        let settings=Settings{wallpaper_source:WallpaperSource::Plugin,wallpaper_plugin:Some(selection.clone()),..Default::default()};
+        let calls=Arc::new(AtomicUsize::new(0));
+        let provider=Arc::new(Pending(calls.clone()));
+        let available=|revision:&str|wallpaper_plugins::Available{selection:selection.clone(),source:uu_plugin_sdk::wallpaper::Source{id:"art".into(),name:"Art".into(),revision:revision.into()},provider:provider.clone()};
+        let mut background=Background::new(None);
+        background.set_plugin_sources(vec![available("1")]);background.sync(&settings,&ctx);
+        let deadline=Instant::now()+Duration::from_secs(5);
+        while calls.load(Ordering::Relaxed)<1 {assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
+        let texture=ctx.load_texture("existing-plugin-wallpaper",egui::ColorImage::new([2,2],egui::Color32::RED),Default::default());
+        let id=texture.id();background.texture=Some(texture);background.texture_source=settings.wallpaper_identity();
+        background.set_plugin_sources(vec![available("2")]);background.sync(&settings,&ctx);
+        while calls.load(Ordering::Relaxed)<2 {assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
+        background.set_plugin_sources(Vec::new());background.sync(&settings,&ctx);
+        assert!(background.worker.is_none());
+        assert_eq!(background.texture.as_ref().map(|t|t.id()),Some(id));
+        assert_eq!(calls.load(Ordering::Relaxed),2);
+        assert!(background.failure.is_some());
+    }
+    #[test]
+    fn a_disabled_plugin_can_display_its_cached_original_without_a_provider() {
+        let root=std::env::temp_dir().join(format!("eclipse-disabled-wallpaper-{}",uuid::Uuid::new_v4()));
+        let path=root.join("wallpaper.cache");
+        let settings=Settings{wallpaper_source:WallpaperSource::Plugin,wallpaper_plugin:Some(wallpaper_plugins::Selection{plugin:"example".into(),source:"art".into()}),..Default::default()};
+        let mut bytes=std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(4,4,image::Rgba([10u8,20,30,255])).write_to(&mut bytes,image::ImageFormat::Png).unwrap();
+        write_cache(&path,&settings.wallpaper_identity(),bytes.get_ref()).unwrap();
+        let ctx=egui::Context::default();let mut background=Background::new(Some(path));
+        background.sync(&settings,&ctx);
+        let deadline=Instant::now()+Duration::from_secs(5);
+        while background.cache_rx.is_some() {assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));background.sync(&settings,&ctx);}
+        assert!(background.texture.is_some());assert!(background.worker.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn never_keeps_an_old_cache_and_every_open_fetches_once_from_a_fresh_cache() {
         use std::io::{Read,Write};
