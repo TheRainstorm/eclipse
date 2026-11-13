@@ -22,23 +22,68 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ inputs.release_tag || github.ref }}
-  cancel-in-progress: ${{ inputs.release_tag == '' && !startsWith(github.ref, 'refs/tags/') }}
+  group: build-${{ github.workflow }}-${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.95.0
 
 jobs:
+  source:
+    name: Source and release preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      source_commit: ${{ steps.context.outputs.source_commit }}
+      build_required: ${{ steps.context.outputs.build_required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+      - name: Resolve source and validate release metadata
+        id: context
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 tools/release/ci_context.py
+      - name: Select Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-source-checks-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-source-checks-${{ env.RUST_TOOLCHAIN }}-
+      - name: Check immutable source with current validation tools
+        env:
+          SOURCE_COMMIT: ${{ steps.context.outputs.source_commit }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          git checkout --detach "$SOURCE_COMMIT"
+          # This job never builds distributable binaries. Its fixture overlay
+          # cannot dirty the fresh platform job checkouts.
+          git show "$WORKFLOW_SHA:tools/release/test_build_provenance.py" > tools/release/test_build_provenance.py
+          python3 tools/security/scan_secrets.py --history
+          python3 -m unittest discover -s tools/security -p 'test_*.py' -v
+          python3 -m unittest discover -s tools/windows -p 'test_*.py' -v
+          python3 -m unittest discover -s tools/release -p 'test_*.py' -v
+
   linux-media:
     name: Linux media quick validation
+    needs: source
+    if: needs.source.outputs.build_required == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.release_tag || github.sha }}
+          ref: ${{ needs.source.outputs.source_commit }}
       - name: Install media development libraries
         run: |
           sudo apt-get update
@@ -91,6 +136,8 @@ jobs:
 
   windows-installer:
     name: Windows installer validation
+    needs: source
+    if: needs.source.outputs.build_required == 'true'
     runs-on: windows-latest
     timeout-minutes: 5
     env:
@@ -104,7 +151,7 @@ jobs:
         if: inputs.release_tag != ''
         with:
           persist-credentials: false
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ needs.source.outputs.source_commit }}
           path: release-source
       - name: Validate installer with PowerShell 7
         shell: pwsh
@@ -115,6 +162,8 @@ jobs:
 
   build:
     name: Build ${{ matrix.platform }}
+    needs: source
+    if: needs.source.outputs.build_required == 'true'
     runs-on: ubuntu-24.04
     # A cold Linux run also installs the compositor/audio stack and links each
     # release binary; the previous 45-minute budget expired during packaging.
@@ -128,25 +177,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.release_tag || github.sha }}
-      - name: Check source and version
+          ref: ${{ needs.source.outputs.source_commit }}
+      - name: Load matching validation harness
         env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
-          REF_TYPE: ${{ inputs.release_tag && 'tag' || github.ref_type }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
-          # The validation harness follows the workflow; product sources keep
-          # their original release tag, like the installer and Wayland probes.
-          git fetch --no-tags --depth=1 origin "$WORKFLOW_SHA"
-          git show "$WORKFLOW_SHA:tools/release/test_build_provenance.py" > tools/release/test_build_provenance.py
+          # Product files stay untouched; standalone harnesses use this workflow.
+          git fetch --no-tags origin "$WORKFLOW_SHA"
           git show "$WORKFLOW_SHA:tools/native/lan_smoke.py" > "$RUNNER_TEMP/lan-smoke.py"
-          python3 tools/security/scan_secrets.py --history
-          python3 -m unittest discover -s tools/security -p 'test_*.py' -v
-          python3 -m unittest discover -s tools/windows -p 'test_*.py' -v
-          python3 -m unittest discover -s tools/release -p 'test_*.py' -v
-          if [ "$REF_TYPE" = tag ]; then
-            python3 tools/release/check_version.py "$RELEASE_TAG"
-          fi
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -154,7 +192,7 @@ jobs:
       - name: Install Linux development libraries
         if: matrix.platform == 'linux-x86_64'
         run: |
-          sudo apt-get install --no-install-recommends -y libasound2-dev libpulse-dev pulseaudio pulseaudio-utils libva-dev libgbm-dev libdrm-dev libclang-dev libxkbcommon-dev libxkbcommon-x11-dev libpipewire-0.3-dev pipewire pipewire-bin libpipewire-0.3-modules python3-dbus python3-gi sway foot grim xvfb libegl1 libgl1-mesa-dri
+          sudo apt-get install --no-install-recommends -y libasound2-dev libpulse-dev pulseaudio pulseaudio-utils libva-dev libgbm-dev libdrm-dev libclang-dev libxkbcommon-dev libxkbcommon-x11-dev libpipewire-0.3-dev pipewire pipewire-bin libpipewire-0.3-modules python3-dbus python3-gi dbus-daemon sway foot grim xvfb libegl1 libgl1-mesa-dri
       - name: Install Windows cross toolchain
         if: matrix.platform == 'windows-x64'
         run: |
@@ -317,6 +355,16 @@ jobs:
         run: |
           cargo build --release -p uu-core --example native_startup_probe --features vaapi --locked
           python3 tools/native/wayland_portal_startup.py --probe target/release/examples/native_startup_probe --output artifacts/native-compositor --native-capture --static-desktop --exercise-input --exercise-quality --exercise-displays
+      - name: Test Linux tray, activation and pending capture lifecycle
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          if [ -f crates/uu-gui/src/tray/linux.rs ]; then
+            dbus-run-session -- env ECLIPSE_OWNED_DBUS_TEST=1 cargo test -p uu-gui --bin eclipse --release --features vaapi --locked private_session_bus_ -- --ignored --test-threads=1
+          fi
+          if [ -f crates/uu-capture/examples/wayland_recovery_probe.rs ]; then
+            cargo build -p uu-capture --example wayland_recovery_probe --release --locked
+            python3 tools/native/wayland_capture_recovery.py --probe target/release/examples/wayland_recovery_probe --output artifacts/native-capture-recovery
+          fi
       - name: Package Windows
         if: matrix.platform == 'windows-x64'
         run: |
@@ -373,6 +421,20 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: diagnostics-${{ matrix.platform }}
+          path: |
+            artifacts/*/*.log
+            artifacts/*/result.json
+            artifacts/*/probe.json
+            artifacts/*/failed-windows.json
+            artifacts/*/wait-failure.json
+            artifacts/*/dpi-*.json
+            artifacts/*/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         # Retain already-built packages for diagnosis when a later desktop
         # validation fails. Publishing still requires every validation job.
         if: ${{ !cancelled() }}
@@ -387,14 +449,14 @@ jobs:
 
   windows-smoke:
     name: Windows executable smoke test
-    needs: [build, windows-installer]
+    needs: [source, build, windows-installer]
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.release_tag || github.sha }}
+          ref: ${{ needs.source.outputs.source_commit }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: eclipse-windows-x64
@@ -476,7 +538,7 @@ jobs:
   release:
     name: Publish tagged release
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && inputs.publish_release)
-    needs: [build, windows-smoke, linux-media]
+    needs: [source, build, windows-smoke, linux-media]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -485,7 +547,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.release_tag || github.sha }}
+          ref: ${{ needs.source.outputs.source_commit }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: eclipse-*
