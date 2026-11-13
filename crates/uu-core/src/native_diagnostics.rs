@@ -90,6 +90,7 @@ pub(crate) struct Diagnostics {
     send: Direction,
     captured: Mutex<Option<Arc<AtomicU64>>>,
     producer: Mutex<Option<Arc<ProducerProgress>>>,
+    input: Mutex<Option<Weak<crate::native_control::HostControl>>>,
     sent: AtomicU64,
     video_send_started: AtomicU64,
     audio_send_started: AtomicU64,
@@ -128,6 +129,7 @@ impl Diagnostics {
             send: Direction::default(),
             captured: Mutex::new(None),
             producer: Mutex::new(None),
+            input: Mutex::new(None),
             sent: AtomicU64::new(0),
             video_send_started: AtomicU64::new(0),
             audio_send_started: AtomicU64::new(0),
@@ -183,6 +185,9 @@ impl Diagnostics {
         *self.captured.lock().unwrap() = Some(counter.clone());
         *self.producer.lock().unwrap() = Some(producer.clone());
     }
+    pub fn input_source(&self, input: &Arc<crate::native_control::HostControl>) {
+        *self.input.lock().unwrap() = Some(Arc::downgrade(input));
+    }
     pub fn video_send(&self) -> VideoSend<'_> {
         self.video_send_started.store(self.now(), Relaxed);
         VideoSend {
@@ -206,6 +211,7 @@ impl Diagnostics {
             .as_ref()
             .map(|v| v.load(Relaxed));
         let producer = self.producer.lock().unwrap().as_ref().map(|v| v.snapshot());
+        let input = self.input.lock().unwrap().as_ref().and_then(Weak::upgrade).map(|v|v.diagnostic_state());
         let stats = self.stats.as_ref().and_then(Weak::upgrade);
         let pending = self.video_send_started.load(Relaxed);
         let audio_pending = self.audio_send_started.load(Relaxed);
@@ -213,7 +219,7 @@ impl Diagnostics {
             "ice_state":pc.ice_connection_state().to_string(),"dtls_state":pc.sctp().transport().state().to_string(),
             "sctp_state":pc.sctp().state().to_string(),"closing":self.closing.load(Relaxed),
             "udp_observed":self.socket_observed.load(Relaxed),"udp_receive":self.receive.snapshot(now),"udp_send":self.send.snapshot(now),
-            "captured":capture,"producer":producer,"video_sent":self.sent.load(Relaxed),"video_send_pending_ms":(pending!=0).then(||now.saturating_sub(pending)),
+            "captured":capture,"producer":producer,"input":input,"video_sent":self.sent.load(Relaxed),"video_send_pending_ms":(pending!=0).then(||now.saturating_sub(pending)),
             "audio_send_pending_ms":(audio_pending!=0).then(||now.saturating_sub(audio_pending)),
             "rtp_received":stats.as_ref().map(|s|s.packets.load(Relaxed)),
             "decode_errors":stats.as_ref().map(|s|s.errors.load(Relaxed)),

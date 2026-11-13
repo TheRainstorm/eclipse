@@ -104,6 +104,8 @@ struct WorkerState {
     applied_epoch: AtomicU64,
     seen: Mutex<Instant>,
     applied: AtomicU64,
+    submitted: AtomicU64,
+    contended: AtomicU64,
     errors: AtomicU64,
     failure: Mutex<Option<String>>,
     timing:Arc<crate::native_timing::HostTiming>,
@@ -172,6 +174,8 @@ impl InputWorker {
             applied_epoch: AtomicU64::new(0),
             seen: Mutex::new(Instant::now()),
             applied: AtomicU64::new(0),
+            submitted: AtomicU64::new(0),
+            contended: AtomicU64::new(0),
             errors: AtomicU64::new(0),
             failure: Mutex::new(None),
             timing,
@@ -289,7 +293,10 @@ impl InputWorker {
                                 if ownership.is_none() && required != 0 {
                                     *ownership = actor.authority.claim().map(KeyboardOwner::new);
                                 }
-                                if ownership.is_none() { continue; }
+                                if ownership.is_none() {
+                                    if required != 0 {actor.contended.fetch_add(1, Ordering::Relaxed);}
+                                    continue;
+                                }
                             }
                             let queue_us=job.queued.elapsed().as_micros().min(u32::MAX as u128) as u32;
                             let started=Instant::now();
@@ -412,6 +419,7 @@ impl InputWorker {
         self.enqueue(None,Some(text.into()),None)
     }
     fn enqueue(&self,command:Option<InputCommand>,text:Option<String>,reply:Option<oneshot::Sender<InputApplied>>)->bool {
+        self.state.submitted.fetch_add(1,Ordering::Relaxed);
         let mapping=self.state.mapping.lock().unwrap().clone();
         let mapping_epoch=if let Some(mapping)=mapping {
             let current=mapping.lock();if current.0.is_none(){return false;}Some(current.1)
@@ -475,6 +483,23 @@ pub(crate) struct HostControl {
     client_input_requested: AtomicBool,
 }
 impl HostControl {
+    /// Metadata only, without waiting for the injector or its ownership lock.
+    pub(crate) fn diagnostic_state(&self)->serde_json::Value {
+        let Some(worker)=&self.worker else {return serde_json::json!({"supported":false});};
+        let state=&worker.state;
+        let owner=state.ownership.try_lock().ok();
+        let owned=owner.as_ref().map(|owner|owner.is_some());
+        let held=owner.as_ref().map(|owner|owner.as_ref().is_some_and(|owner|!owner.held.is_empty()));
+        let idle=owner.as_ref().and_then(|owner|owner.as_ref().map(|owner|owner.last_activity.elapsed().as_millis().min(u64::MAX as u128) as u64));
+        let mapping_live=state.mapping.try_lock().ok().map(|mapping|mapping.as_ref().is_none_or(|mapping|
+            mapping.live_revision()==Some(state.mapping_applied_epoch.load(Ordering::Acquire))));
+        serde_json::json!({"supported":true,"requested":self.client_input_requested.load(Ordering::Relaxed),
+            "enabled":state.enabled.load(Ordering::Relaxed),"available":state.available.load(Ordering::Relaxed),
+            "mapping_live":mapping_live,"keyboard_mouse_owner":owned,"held":held,"owner_idle_ms":idle,
+            "submitted":state.submitted.load(Ordering::Relaxed),"applied":state.applied.load(Ordering::Relaxed),
+            "contended":state.contended.load(Ordering::Relaxed),"errors":state.errors.load(Ordering::Relaxed),
+            "timing":state.timing.snapshot().input})
+    }
     pub fn set_virtual_displays(&self,host:Option<Arc<crate::native_virtual_display::Host>>) {*self.virtual_displays.lock().unwrap()=host;}
     pub fn set_cursor(&self,cursor:Option<crate::native_cursor::Stream>){*self.cursor.lock().unwrap()=cursor;}
     pub fn frame_trace(&self,enabled:bool){self.frame_trace_allowed.store(enabled,Ordering::Release);}

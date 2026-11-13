@@ -652,6 +652,7 @@ async fn send_video(
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
     };
     controls.follow_desktop_mapping(capture.desktop_mapping());
+    peer.diagnostics.input_source(&controls);
     controls.set_permissions(permissions);
     controls.clipboard_images(clipboard_images);
     controls.gamepad_types(typed_gamepads);
