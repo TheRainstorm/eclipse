@@ -4,6 +4,13 @@ Eclipse — Linux
 启动：~/.local/bin/eclipse，或应用菜单 Eclipse；旧 uu-client 启动别名保留。
 CLI：~/.local/bin/eclipse-cli（保留 uu-rust 别名）
 
+配对密码脚本（源码仓库 tools/linux/set_pairing_password.py，仅需 Python 3）：
+python3 tools/linux/set_pairing_password.py
+可加 --ssh <SSH目标> 操作远端。密码隐藏输入，不放入命令参数；默认检测当前用户正在
+运行的 Eclipse 配置，多份配置或程序未运行时用 --data-dir <数据目录> 明确指定。
+新密码用于后续配对，无需重启；保留原密码权限，无原密码时允许观看及控制，不授予
+服务管理权限。已有配对设备不受影响。自动化可用 --password-stdin 从标准输入读取。
+
 首次使用：默认 Eclipse 局域网，无需第三方账号。目标电脑启动服务后默认接收配对申请，将控制端八位码输入主机确认，不自动批准。
 使用官方被控端需另行安装并启用兼容插件，再从“UU 兼容客户端”登录；原账号与设置保留。
 原生连接提供 IP 直连、UU 寻址与自建连接服务，统一使用设备授权和共享设置。
