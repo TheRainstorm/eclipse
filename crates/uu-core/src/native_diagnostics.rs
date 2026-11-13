@@ -95,6 +95,19 @@ pub(crate) struct Diagnostics {
     audio_send_started: AtomicU64,
 }
 impl Diagnostics {
+    /// Only the capture/encoder worker may supply this error. Authentication,
+    /// network payloads and user input must never enter the diagnostic detail.
+    pub fn producer_failed(&self, error: &anyhow::Error) {
+        let kind = match error.downcast_ref::<uu_capture::CaptureError>() {
+            Some(uu_capture::CaptureError::Suspended(_)) => "capture_suspended",
+            Some(_) => "capture_failed",
+            None => "producer_failed",
+        };
+        let detail: String = format!("{error:#}").chars().take(1024)
+            .map(|c| if c.is_control() { ' ' } else { c }).collect();
+        self.record(json!({"event":"native_producer_failed","kind":kind,"detail":detail}));
+        self.exit("capture_or_encoder_failed");
+    }
     pub fn new(stats: Option<&Arc<crate::media::MediaStats>>, sender: bool) -> Arc<Self> {
         let log = crate::session_diagnostics::SessionDiagnostics::default();
         #[cfg(not(test))]
@@ -367,6 +380,27 @@ mod tests {
     use super::*;
     use tokio::net::UdpSocket;
     use webrtc::ice::udp_mux::{UDPMux, UDPMuxDefault};
+
+    #[test]
+    fn producer_failure_keeps_the_capture_cause_and_bounded_detail_before_cleanup() {
+        let log = Diagnostics::new(None, true);
+        let events = log.log.capture().unwrap();
+        let error = anyhow::Error::new(uu_capture::CaptureError::Suspended("fixture compositor pause".into()))
+            .context("capture worker");
+        log.producer_failed(&error);
+        log.exit("stop_requested");
+        let rows: Vec<_> = events.try_iter().collect();
+        let failure = rows.iter().find(|row| row["event"] == "native_producer_failed").unwrap();
+        assert_eq!(failure["kind"], "capture_suspended");
+        assert!(failure["detail"].as_str().unwrap().contains("fixture compositor pause"));
+        assert!(rows.iter().any(|row| row["event"] == "native_session_exit" && row["cause"] == "capture_or_encoder_failed"));
+        assert!(!rows.iter().any(|row| row["cause"] == "stop_requested"));
+        log.producer_failed(&anyhow::anyhow!("{}\nend", "x".repeat(2048)));
+        let rows: Vec<_> = events.try_iter().collect();
+        let detail = rows[0]["detail"].as_str().unwrap();
+        assert_eq!(detail.chars().count(), 1024);
+        assert!(!detail.chars().any(char::is_control));
+    }
 
     #[tokio::test]
     async fn real_udp_and_cancelled_reads_preserve_socket_semantics_and_only_record_metadata() {

@@ -799,7 +799,7 @@ async fn send_video(
                 },
                 encoded = producer.frames.recv() => {
                     let encoded = encoded.context("native capture stopped unexpectedly").and_then(|frame|frame)
-                        .inspect_err(|_|peer.diagnostics.exit("capture_or_encoder_failed"))?;
+                        .inspect_err(|error|peer.diagnostics.producer_failed(error))?;
                     // A retired desktop/reference generation cannot leave the
                     // encoded queue, even if it paused while encoding was blocked.
                     if !encoded.current(){producer.retired_outputs.fetch_add(1,Ordering::Relaxed);continue;}
