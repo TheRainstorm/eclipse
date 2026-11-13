@@ -1,8 +1,6 @@
 # 构建与版本发布
 
-候选版：[0.24.5-rc.1](releases/v0.24.5-rc.1.md)。RC 使用 `v主版本.次版本.修订号-rc.序号` 标签，在 GitHub 标为预发布，不替换最新稳定版。
-
-当前稳定版：[0.24.4](releases/v0.24.4.md)；上一版：[0.24.3](releases/v0.24.3.md)，下载以 GitHub Releases 实际发布为准。此前开发版：[0.23.5-dev.20261104](releases/v0.23.5-dev.20261104.md)、[0.23.4-dev.20261104](releases/v0.23.4-dev.20261104.md)、[0.23.3-dev.20261104](releases/v0.23.3-dev.20261104.md)、[0.23.2-dev.20261104](releases/v0.23.2-dev.20261104.md)。此前源码里程碑：[Eclipse v0.23.1](releases/v0.23.1.md)、[v0.21.2](releases/v0.21.2.md)。历史开发版：[0.21.3-dev.20261103](releases/v0.21.3-dev.20261103.md)。
+当前稳定版：[0.24.5](releases/v0.24.5.md)；上一版：[0.24.4](releases/v0.24.4.md)，下载以 GitHub Releases 实际发布为准。[0.24.5-rc.1](releases/v0.24.5-rc.1.md)保留候选阶段的测试说明；后续 RC 用于本地构建验证。此前开发版：[0.23.5-dev.20261104](releases/v0.23.5-dev.20261104.md)、[0.23.4-dev.20261104](releases/v0.23.4-dev.20261104.md)、[0.23.3-dev.20261104](releases/v0.23.3-dev.20261104.md)、[0.23.2-dev.20261104](releases/v0.23.2-dev.20261104.md)。此前源码里程碑：[Eclipse v0.23.1](releases/v0.23.1.md)、[v0.21.2](releases/v0.21.2.md)。历史开发版：[0.21.3-dev.20261103](releases/v0.21.3-dev.20261103.md)。
 
 服务端会话控制与多客户端同屏已合入0.24.4；[早期开发说明](releases/v0.25.0-dev.20261112.md)保留最初迭代背景，当前行为以正式版本说明为准。
 
@@ -41,19 +39,19 @@ GitHub Actions 的 GUI/GPU 环境不能替代显卡、声音与桌面交互实�
 
 ## 发布附件命名
 
-Release 的完整包以标签命名，例如 `eclipse-windows-x64-v0.24.5-rc.1.zip` 和 `eclipse-linux-x86_64-v0.24.5-rc.1.tar.gz`；Linux 解压目录也使用这个标签。CI 在双平台验证后统一生成标签附件及 `SHA256SUMS`，校验内部源码提交与目标标签一致。本地开发包仍按提交号区分。
+Release 的完整包以标签命名，例如 `eclipse-windows-x64-v0.24.5.zip` 和 `eclipse-linux-x86_64-v0.24.5.tar.gz`；Linux 解压目录也使用这个标签。CI 在双平台验证后统一生成标签附件及 `SHA256SUMS`，校验内部源码提交与目标标签一致。本地开发包仍按提交号区分。
 
-可用 `python3 tools/release/download.py --tag v0.24.5-rc.1 --platform all` 下载并核验两端完整包。旧版按提交号命名的资产保持可验证。
+可用 `python3 tools/release/download.py --tag v0.24.5 --platform all` 下载并核验两端完整包。旧版按提交号命名的资产保持可验证。
 
 ## 发布步骤
 
 1. 完成功能并单独提交，更新 README / 已知限制和 workspace 版本、Cargo.lock，并添加 `docs/releases/v版本号.md` 发布说明。
-2. 确认主分支 CI 通过，并完成适用于功能的实机验证。
-3. 给已验证的提交创建对应版本标签并推送。CI 校验标签与源码版本，重新构建并自动发布。
+2. 完成本地检查和适用于功能的实机验证，确认发行说明与待发布提交。
+3. 给该提交创建版本标签，可将主分支和标签原子推送。标签 CI 统一校验源码、构建并验证双平台，通过后自动发布。
 
 ```bash
-git tag -a v0.2.0 -m 'uu-client 0.2.0：实验性原生局域网观看'
-git push origin v0.2.0
+git tag -a v0.24.5 -m 'Eclipse 0.24.5'
+git push --atomic origin master refs/tags/v0.24.5
 ```
 
 标签与发布包应保持不变。发现问题应修复后发新版本；不要为了替换二进制移动已发布标签。`SHA256SUMS` 用于检查下载完整性，不代替作者身份签名。
