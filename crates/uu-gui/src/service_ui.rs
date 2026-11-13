@@ -54,12 +54,14 @@ pub(super) struct Entry {
     automatic_update_attempted: bool,
     automatic_plugin_attempts: std::collections::BTreeSet<String>,
     automatic_sync_enabled: bool,
+    automatic_start_enabled: bool,
     automatic_start_checked: bool,
     automatic_job: bool,
     retry_after: Option<Instant>,
     deployment_error: String,
 }
 impl Entry {
+    pub fn set_startup(&mut self,enabled:bool) {self.automatic_start_enabled=enabled;}
     pub fn take_open(&mut self) -> Option<crate::sessions::StreamTarget> { self.manager.as_mut().and_then(|manager| manager.pending_open.take()) }
     pub fn take_session_center(&mut self) -> bool {
         self.manager.as_mut().is_some_and(|manager|std::mem::take(&mut manager.session_center_requested))
@@ -129,10 +131,11 @@ impl Entry {
             manager.poll();
             if let Some(deployment)=manager.deployment.take() {self.deployment=Some(deployment);}
         }
-        if !cfg!(test) && self.automatic_sync_enabled && self.job.is_none() && self.deployment.is_none()
-            && self.retry_after.is_none_or(|at|Instant::now()>=at) {
+        if !cfg!(test) && self.job.is_none() && self.deployment.is_none() {
             self.schedule_automatic_start();
-            self.schedule_automatic_sync();
+            if self.automatic_sync_enabled && self.retry_after.is_none_or(|at|Instant::now()>=at) {
+                self.schedule_automatic_sync();
+            }
         }
         let mut installed = false;
         if let Some(job) = &self.job {
@@ -215,12 +218,13 @@ impl Entry {
         self.schedule_automatic_sync_for(deployment::package());
     }
     fn schedule_automatic_start(&mut self) {
-        if self.automatic_start_checked || !self.automatic_sync_enabled {return;}
+        if self.automatic_start_checked || !self.automatic_start_enabled {return;}
         let Some(manager)=&mut self.manager else {return;};
         if !manager.checked || manager.busy || manager.confirm.is_some() {return;}
+        if !manager.owns_profile() || manager.update_needed() || !matches!(manager.state,SERVICE_STOPPED|SERVICE_RUNNING) {return;}
         // Once per launcher. A later manual stop must remain stopped.
         self.automatic_start_checked=true;
-        if manager.owns_profile() && manager.state==SERVICE_STOPPED && !manager.update_needed() {
+        if manager.state==SERVICE_STOPPED {
             manager.submit(Job::Start);
         }
     }
@@ -2238,7 +2242,7 @@ mod tests {
         let mut entry=Entry{manager:Some(manager),..Default::default()};
         entry.schedule_automatic_start();
         assert!(jobs.try_recv().is_err(),"disabled startup must leave the service stopped");
-        entry.automatic_sync_enabled=true;
+        entry.automatic_start_enabled=true;
         entry.schedule_automatic_start();
         assert!(matches!(jobs.try_recv(),Ok(Job::Start)));
         entry.manager.as_mut().unwrap().busy=false;
@@ -2248,9 +2252,13 @@ mod tests {
         let (mut manager,_send,jobs,_stop)=fixture();
         manager.checked=true;manager.state=SERVICE_STOPPED;
         manager.expected_profile=Some("a".repeat(64));manager.allow_legacy_profile=false;
-        let mut entry=Entry{manager:Some(manager),automatic_sync_enabled:true,..Default::default()};
+        let mut entry=Entry{manager:Some(manager),automatic_start_enabled:true,..Default::default()};
         entry.schedule_automatic_start();
         assert!(jobs.try_recv().is_err(),"opening another profile must not claim the machine service");
+        assert!(!entry.automatic_start_checked,"unknown ownership must wait for its first confirmed snapshot");
+        entry.manager.as_mut().unwrap().build=Some(BuildStatus{state:SERVICE_STOPPED,process_id:0,installed:Some(BuildVersion{revision:env!("UU_BUILD_COMMIT").into(),..Default::default()}),running:None,running_error:None,profile:Some("a".repeat(64))});
+        entry.schedule_automatic_start();
+        assert!(matches!(jobs.try_recv(),Ok(Job::Start)),"a bound portable profile can start its matching service without automatic deployment");
     }
     #[test]
     fn disabling_startup_cancels_only_unsubmitted_automatic_deployment() {

@@ -1407,10 +1407,13 @@ impl App {
         self.poll_application_settings();
         self.plugins.poll();
         #[cfg(windows)]
-        self.workspace.background_service.set_loaded_plugins(self.plugins.loaded_manifests(),self.plugins.service_preferences(),
-            self.stream_target.is_none() && self.workspace_tabs.is_none()
-                && self.preferences.start_service_on_open.unwrap_or(true)
-                && self.config.as_ref().is_some_and(|config| config.profile_dir().is_none()));
+        {
+            let startup=self.stream_target.is_none() && self.workspace_tabs.is_none()
+                && self.preferences.start_service_on_open.unwrap_or(true);
+            self.workspace.background_service.set_startup(startup);
+            self.workspace.background_service.set_loaded_plugins(self.plugins.loaded_manifests(),self.plugins.service_preferences(),
+                startup && self.config.as_ref().is_some_and(|config| config.profile_dir().is_none()));
+        }
         // A hidden/minimized viewport can buffer both focus loss and recovery
         // before its next UI pass. Preserve that boundary even if focused=true.
         if ctx.input(|i|i.events.iter().any(|event|matches!(event,egui::Event::WindowFocused(false)))){self.pause_video_observation();}
