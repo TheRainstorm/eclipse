@@ -31,6 +31,11 @@ def resolve(root, *, event, ref, revision, release_tag=''):
     else:
         if not re.fullmatch(r'[0-9a-f]{40}', revision):
             raise ValueError('CI source must be a full commit revision')
+        known = subprocess.run(['git', 'cat-file', '-e', revision + '^{commit}'], cwd=root,
+                               capture_output=True)
+        if known.returncode:
+            # A PR merge commit need not be reachable from any fetched branch.
+            subprocess.run(['git', 'fetch', '--no-tags', 'origin', revision], cwd=root, check=True)
         source = git(root, 'rev-parse', '--verify', revision + '^{commit}')
     manifest = tomllib.loads(git(root, 'show', source + ':Cargo.toml'))
     version = manifest['workspace']['package']['version']

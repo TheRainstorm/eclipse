@@ -43,6 +43,22 @@ class CiSourceTests(unittest.TestCase):
     def test_manual_checks_are_never_suppressed_by_an_existing_tag(self):
         self.assertTrue(self.resolve(event='workflow_dispatch')['build_required'])
 
+    def test_pull_request_revision_is_fetched_when_checkout_has_only_workflow_source(self):
+        remote = Path(self.temp.name)/'remote.git'
+        subprocess.run(['git', 'init', '--bare', '-q', str(remote)], check=True)
+        self.git('remote', 'add', 'origin', str(remote))
+        incoming = Path(self.temp.name)/'incoming'
+        subprocess.run(['git', 'clone', '-q', str(self.root), str(incoming)], check=True)
+        (incoming/'change').write_text('PR source absent from the workflow checkout\n')
+        subprocess.run(['git', 'add', '.'], cwd=incoming, check=True)
+        subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                        'commit', '-qm', 'incoming change'], cwd=incoming, check=True)
+        self.revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=incoming, text=True).strip()
+        subprocess.run(['git', 'push', '-q', str(remote), 'HEAD:refs/pull/1/merge'], cwd=incoming, check=True)
+        result = self.resolve(event='pull_request', ref='refs/pull/1/merge')
+        self.assertEqual(result['source_commit'], self.revision)
+        self.assertTrue(result['build_required'])
+
     def test_tag_event_cannot_build_a_different_commit(self):
         self.revision = '0' * 40
         with self.assertRaisesRegex(ValueError, 'triggering commit'):
