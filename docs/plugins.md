@@ -50,3 +50,9 @@ python3 tools/release/package_plugin.py --manifest extensions/anime/plugin.json 
 分别将匹配主程序 SDK 的插件 ZIP 解压到软件目录，重新扫描并启用。Linux 目标为 `x86_64-unknown-linux-gnu`；与 VAAPI 主程序配套时加 `--features vaapi`。可用 `--application` 指定已解压的主程序包，核验实际 SDK。
 
 插件标识：`wallpaper-pipw`（二次元壁纸，Pipw）与 `wallpaper-wallhaven`（Wallhaven 壁纸），分别启用。
+
+### 必应每日壁纸
+
+独立插件 `wallpaper-bing`（源码 `extensions/bing/`）读取必应中国区今日图片 JSON，解析图片 URL 后由主程序下载。一天内刷新同一张图片符合每日来源的定义，不作随机去重。插件默认关闭，与 Pipw 和 Wallhaven 分别启用。
+
+Pipw 本身是直接图片 API，插件仅提供地址及独立开关，没有网站元数据解析、分页或去重历史；主程序统一提供超时、重试、图片大小限制、缓存、收藏和失败保留旧图。Wallhaven 额外处理搜索筛选、候选缓存、分页及去重。

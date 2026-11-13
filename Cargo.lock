@@ -1387,6 +1387,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "eclipse-bing"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "uu-plugin-sdk",
+]
+
+[[package]]
 name = "eclipse-wallhaven"
 version = "0.1.0"
 dependencies = [
