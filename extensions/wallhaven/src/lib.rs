@@ -12,7 +12,6 @@ use std::sync::{
 use uu_plugin_sdk::engine::plugins::PluginPreferences;
 use uu_plugin_sdk::{egui, wallpaper, Action, Context, Page, PageState, Placement, Plugin};
 
-const ANIME_URL: &str = "https://img-api.pipw.top";
 struct Sources {
     enabled: AtomicBool,
     config: Mutex<Config>,
@@ -21,18 +20,11 @@ struct Sources {
 }
 impl wallpaper::Provider for Sources {
     fn sources(&self) -> Vec<wallpaper::Source> {
-        vec![
-            wallpaper::Source {
-                id: "wallhaven".into(),
-                name: "Wallhaven".into(),
-                revision: self.config.lock().unwrap().revision(),
-            },
-            wallpaper::Source {
-                id: "anime".into(),
-                name: uu_plugin_sdk::i18n::text("二次元").into(),
-                revision: "1".into(),
-            },
-        ]
+        vec![wallpaper::Source {
+            id: "wallhaven".into(),
+            name: "Wallhaven".into(),
+            revision: self.config.lock().unwrap().revision(),
+        }]
     }
     fn resolve<'a>(
         &'a self,
@@ -45,7 +37,6 @@ impl wallpaper::Provider for Sources {
                 "wallpaper plugin is disabled"
             );
             match source {
-                "anime" => Ok(ANIME_URL.into()),
                 "wallhaven" => {
                     let config = self.config.lock().unwrap().clone();
                     wallhaven::resolve(client, config, &self.storage, &self.history).await
@@ -73,8 +64,8 @@ fn options(preferences: &PluginPreferences, previous: &Config) -> Result<Config>
 }
 fn create(context: Context) -> Result<Box<dyn Plugin>> {
     ensure!(
-        context.id == "wallpapers",
-        "wallpaper plugin manifest ID must be wallpapers"
+        context.id == "wallhaven",
+        "wallpaper plugin manifest ID must be wallhaven"
     );
     let previous = Config::previous(&context.application);
     let sources = Arc::new(Sources {

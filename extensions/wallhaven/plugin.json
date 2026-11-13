@@ -1,0 +1,7 @@
+{
+  "id": "wallhaven",
+  "name": "Wallhaven",
+  "package": "eclipse-wallhaven",
+  "library": "eclipse_wallhaven",
+  "data_files": ["wallhaven-history.json"]
+}

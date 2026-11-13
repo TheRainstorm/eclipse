@@ -206,7 +206,12 @@ impl Settings {
         let stored: serde_json::Value = serde_json::from_slice(&bytes)?;
         if s.wallpaper_plugin.is_none() {
             if let Some(source @ ("anime" | "wallhaven"))=stored.get("wallpaper_source").and_then(serde_json::Value::as_str) {
-                s.wallpaper_plugin=Some(super::wallpaper_plugins::Selection{plugin:"wallpapers".into(),source:source.into()});
+                s.wallpaper_plugin=Some(super::wallpaper_plugins::Selection{plugin:source.into(),source:source.into()});
+            }
+        }
+        if let Some(selection)=&mut s.wallpaper_plugin {
+            if selection.plugin=="wallpapers" && matches!(selection.source.as_str(),"anime"|"wallhaven") {
+                selection.plugin=selection.source.clone();
             }
         }
         // Legacy files only recorded a URL. Infer once on read, without writing

@@ -13,7 +13,8 @@ members = [
     "crates/uu-clipboard",
     "crates/uu-cli",
     "crates/uu-gui",
-    "extensions/wallpapers",
+    "extensions/wallhaven",
+    "extensions/anime",
 ]
 exclude = ["plugins", "vendor/webrtc-dtls", "vendor/egui-winit", "vendor/egui_glow", "vendor/cros-codecs", "vendor/winit", "vendor/webrtc-srtp", "vendor/webrtc", "vendor/eframe", "vendor/webrtc-ice"]
 

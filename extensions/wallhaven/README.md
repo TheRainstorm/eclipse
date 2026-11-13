@@ -1,15 +1,15 @@
-# 壁纸来源插件
+# Wallhaven 壁纸插件
 
-提供 Wallhaven 和二次元两种可选来源。将匹配当前 Eclipse SDK 的插件 ZIP 解压到软件目录，在“应用设置 → 插件”中重新扫描并启用，再到“外观 → 壁纸图片来源”选择。插件默认关闭，主程序不加载未启用来源。
+独立提供 Wallhaven 来源，与二次元插件分别启用。将匹配当前 Eclipse SDK 的插件 ZIP 解压到软件目录，在“应用设置 → 插件”中重新扫描并启用，再到“外观 → 壁纸图片来源”选择。插件默认关闭，主程序不加载未启用来源。
 
-Wallhaven 的页面、分类与 SFW/Sketchy 筛选放在插件设置中，保存后后台更新；不提供 NSFW。二次元使用 Pipw 随机图片接口。主程序统一下载、限制图片大小、缓存最近图片并管理收藏。请求失败保留已有壁纸，启动时先显示缓存。停用插件后停止新请求，已经显示的图片仍可保留。
+Wallhaven 的页面、分类与 SFW/Sketchy 筛选放在插件设置中，保存后后台更新；不提供 NSFW。主程序统一下载、限制图片大小、缓存最近图片并管理收藏。请求失败保留已有壁纸，启动时先显示缓存。停用插件后停止新请求，已经显示的图片仍可保留。
 
 Wallhaven 会保存最近100个候选标识，优先选择没有访问过的图片；候选缓存保留五分钟，连续刷新直接从缓存选择，耗尽后按需查看后续页。有限候选池用完才轮换最近最少使用的图片。历史属于当前配置目录，重启应用后继续生效；下载失败的候选也暂时避开，避免不断选中同一个失效地址。
 
 源码与引擎在同一工作区维护，动态库和 ZIP 独立构建，主程序不静态链接这个插件。插件不提供连接服务，也不需要同步到 Windows 后台服务。
 
 ```sh
-python3 tools/release/package_plugin.py --manifest extensions/wallpapers/plugin.json --target x86_64-pc-windows-gnu
+python3 tools/release/package_plugin.py --manifest extensions/wallhaven/plugin.json --target x86_64-pc-windows-gnu
 ```
 
 Linux 目标使用 `x86_64-unknown-linux-gnu`；与启用 VAAPI 的主程序配套时添加 `--features vaapi`。可通过 `--application` 指定已经解压的完整主程序包，校验实际 SDK 并记录双方源码提交。插件实现可以独立更新，兼容性由 SDK 指纹和实际动态库验证，不要求双方 Git 提交相同。开发包以提交号交付，不创建正式版本或发布标签。

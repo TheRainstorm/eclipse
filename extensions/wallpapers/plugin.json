@@ -1,7 +1,0 @@
-{
-  "id": "wallpapers",
-  "name": "壁纸来源",
-  "package": "eclipse-wallpapers",
-  "library": "eclipse_wallpapers",
-  "data_files": ["wallhaven-history.json"]
-}

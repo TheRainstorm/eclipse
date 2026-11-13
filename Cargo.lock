@@ -1380,7 +1380,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "eclipse-wallpapers"
+name = "eclipse-anime"
+version = "0.1.0"
+dependencies = [
+ "uu-plugin-sdk",
+]
+
+[[package]]
+name = "eclipse-wallhaven"
 version = "0.1.0"
 dependencies = [
  "anyhow",

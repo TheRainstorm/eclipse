@@ -38,16 +38,13 @@ UU 插件与官方中转均默认关闭。手动启用插件后，旧账号和�
 
 ## 壁纸来源
 
-第一方壁纸插件在一个插件中提供 Wallhaven 和二次元来源，源码位于 `extensions/wallpapers/`。它独立生成动态库和插件 ZIP，不静态链接进主程序。启用后在“外观 → 壁纸图片来源”中选择，在插件设置中调整 Wallhaven 的页面、分类与 SFW/Sketchy 筛选。插件不启用时不会请求对应图片；已有缓存可以继续显示。
+Wallhaven 与二次元是两个独立可选插件，分别安装和启用，默认均关闭。在“应用设置 → 插件”启用对应插件后，到“外观 → 壁纸图片来源”选择。启用其中一个不会启用另一个。
 
-主程序通过通用 `wallpaper::Provider` 获取来源描述和图片地址，再使用同一套有界下载、解码、刷新、缓存与收藏流程。提供方配置变化会取消旧请求并刷新；停用插件取消待处理请求，保留当前图片。壁纸插件不提供连接服务，不参与日常 Windows 后台插件同步。
-
-Wallhaven 保存最近100个候选标识，候选缓存保留五分钟，优先选未访问图片；候选用完后继续分页，有限结果全部访问后才按最近最少使用顺序轮换。历史按应用配置目录隔离并跨重启保存。单一结果的来源无法提供不同图片；下载失败的候选也会暂时避开。
-
-构建独立插件包：
+Wallhaven 插件源码位于 `extensions/wallhaven/`，提供页面、分类及 SFW/Sketchy 筛选，保存最近 100 张候选记录以减少重复。二次元插件源码位于 `extensions/anime/`，使用 Pipw 随机图片接口。两者共用主程序的下载、缓存、收藏与刷新机制，均不提供后台连接服务。
 
 ```sh
-python3 tools/release/package_plugin.py --manifest extensions/wallpapers/plugin.json --target x86_64-pc-windows-gnu
+python3 tools/release/package_plugin.py --manifest extensions/wallhaven/plugin.json --target x86_64-pc-windows-gnu
+python3 tools/release/package_plugin.py --manifest extensions/anime/plugin.json --target x86_64-pc-windows-gnu
 ```
 
-Linux 使用相应 Rust 目标，与 VAAPI 主程序配套时添加 `--features vaapi`。构建工具核对实际 SDK，Windows 检查导入符号，Linux 运行独立加载、默认关闭、启用、页面与停用检查。可用 `--application` 指定已解压的完整程序包，以其实际 SDK 验证插件并记录双方源码提交；SDK 一致时，插件实现可以独立更新。验证过的插件 ZIP 仅包含插件与许可文件，不携带或覆盖主程序 SDK。
+分别将匹配主程序 SDK 的插件 ZIP 解压到软件目录，重新扫描并启用。Linux 目标为 `x86_64-unknown-linux-gnu`；与 VAAPI 主程序配套时加 `--features vaapi`。可用 `--application` 指定已解压的主程序包，核验实际 SDK。
