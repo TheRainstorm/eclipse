@@ -1,7 +1,9 @@
 {
-  "id": "wallhaven",
-  "name": "Wallhaven",
+  "id": "wallpaper-wallhaven",
+  "name": "Wallhaven 壁纸",
   "package": "eclipse-wallhaven",
   "library": "eclipse_wallhaven",
-  "data_files": ["wallhaven-history.json"]
+  "data_files": [
+    "wallhaven-history.json"
+  ]
 }

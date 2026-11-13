@@ -22,7 +22,7 @@ impl wallpaper::Provider for Sources {
     fn sources(&self) -> Vec<wallpaper::Source> {
         vec![wallpaper::Source {
             id: "wallhaven".into(),
-            name: "Wallhaven".into(),
+            name: "Wallhaven 壁纸".into(),
             revision: self.config.lock().unwrap().revision(),
         }]
     }
@@ -64,8 +64,8 @@ fn options(preferences: &PluginPreferences, previous: &Config) -> Result<Config>
 }
 fn create(context: Context) -> Result<Box<dyn Plugin>> {
     ensure!(
-        context.id == "wallhaven",
-        "wallpaper plugin manifest ID must be wallhaven"
+        context.id == "wallpaper-wallhaven",
+        "wallpaper plugin manifest ID must be wallpaper-wallhaven"
     );
     let previous = Config::previous(&context.application);
     let sources = Arc::new(Sources {

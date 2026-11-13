@@ -14,7 +14,7 @@ impl wallpaper::Provider for Source {
     fn sources(&self) -> Vec<wallpaper::Source> {
         vec![wallpaper::Source {
             id: "anime".into(),
-            name: uu_plugin_sdk::i18n::text("二次元").into(),
+            name: "二次元壁纸（Pipw）".into(),
             revision: "1".into(),
         }]
     }
@@ -41,8 +41,8 @@ impl Plugin for Extension {
 }
 fn create(context: Context) -> Result<Box<dyn Plugin>> {
     ensure!(
-        context.id == "anime",
-        "anime plugin manifest ID must be anime"
+        context.id == "wallpaper-pipw",
+        "anime plugin manifest ID must be wallpaper-pipw"
     );
     Ok(Box::new(Extension(Arc::new(Source {
         enabled: AtomicBool::new(false),

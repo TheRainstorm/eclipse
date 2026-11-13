@@ -1,1 +1,7 @@
-{"id":"anime","name":"二次元","package":"eclipse-anime","library":"eclipse_anime","data_files":[]}
+{
+  "id": "wallpaper-pipw",
+  "name": "二次元壁纸（Pipw）",
+  "package": "eclipse-anime",
+  "library": "eclipse_anime",
+  "data_files": []
+}

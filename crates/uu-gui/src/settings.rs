@@ -214,6 +214,13 @@ impl Settings {
                 selection.plugin=selection.source.clone();
             }
         }
+        if let Some(selection)=&mut s.wallpaper_plugin {
+            match selection.plugin.as_str() {
+                "anime"=>selection.plugin="wallpaper-pipw".into(),
+                "wallhaven"=>selection.plugin="wallpaper-wallhaven".into(),
+                _=>{},
+            }
+        }
         // Legacy files only recorded a URL. Infer once on read, without writing
         // the original file or replacing an explicitly chosen source.
         if stored.get("wallpaper_source").is_none() {

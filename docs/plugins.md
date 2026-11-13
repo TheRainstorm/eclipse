@@ -48,3 +48,5 @@ python3 tools/release/package_plugin.py --manifest extensions/anime/plugin.json 
 ```
 
 分别将匹配主程序 SDK 的插件 ZIP 解压到软件目录，重新扫描并启用。Linux 目标为 `x86_64-unknown-linux-gnu`；与 VAAPI 主程序配套时加 `--features vaapi`。可用 `--application` 指定已解压的主程序包，核验实际 SDK。
+
+插件标识：`wallpaper-pipw`（二次元壁纸，Pipw）与 `wallpaper-wallhaven`（Wallhaven 壁纸），分别启用。

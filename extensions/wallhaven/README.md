@@ -13,3 +13,5 @@ python3 tools/release/package_plugin.py --manifest extensions/wallhaven/plugin.j
 ```
 
 Linux 目标使用 `x86_64-unknown-linux-gnu`；与启用 VAAPI 的主程序配套时添加 `--features vaapi`。可通过 `--application` 指定已经解压的完整主程序包，校验实际 SDK 并记录双方源码提交。插件实现可以独立更新，兼容性由 SDK 指纹和实际动态库验证，不要求双方 Git 提交相同。开发包以提交号交付，不创建正式版本或发布标签。
+
+插件标识：`wallpaper-pipw`（二次元壁纸，Pipw）与 `wallpaper-wallhaven`（Wallhaven 壁纸），分别启用。
