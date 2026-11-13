@@ -1,6 +1,6 @@
 //! Native compositor capture. Only use interfaces advertised on this user's
 //! Wayland connection; other compositors retain the system portal path.
-use crate::{backend::Monitor, Capture, CaptureError, CaptureSource, DesktopRect, OpenOptions};
+use crate::{backend::Monitor, Capture, CaptureError, CaptureSource, DesktopMapping, DesktopRect, OpenOptions};
 use std::{
     fs::File,
     os::fd::{AsFd, AsRawFd, FromRawFd},
@@ -311,7 +311,7 @@ impl Session {
             return Err(error("采集已取消"));
         }
         if Instant::now() >= deadline {
-            return Err(error("合成器响应超时"));
+            return Err(CaptureError::Suspended("合成器响应超时".into()));
         }
         self.queue
             .dispatch_pending(&mut self.state)
@@ -468,14 +468,17 @@ impl Drop for Frame {
 }
 
 pub struct WaylandCapture {
-    session: Session,
+    session: Option<Session>,
     options: OpenOptions,
-    output: wl_output::WlOutput,
+    output: Option<wl_output::WlOutput>,
+    name: String,
     target: uu_input::wayland::OutputTarget,
     transform: wl_output::Transform,
     buffer: Option<Buffer>,
     size: (u32, u32),
     started: Instant,
+    retry_after: Instant,
+    mapping: Option<DesktopMapping>,
 }
 impl WaylandCapture {
     pub fn open(source: &CaptureSource, options: OpenOptions) -> Result<Self, CaptureError> {
@@ -495,29 +498,63 @@ impl WaylandCapture {
             _ => None,
         }
         .ok_or_else(|| error("没有找到指定的活动显示器"))?;
-        let (output, target, global, transform) = (
+        let (output, target, global, transform, name) = (
             selected.proxy.clone().unwrap(),
             selected.target(),
             selected.global,
             selected.transform.unwrap_or(wl_output::Transform::Normal),
+            selected.name.clone(),
         );
         session.state.selected = Some(global);
         let mut this = Self {
-            session,
+            session: Some(session),
             options,
-            output,
+            output: Some(output),
+            name,
             target,
             transform,
             buffer: None,
             size: (0, 0),
             started: Instant::now(),
+            retry_after: Instant::now(),
+            mapping: None,
         };
         let first = this.read_frame()?;
         this.size = (first.width, first.height);
+        this.mapping = Some(DesktopMapping::new(this.rect()));
         Ok(this)
     }
+    fn rect(&self) -> DesktopRect {
+        DesktopRect { x: 0, y: 0, width: self.size.0, height: self.size.1 }
+    }
+    fn retire(&mut self) {
+        if let Some(mapping) = &self.mapping { mapping.update(None); }
+        // A timed-out copy may still own its shm buffer. Retire its entire
+        // connection; never reuse memory or accept a late Ready after resuming.
+        self.buffer = None;
+        self.output = None;
+        self.session = None;
+        self.retry_after = Instant::now() + Duration::from_millis(250);
+    }
+    fn resume(&mut self) -> Result<RawFrame, CaptureError> {
+        if Instant::now() < self.retry_after {
+            return Err(CaptureError::Suspended("等待合成器恢复屏幕采集".into()));
+        }
+        self.retry_after = Instant::now() + Duration::from_millis(250);
+        let mut replacement = Self::open(&CaptureSource::Monitor(self.name.clone()), self.options.clone())?;
+        if replacement.size != self.size || replacement.transform != self.transform {
+            return Err(error("显示器尺寸或方向已变化，请重新连接"));
+        }
+        // Keep the stream PTS clock and the original input mapping ownership.
+        replacement.started = self.started;
+        let frame = replacement.read_frame()?;
+        replacement.mapping = self.mapping.take();
+        if let Some(mapping) = &replacement.mapping { mapping.update(Some(replacement.rect())); }
+        *self = replacement;
+        Ok(frame)
+    }
     fn read_frame(&mut self) -> Result<RawFrame, CaptureError> {
-        let s = &mut self.session;
+        let s = self.session.as_mut().expect("active Wayland capture");
         let deadline = Instant::now() + Duration::from_secs(2);
         if self.buffer.is_some() {
             while !s.state.released {
@@ -531,7 +568,7 @@ impl WaylandCapture {
         s.state.inverted = false;
         let frame = Frame(s.state.manager.as_ref().unwrap().capture_output(
             1,
-            &self.output,
+            self.output.as_ref().unwrap(),
             &s.queue.handle(),
             (),
         ));
@@ -668,12 +705,10 @@ impl Capture for WaylandCapture {
         self.size
     }
     fn desktop_rect(&self) -> Option<DesktopRect> {
-        Some(DesktopRect {
-            x: 0,
-            y: 0,
-            width: self.size.0,
-            height: self.size.1,
-        })
+        self.mapping.as_ref().and_then(DesktopMapping::get)
+    }
+    fn desktop_mapping(&self) -> Option<DesktopMapping> {
+        self.mapping.clone()
     }
     fn input_injector(&self) -> Option<Box<dyn uu_input::InputInjector>> {
         if !self.options.allow_input {
@@ -688,11 +723,24 @@ impl Capture for WaylandCapture {
         }
     }
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
-        let frame = self.read_frame()?;
+        let result = if self.session.is_some() { self.read_frame() } else { self.resume() };
+        let frame = match result {
+            Ok(frame) => frame,
+            Err(error) => {
+                if self.session.is_some() { self.retire(); }
+                return Err(error);
+            }
+        };
         if (frame.width, frame.height) != self.size {
+            self.retire();
             return Err(error("显示器尺寸已变化，请重新连接"));
         }
         Ok(frame)
+    }
+}
+impl Drop for WaylandCapture {
+    fn drop(&mut self) {
+        if let Some(mapping) = &self.mapping { mapping.update(None); }
     }
 }
 
