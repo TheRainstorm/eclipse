@@ -343,7 +343,7 @@ impl SoftwareSection {
     pub fn reset(self,s:&mut Settings) {
         let defaults=Settings::default();
         match self {
-            Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;s.close_to_tray=defaults.close_to_tray;}
+            Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;s.start_service_on_open=defaults.start_service_on_open;s.close_to_tray=defaults.close_to_tray;}
             Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.color_theme=defaults.color_theme;s.device_icon_size=defaults.device_icon_size;s.device_text_size=defaults.device_text_size;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_refresh=defaults.wallpaper_refresh;s.wallpaper_refresh_hours=defaults.wallpaper_refresh_hours;s.wallpaper_source=defaults.wallpaper_source;s.wallhaven_page=defaults.wallhaven_page;s.wallhaven_categories=defaults.wallhaven_categories;s.wallhaven_purity=defaults.wallhaven_purity;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
@@ -367,7 +367,8 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
                 for language in uu_i18n::Language::ALL {crate::theme::selectable_value(ui,&mut s.language,language,language.label());}
             });});
         crate::theme::switch(ui,&mut s.app_autostart,uu_i18n::text("登录系统时自动打开软件"));
-        note(ui,uu_i18n::text("本机服务是否随软件启动，在服务管理的连接服务页设置。"));
+        crate::theme::switch(ui,s.start_service_on_open.get_or_insert(true),uu_i18n::text("打开软件时自动启动服务"));
+        note(ui,uu_i18n::text("关闭后不会随软件自动启动或更新本机服务；已运行的服务继续运行，也可在服务管理中手动启停。"));
         if super::tray::supported() {
             ui.add_space(8.0);
             crate::theme::switch(ui,&mut s.close_to_tray,uu_i18n::text("关闭主窗口时最小化到系统托盘"));

@@ -155,6 +155,9 @@ pub struct Settings {
     pub wallpaper_refresh_hours: u32,
     #[serde(default)]
     pub app_autostart:bool,
+    /// Missing values inherit the previous foreground-host preference once.
+    #[serde(default)]
+    pub start_service_on_open:Option<bool>,
     #[serde(default)]
     pub close_to_tray:bool,
     pub virtual_display_presets: super::virtual_display_presets::Presets,
@@ -178,7 +181,7 @@ impl Default for Settings {
         Self { client: ClientSettings::default(), application_hotkeys:None, theme_preference:super::theme::DEFAULT_PREFERENCE, color_theme:Default::default(), language:uu_i18n::Language::default(), onboarding_dismissed:false,lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
-            device_view:DeviceView::Cards, devices_hidden:false, device_icon_size:230.0, device_text_size:17.0, wallpaper_enabled:true, app_autostart:false,close_to_tray:true,virtual_display_presets:Default::default(),
+            device_view:DeviceView::Cards, devices_hidden:false, device_icon_size:230.0, device_text_size:17.0, wallpaper_enabled:true, app_autostart:false,start_service_on_open:Some(true),close_to_tray:true,virtual_display_presets:Default::default(),
             wallpaper_source:WallpaperSource::Anime, wallpaper_refresh:WallpaperRefresh::EveryHours,wallpaper_refresh_hours:24,wallhaven_page:WallhavenPage::Toplist,wallhaven_categories:Default::default(),wallhaven_purity:Default::default(),wallpaper_favorite:None, wallpaper_api:ANIME_WALLPAPER.into() }
     }
 }
@@ -775,6 +778,7 @@ impl super::App {
                 self.settings_draft.wallpaper_api=defaults.wallpaper_api;
                 self.settings_draft.lan_discovery=defaults.lan_discovery;
                 self.settings_draft.app_autostart=defaults.app_autostart;
+                self.settings_draft.start_service_on_open=defaults.start_service_on_open;
                 self.settings_draft.close_to_tray=defaults.close_to_tray;
                 self.settings_draft.device_icon_size=defaults.device_icon_size;
                 self.settings_draft.device_text_size=defaults.device_text_size;
@@ -859,6 +863,17 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn service_startup_is_independent_of_login_and_persists_an_explicit_opt_out() {
+        let mut settings=Settings::default();
+        assert_eq!(settings.start_service_on_open,Some(true));
+        assert!(!settings.app_autostart);
+        settings.start_service_on_open=Some(false);
+        let saved=serde_json::to_value(&settings).unwrap();
+        assert_eq!(serde_json::from_value::<Settings>(saved.clone()).unwrap().start_service_on_open,Some(false));
+        let mut old=saved;old.as_object_mut().unwrap().remove("start_service_on_open");
+        assert_eq!(serde_json::from_value::<Settings>(old).unwrap().start_service_on_open,None);
+    }
     #[test]
     fn application_theme_defaults_light_and_preserves_explicit_saved_choices() {
         let root=std::env::temp_dir().join(format!("eclipse-application-theme-{}",uuid::Uuid::new_v4()));

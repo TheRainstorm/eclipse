@@ -1,4 +1,5 @@
 {
+  "关闭后不会随软件自动启动或更新本机服务；已运行的服务继续运行，也可在服务管理中手动启停。": "When disabled, opening Eclipse will not start or update the local service. Running services stay active; use Service management to start or stop them manually.",
   "当前桌面不支持隐藏主窗口，已保持共享": "This desktop cannot hide the main window. Sharing is still running.",
   "退出 Eclipse 并停止共享": "Quit Eclipse and stop sharing",
   "连接入口状态尚未确认；若主机仍是旧版本，请更新并重启服务。": "Entrance status is not confirmed. If the host uses an older version, update and restart the service.",

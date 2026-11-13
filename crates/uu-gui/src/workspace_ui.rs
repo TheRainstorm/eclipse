@@ -1796,11 +1796,6 @@ impl Workspace {
                 }
             }
             muted(ui,uu_i18n::text("仅在本软件运行时共享；退出软件后停止。"));
-            let mut auto = self.book.sharing.auto_start;
-            if crate::theme::switch(ui,&mut auto, uu_i18n::text("打开软件时自动启动服务")).changed() {
-                self.update_connections(|s| s.auto_start = auto);
-                self.draft.auto_start = auto;
-            }
             if self.host.running() {
                 ui.add_space(12.);
                 ui.horizontal(|ui| {
@@ -2217,7 +2212,9 @@ impl super::App {
     pub(super) fn autostart_shared_host(&mut self, ctx:&egui::Context) {
         if self.workspace.autostart_checked {return;}
         self.workspace.autostart_checked=true;
-        if self.stream_target.is_none() && self.workspace.book.sharing.auto_start && !self.exit_requested {
+        if self.stream_target.is_none() && self.workspace_tabs.is_none()
+            && self.preferences.start_service_on_open.unwrap_or(self.workspace.book.sharing.auto_start)
+            && !self.exit_requested {
             self.workspace_actions(vec![Action::StartSharing],ctx);
         }
     }

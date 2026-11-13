@@ -464,6 +464,7 @@ impl App {
             if let Ok(value)=std::env::var("UU_VSYNC"){preferences.vsync=value!="0";}
         }
         let workspace = workspace_ui::Workspace::load(config.as_ref(),(preferences.lan_service_port,preferences.lan_discovery_port));
+        preferences.start_service_on_open.get_or_insert(cfg!(windows) || workspace.book.sharing.auto_start);
         let onboarding_open = stream_target.is_none() && workspace.book.devices.is_empty() && !preferences.onboarding_dismissed;
         let launcher_identity = if stream_target.is_none() {
             config.as_ref().and_then(|config| {
@@ -1407,7 +1408,9 @@ impl App {
         self.plugins.poll();
         #[cfg(windows)]
         self.workspace.background_service.set_loaded_plugins(self.plugins.loaded_manifests(),self.plugins.service_preferences(),
-            self.config.as_ref().is_some_and(|config| config.profile_dir().is_none()));
+            self.stream_target.is_none() && self.workspace_tabs.is_none()
+                && self.preferences.start_service_on_open.unwrap_or(true)
+                && self.config.as_ref().is_some_and(|config| config.profile_dir().is_none()));
         // A hidden/minimized viewport can buffer both focus loss and recovery
         // before its next UI pass. Preserve that boundary even if focused=true.
         if ctx.input(|i|i.events.iter().any(|event|matches!(event,egui::Event::WindowFocused(false)))){self.pause_video_observation();}

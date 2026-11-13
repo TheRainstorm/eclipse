@@ -54,6 +54,7 @@ pub(super) struct Entry {
     automatic_update_attempted: bool,
     automatic_plugin_attempts: std::collections::BTreeSet<String>,
     automatic_sync_enabled: bool,
+    automatic_start_checked: bool,
     automatic_job: bool,
     retry_after: Option<Instant>,
     deployment_error: String,
@@ -104,6 +105,10 @@ impl Entry {
         // A test/portable profile must not silently replace the machine-wide
         // host or publish its fresh plugin preferences to the existing host.
         self.automatic_sync_enabled=automatic_sync;
+        if !automatic_sync && self.automatic_job && self.job.is_none() {
+            self.deployment=None;
+            self.automatic_job=false;
+        }
     }
     pub fn poll(&mut self, ctx: &egui::Context, _host: &mut super::sharing_ui::HostUi) -> bool {
         if self.manager.is_none() {
@@ -126,6 +131,7 @@ impl Entry {
         }
         if !cfg!(test) && self.automatic_sync_enabled && self.job.is_none() && self.deployment.is_none()
             && self.retry_after.is_none_or(|at|Instant::now()>=at) {
+            self.schedule_automatic_start();
             self.schedule_automatic_sync();
         }
         let mut installed = false;
@@ -207,6 +213,16 @@ impl Entry {
     }
     fn schedule_automatic_sync(&mut self) {
         self.schedule_automatic_sync_for(deployment::package());
+    }
+    fn schedule_automatic_start(&mut self) {
+        if self.automatic_start_checked || !self.automatic_sync_enabled {return;}
+        let Some(manager)=&mut self.manager else {return;};
+        if !manager.checked || manager.busy || manager.confirm.is_some() {return;}
+        // Once per launcher. A later manual stop must remain stopped.
+        self.automatic_start_checked=true;
+        if manager.owns_profile() && manager.state==SERVICE_STOPPED && !manager.update_needed() {
+            manager.submit(Job::Start);
+        }
     }
     fn schedule_automatic_sync_for(&mut self, package: Option<&uu_core::service_admin::deployment::Package>) {
         if !self.automatic_sync_enabled {return;}
@@ -2213,6 +2229,37 @@ mod tests {
         entry.schedule_automatic_sync();assert!(entry.deployment.is_none(),"a historical service must be activated explicitly");
         entry.manager.as_mut().unwrap().build.as_mut().unwrap().profile=Some("a".repeat(64));
         assert!(entry.online());assert_eq!(entry.keep_displays(),Some(true));
+    }
+    #[test]
+    fn opening_only_starts_an_owned_stopped_service_once() {
+        let (mut manager,_send,jobs,_stop)=fixture();
+        manager.checked=true;
+        manager.state=SERVICE_STOPPED;
+        let mut entry=Entry{manager:Some(manager),..Default::default()};
+        entry.schedule_automatic_start();
+        assert!(jobs.try_recv().is_err(),"disabled startup must leave the service stopped");
+        entry.automatic_sync_enabled=true;
+        entry.schedule_automatic_start();
+        assert!(matches!(jobs.try_recv(),Ok(Job::Start)));
+        entry.manager.as_mut().unwrap().busy=false;
+        entry.schedule_automatic_start();
+        assert!(jobs.try_recv().is_err(),"a manual stop must not be undone by the next poll");
+
+        let (mut manager,_send,jobs,_stop)=fixture();
+        manager.checked=true;manager.state=SERVICE_STOPPED;
+        manager.expected_profile=Some("a".repeat(64));manager.allow_legacy_profile=false;
+        let mut entry=Entry{manager:Some(manager),automatic_sync_enabled:true,..Default::default()};
+        entry.schedule_automatic_start();
+        assert!(jobs.try_recv().is_err(),"opening another profile must not claim the machine service");
+    }
+    #[test]
+    fn disabling_startup_cancels_only_unsubmitted_automatic_deployment() {
+        let mut entry=Entry{automatic_job:true,deployment:Some(Deployment::Install),..Default::default()};
+        entry.set_loaded_plugins(Vec::new(),None,false);
+        assert!(entry.deployment.is_none());
+        entry.deployment=Some(Deployment::Install);
+        entry.set_loaded_plugins(Vec::new(),None,false);
+        assert!(matches!(entry.deployment,Some(Deployment::Install)),"manual deployment remains available");
     }
     #[test]
     fn first_install_toggle_works_before_a_service_profile_exists() {
