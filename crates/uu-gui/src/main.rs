@@ -1260,13 +1260,28 @@ impl eframe::App for App {
 impl App {
     fn launcher_close(&mut self,ctx:&egui::Context)->bool {
         if self.stream_target.is_some() || self.workspace_tabs.is_some() {return false;}
+        if single_instance::take_activation(ctx) && !self.exit_requested {
+            self.launcher_hidden=false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        let tray_action=self.tray.as_ref().and_then(tray::Tray::take_action);
+        #[cfg(target_os = "linux")]
+        if self.tray.as_ref().is_some_and(|tray| tray.finished()) {
+            if self.launcher_hidden && !self.exit_requested && tray_action!=Some(tray::Action::Exit) {
+                self.launcher_hidden=false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            }
+            self.tray = None;
+        }
         // A second launcher invocation can restore the native window directly.
         // Bring eframe's presentation state back in sync with that activation.
+        #[cfg(windows)]
         if self.launcher_hidden && eframe::viewport_window(ctx).is_some_and(|window|window.is_visible()==Some(true)) {
             self.launcher_hidden=false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         }
-        if let Some(action)=self.tray.as_ref().and_then(tray::Tray::take_action) {
+        if let Some(action)=tray_action {
             match action {
                 tray::Action::Open=>{
                     self.launcher_hidden=false;
@@ -1313,7 +1328,7 @@ impl App {
             self.tray_retry=None;
         } else if tray::supported() && self.tray.is_none() && self.tray_retry.is_none_or(|at|at.elapsed()>=std::time::Duration::from_secs(60)) {
             self.tray_retry=Some(std::time::Instant::now());
-            if let Ok(tray)=tray::Tray::new(self.platform.window_id(),ctx) {if tray.ensure(){self.tray=Some(tray);}}
+            if let Ok(tray)=tray::Tray::new(self.platform.window_id(),ctx) {if tray.ensure()||tray::pending(&tray){self.tray=Some(tray);}}
         }
         let hide_requested=!self.exit_requested && self.preferences.close_to_tray && tray::supported()
             && ctx.input(|input|input.viewport().close_requested());
@@ -1321,7 +1336,11 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             let result=(||->std::io::Result<()> {
                 if self.tray.is_none(){self.tray=Some(tray::Tray::new(self.platform.window_id(),ctx)?);}
-                if !self.tray.as_ref().unwrap().ensure() {return Err(std::io::Error::other("Windows notification area unavailable"));}
+                if !self.tray.as_ref().unwrap().ensure() {return Err(std::io::Error::other("notification area unavailable"));}
+                #[cfg(target_os = "linux")]
+                if eframe::viewport_window(ctx).is_some_and(|window| window.is_visible().is_none()) {
+                    return Err(std::io::Error::other(uu_i18n::text("当前桌面不支持隐藏主窗口，已保持共享")));
+                }
                 Ok(())
             })();
             match result {
@@ -1662,6 +1681,16 @@ fn main() -> eframe::Result {
     }
     let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(preferences.vsync);
     let options = eframe::NativeOptions {
+        // Winit cannot unmap an existing Wayland window. A tray-enabled home
+        // window uses XWayland when available; streams and capture stay native.
+        #[cfg(target_os = "linux")]
+        event_loop_builder: if stream_target.is_none() && preferences.close_to_tray
+            && std::env::var_os("DISPLAY").is_some_and(|display| !display.is_empty()) {
+            Some(Box::new(|builder| {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                builder.with_x11();
+            }))
+        } else { None },
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 760.0])
             .with_decorations(false)

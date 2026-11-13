@@ -115,6 +115,7 @@
 | [crc-catalog](https://github.com/akhilles/crc-catalog.git) | 2.5.0 | `MIT OR Apache-2.0` |
 | [crc32fast](https://github.com/srijs/rust-crc32fast) | 1.5.2 | `MIT OR Apache-2.0` |
 | [cros-codecs](https://github.com/chromeos/cros-codecs) | 0.0.6 | `BSD-3-Clause` |
+| [crossbeam-queue](https://github.com/crossbeam-rs/crossbeam) | 0.3.14 | `MIT OR Apache-2.0` |
 | [crossbeam-utils](https://github.com/crossbeam-rs/crossbeam) | 0.8.23 | `MIT OR Apache-2.0` |
 | [crunchy](https://github.com/eira-fransham/crunchy) | 0.2.4 | `MIT` |
 | [crypto-bigint](https://github.com/RustCrypto/crypto-bigint) | 0.5.5 | `Apache-2.0 OR MIT` |
@@ -250,6 +251,7 @@
 | [keycode_macro](https://github.com/dfrankland/keycode) | 1.0.0 | `MIT` |
 | [khronos-egl](https://github.com/timothee-haudebourg/khronos-egl) | 6.0.0 | `MIT/Apache-2.0` |
 | [khronos_api](https://github.com/brendanzab/gl-rs/) | 3.1.0 | `Apache-2.0` |
+| [ksni](https://github.com/iovxw/ksni) | 0.3.7 | `Unlicense` |
 | [lazy_static](https://github.com/rust-lang-nursery/lazy-static.rs) | 1.5.1 | `MIT OR Apache-2.0` |
 | [libc](https://github.com/rust-lang/libc) | 0.2.190 | `MIT OR Apache-2.0` |
 | [libloading](https://github.com/nagisa/rust_libloading/) | 0.8.9 | `ISC` |
@@ -343,6 +345,7 @@
 | [parking_lot](https://github.com/Amanieu/parking_lot) | 0.12.5 | `MIT OR Apache-2.0` |
 | [parking_lot_core](https://github.com/Amanieu/parking_lot) | 0.9.12 | `MIT OR Apache-2.0` |
 | [paste](https://github.com/dtolnay/paste) | 1.0.15 | `MIT OR Apache-2.0` |
+| [pastey](https://github.com/as1100k/pastey) | 0.2.3 | `MIT OR Apache-2.0` |
 | [pem](https://github.com/jcreekmore/pem-rs.git) | 3.0.6 | `MIT` |
 | [pem-rfc7468](https://github.com/RustCrypto/formats/tree/master/pem-rfc7468) | 0.7.0 | `Apache-2.0 OR MIT` |
 | [percent-encoding](https://github.com/servo/rust-url/) | 2.3.2 | `MIT OR Apache-2.0` |

@@ -1,10 +1,10 @@
-//! One Windows launcher per configuration store; versions sharing a store
+//! One launcher per configuration store; versions sharing a store
 //! reuse its launcher, while portable profiles remain independent.
 use std::io;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 use std::path::{Component, Path, PathBuf};
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 fn profile_key(directory: &Path) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     let absolute = if directory.is_absolute() { directory.to_path_buf() }
@@ -35,7 +35,11 @@ fn profile_key(directory: &Path) -> io::Result<String> {
 }
 #[cfg(windows)]
 pub struct Launcher(windows_sys::Win32::Foundation::HANDLE);
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::Launcher;
+#[cfg(not(any(windows, target_os = "linux")))]
 pub struct Launcher;
 #[cfg(windows)]
 impl Drop for Launcher {
@@ -52,11 +56,20 @@ pub fn launcher(config: &uu_core::Config) -> std::io::Result<Option<Launcher>> {
     {
         windows::claim(config)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    { linux::claim(config) }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = config;
         Ok(Some(Launcher))
     }
+}
+
+pub fn take_activation(context: &eframe::egui::Context) -> bool {
+    #[cfg(target_os = "linux")]
+    { linux::take_activation(context) }
+    #[cfg(not(target_os = "linux"))]
+    { let _ = context; false }
 }
 
 #[cfg(windows)]

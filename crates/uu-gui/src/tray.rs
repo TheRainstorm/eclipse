@@ -18,14 +18,27 @@ impl DisplayAction {
 }
 
 pub const fn supported() -> bool {
-    cfg!(windows)
+    cfg!(any(windows, target_os = "linux"))
 }
 
 #[cfg(windows)]
 pub use windows::Tray;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "tray/linux.rs"]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::Tray;
+
+pub fn pending(tray: &Tray) -> bool {
+    #[cfg(target_os = "linux")]
+    { tray.pending() }
+    #[cfg(not(target_os = "linux"))]
+    { let _ = tray; false }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub struct Tray;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 impl Tray {
     pub fn new(_: isize, _: &egui::Context) -> std::io::Result<Self> {
         Err(std::io::Error::new(

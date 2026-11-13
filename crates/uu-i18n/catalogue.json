@@ -1,4 +1,6 @@
 {
+  "当前桌面不支持隐藏主窗口，已保持共享": "This desktop cannot hide the main window. Sharing is still running.",
+  "退出 Eclipse 并停止共享": "Quit Eclipse and stop sharing",
   "连接入口状态尚未确认；若主机仍是旧版本，请更新并重启服务。": "Entrance status is not confirmed. If the host uses an older version, update and restart the service.",
   "状态未知": "Status unknown",
   "入口已就绪；从其它网络连接仍取决于网络路由、防火墙和连接服务。": "The entrance is ready. Access from another network also depends on routing, firewall rules, and the connection service.",
