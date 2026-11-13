@@ -1328,7 +1328,9 @@ impl App {
             self.tray_retry=None;
         } else if tray::supported() && self.tray.is_none() && self.tray_retry.is_none_or(|at|at.elapsed()>=std::time::Duration::from_secs(60)) {
             self.tray_retry=Some(std::time::Instant::now());
-            if let Ok(tray)=tray::Tray::new(self.platform.window_id(),ctx) {if tray.ensure()||tray::pending(&tray){self.tray=Some(tray);}}
+            // Creation owns registration, which may complete asynchronously.
+            // Keep its guard; ensure() is the separate gate before hiding.
+            if let Ok(tray)=tray::Tray::new(self.platform.window_id(),ctx) {self.tray=Some(tray);}
         }
         let hide_requested=!self.exit_requested && self.preferences.close_to_tray && tray::supported()
             && ctx.input(|input|input.viewport().close_requested());

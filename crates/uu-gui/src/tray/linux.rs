@@ -101,7 +101,6 @@ impl Tray {
         })?;
         Ok(Self { state, stop: Some(stop), worker: Some(worker) })
     }
-    pub fn pending(&self) -> bool { self.state.status.load(Ordering::Acquire) == STARTING }
     pub fn finished(&self) -> bool { self.state.status.load(Ordering::Acquire) == FINISHED }
     pub fn ensure(&self) -> bool { self.state.status.load(Ordering::Acquire) == ONLINE }
     pub fn take_action(&self) -> Option<Action> { self.state.action.lock().unwrap().take() }
