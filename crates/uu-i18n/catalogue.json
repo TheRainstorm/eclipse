@@ -1,4 +1,5 @@
 {
+  "本机服务与当前程序版本不同，可在服务管理中手动更新。": "The local service uses a different version. Update it manually in Service management.",
   "关闭后不会随软件自动启动或更新本机服务；已运行的服务继续运行，也可在服务管理中手动启停。": "When disabled, opening Eclipse will not start or update the local service. Running services stay active; use Service management to start or stop them manually.",
   "当前桌面不支持隐藏主窗口，已保持共享": "This desktop cannot hide the main window. Sharing is still running.",
   "退出 Eclipse 并停止共享": "Quit Eclipse and stop sharing",

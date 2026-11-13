@@ -440,7 +440,7 @@ impl Entry {
                         uu_i18n::text(if self.automatic_sync_enabled && !self.automatic_update_attempted && deployment::automatic_update_needed(manager.build.as_ref(), deployment::package()) {
                             "Eclipse 更新尚未完成；空闲时会自动继续，Windows 可能请求系统授权。"
                         }else if self.automatic_sync_enabled {"后台服务与当前窗口版本不同；已保留正在使用的服务，需要切换时请手动部署。"
-                        }else {"本机服务与当前便携版本不同；需要使用此版本提供共享时，请手动更新服务。"}),
+                        }else {"本机服务与当前程序版本不同，可在服务管理中手动更新。"}),
                     );
                 }
             }
