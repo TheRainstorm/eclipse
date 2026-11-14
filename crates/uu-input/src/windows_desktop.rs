@@ -87,6 +87,11 @@ pub fn sync_input_desktop() -> io::Result<bool> {
     sync_desktop(DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP)
 }
 
+/// Physical observation installs hooks, unlike capture and injection workers.
+pub fn sync_observation_desktop()->io::Result<bool>{
+    sync_desktop(DESKTOP_READOBJECTS|DESKTOP_WRITEOBJECTS|DESKTOP_SWITCHDESKTOP|DESKTOP_HOOKCONTROL)
+}
+
 /// Check a worker's current desktop without rebinding it, so a capture can
 /// discard pixels obtained while Windows switched the input desktop.
 pub fn input_desktop_changed() -> io::Result<bool> {

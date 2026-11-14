@@ -1,4 +1,7 @@
 {
+  "本机输入优先暂不可用": "Local keyboard/mouse priority is temporarily unavailable",
+  "当前平台尚不支持本机输入优先": "Local input priority is not supported on this platform",
+  "检测不可用时不会自动让本机键鼠优先；仍可手动暂停远程键鼠。": "Automatic local priority is unavailable; you can still pause remote keyboard and mouse manually.",
   "必应每日壁纸": "Bing daily wallpaper",
   "本机服务与当前程序版本不同，可在服务管理中手动更新。": "The local service uses a different version. Update it manually in Service management.",
   "插件设置已保存": "Plugin settings saved",

@@ -76,10 +76,10 @@ pub(super) fn show(ui: &mut egui::Ui, center: &SessionCenter) -> Vec<Request> {
         if policy.local_priority && !center.input.local_activity_supported {
             ui.colored_label(
                 crate::theme::palette(ui.visuals()).warning,
-                uu_i18n::text("本机输入检测尚未就绪"),
+                uu_i18n::text(if cfg!(windows){"本机输入优先暂不可用"}else{"当前平台尚不支持本机输入优先"}),
             )
             .on_hover_text(uu_i18n::text(
-                "本机输入检测尚未就绪；仍可手动暂停远程键鼠。",
+                "检测不可用时不会自动让本机键鼠优先；仍可手动暂停远程键鼠。",
             ));
         }
     });

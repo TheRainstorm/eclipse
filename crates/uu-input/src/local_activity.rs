@@ -109,9 +109,9 @@ mod windows {
                 if GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                     keyboard as *const () as *const u16,&mut module)==0 {return Err(io::Error::last_os_error());}
                 let keys = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), module, 0);
-                if keys.is_null() { return Err(io::Error::last_os_error()); }
+                if keys.is_null() { return Err(io::Error::new(io::ErrorKind::Other,format!("install physical keyboard hook: {}",io::Error::last_os_error()))); }
                 let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), module, 0);
-                if mouse.is_null() { UnhookWindowsHookEx(keys); return Err(io::Error::last_os_error()); }
+                if mouse.is_null() { let error=io::Error::last_os_error();UnhookWindowsHookEx(keys); return Err(io::Error::new(io::ErrorKind::Other,format!("install physical mouse hook: {error}"))); }
                 ACTIVITY.available.fetch_add(1, Ordering::AcqRel);
                 Ok(Self(keys, mouse))
             }
@@ -132,22 +132,30 @@ mod windows {
         let stopping = stop.clone();
         let (ready, receive) = mpsc::sync_channel(1);
         let thread = std::thread::Builder::new().name("host-local-input".into()).spawn(move || {
-            let setup = || -> io::Result<Hooks> { crate::windows_desktop::sync_input_desktop()?; Hooks::install() };
-            let mut hooks = match setup() { Ok(hooks) => Some(hooks), Err(error) => { let _ = ready.send(Err(error)); return; } };
+            let setup = || -> io::Result<Hooks> { crate::windows_desktop::sync_observation_desktop().map_err(|e|io::Error::new(e.kind(),format!("bind observation desktop: {e}")))?; Hooks::install() };
+            let mut hooks = match setup(){Ok(hooks)=>Some(hooks),Err(error)=>{tracing::warn!(%error,"physical input observer is retrying initialization");None}};
             let id = unsafe { GetCurrentThreadId() };
-            unsafe { SetTimer(ptr::null_mut(), 1, 250, None); }
+            let mut queued:MSG=unsafe{std::mem::zeroed()};
+            unsafe{PeekMessageW(&mut queued,ptr::null_mut(),0,0,PM_NOREMOVE);}
+            let timer=unsafe { SetTimer(ptr::null_mut(), 0, 250, None) };
+            if timer==0{let _=ready.send(Err(io::Error::last_os_error()));return;}
             if ready.send(Ok(id)).is_err() { return; }
+            let mut reported_failure=hooks.is_none();
             let mut message: MSG = unsafe { std::mem::zeroed() };
             while !stopping.load(Ordering::Acquire) && unsafe { GetMessageW(&mut message, ptr::null_mut(), 0, 0) } > 0 {
                 if message.message == WM_TIMER && (hooks.is_none() || crate::windows_desktop::input_desktop_changed().unwrap_or(true)) {
                     // Remove hooks before changing desktop; SetThreadDesktop
                     // rejects a thread that still owns hooks on its old desktop.
                     hooks.take();
-                    hooks = setup().ok();
+                    hooks=match setup(){
+                        Ok(value)=>{tracing::info!("physical input observation ready");Some(value)},
+                        Err(error)=>{if !reported_failure{tracing::warn!(%error,"physical input observation temporarily unavailable; retrying");reported_failure=true;}None},
+                    };
+                    if hooks.is_some(){reported_failure=false;}
                 }
                 unsafe { TranslateMessage(&message); DispatchMessageW(&message); }
             }
-            unsafe { KillTimer(ptr::null_mut(), 1); }
+            unsafe { KillTimer(ptr::null_mut(), timer); }
             drop(hooks);
         })?;
         let thread_id = match receive.recv_timeout(Duration::from_secs(3)) {

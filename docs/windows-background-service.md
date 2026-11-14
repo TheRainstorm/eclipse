@@ -64,3 +64,9 @@ SCM 异常恢复的等待时间依次为 1、5、15 秒；正常停止不触发�
 平台约束参见微软的[服务与交互界面](https://learn.microsoft.com/en-us/windows/win32/services/interactive-services)、[DXGI 桌面复制](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput)、[命名管道权限](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)和[服务访问权限](https://learn.microsoft.com/en-us/windows/win32/services/service-security-and-access-rights)。服务和桌面生命周期设计参考 Sunshine，代码独立实现。
 
 托盘右键的“悬浮会话中心”可独立于主窗口管理当前连接。共享游戏厅、本机键鼠优先与手动暂停的行为见[会话中心与共享游戏厅](host-session-control.md)。
+
+### 本机键鼠优先
+
+被控电脑的物理键鼠活动会暂时暂停远程键鼠，默认本机空闲三秒后恢复；远程注入事件不计入本机活动，手柄独立处理。检测不可用时，面板会说明自动让行未生效，仍可手动暂停远程键鼠。检测线程会在桌面切换或暂时失败后重试。
+
+此能力由后台服务执行，更新主程序后还需在服务管理中更新匹配的后台版本。它不要求记录键盘内容，也不改变 Windows 桌面权限策略。
