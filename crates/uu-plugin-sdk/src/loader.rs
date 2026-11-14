@@ -20,7 +20,7 @@ pub fn discover(directory:&Path)->Discovery {
     let mut duplicates=std::collections::BTreeSet::new();
     for directory in paths.into_iter().take(128) {
         match installed(&directory) {
-            Ok(value)=> {
+            Ok(Some(value))=> {
                 if duplicates.contains(&value.manifest.id){continue;}
                 if result.installed.iter().any(|p|p.manifest.id==value.manifest.id) {
                     result.errors.push(format!("duplicate plugin id: {}",value.manifest.id));
@@ -28,13 +28,19 @@ pub fn discover(directory:&Path)->Discovery {
                 }
                 else {result.installed.push(value);}
             },
+            Ok(None)=>{},
             Err(error)=>result.errors.push(format!("{}: {error:#}",directory.display())),
         }
     }
     result
 }
-fn installed(directory:&Path)->Result<Installed> {
-    let mut bytes=Vec::new();std::fs::File::open(directory.join("plugin.json"))?.take(65537).read_to_end(&mut bytes)?;
+fn installed(directory:&Path)->Result<Option<Installed>> {
+    let file=match std::fs::File::open(directory.join("plugin.json")) {
+        Ok(file)=>file,
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(None),
+        Err(error)=>return Err(error.into()),
+    };
+    let mut bytes=Vec::new();file.take(65537).read_to_end(&mut bytes)?;
     ensure!(bytes.len()<=65536,"plugin manifest exceeds 64 KiB");
     let manifest:Manifest=serde_json::from_slice(&bytes).context("invalid plugin manifest")?;
     ensure!(!manifest.id.is_empty() && manifest.id.len()<=64 && manifest.id.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-'),"invalid plugin id");
@@ -45,7 +51,7 @@ fn installed(directory:&Path)->Result<Installed> {
     let path=Path::new(&manifest.library);
     ensure!(path.components().count()==1 && matches!(path.components().next(),Some(std::path::Component::Normal(_))),"plugin library must be a filename in its own directory");
     ensure!(path.extension().and_then(|s|s.to_str())==Some(std::env::consts::DLL_EXTENSION),"plugin library targets another platform");
-    Ok(Installed{manifest,directory:directory.into()})
+    Ok(Some(Installed{manifest,directory:directory.into()}))
 }
 impl Installed {
     pub fn compatible(&self)->bool {self.manifest.api_version==API_VERSION&&self.manifest.sdk_id==SDK_ID}
@@ -79,6 +85,18 @@ impl Installed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retired_directories_are_ignored_but_invalid_manifests_are_reported() {
+        let root=std::env::temp_dir().join(format!("retired-extension-{}",std::process::id()));
+        let retired=root.join("retired");std::fs::create_dir_all(&retired).unwrap();
+        std::fs::write(retired.join("old.dll"),b"retained old library").unwrap();
+        let empty=root.join("empty");std::fs::create_dir_all(&empty).unwrap();
+        assert!(discover(&root).errors.is_empty());
+        let broken=root.join("broken");std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("plugin.json"),b"invalid JSON").unwrap();
+        let found=discover(&root);assert_eq!(found.errors.len(),1);assert!(found.errors[0].contains("invalid plugin manifest"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn manifests_are_provider_neutral_and_incompatible_code_is_never_loaded() {
         let root=std::env::temp_dir().join(format!("extension-discovery-{}",std::process::id()));

@@ -49,3 +49,5 @@ python3 tools/release/package_plugin.py --manifest extensions/wallpaper-collects
 ```
 
 解压到软件目录，在应用设置中扫描并启用壁纸合集，再到外观选择其来源。插件须匹配主程序SDK。
+
+插件扫描以 `plugin.json` 为入口：没有清单的子目录不视为已安装插件，不会因旧版本保留的目录报错；清单损坏、权限错误或启用时库文件缺失仍会显示具体错误。
