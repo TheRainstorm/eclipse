@@ -3,7 +3,5 @@
   "name": "壁纸合集（Pipw / Wallhaven）",
   "package": "eclipse-wallpaper-collects",
   "library": "eclipse_wallpaper_collects",
-  "data_files": [
-    "wallhaven-history.json"
-  ]
+  "data_files": []
 }

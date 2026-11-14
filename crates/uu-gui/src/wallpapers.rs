@@ -41,18 +41,20 @@ pub(super) struct PluginRequest {
     pub device_id: String,
     pub source: String,
     pub source_id: String,
+    pub position:usize,
     pub provider: Arc<dyn uu_plugin_sdk::wallpaper::Provider>,
 }
 
 enum Job {
     Direct(Request),
-    Bing(Request),
+    Bing(Request,Arc<super::bing_wallpaper::Catalog>,usize),
+    Saved(Request,Arc<Vec<u8>>),
     Plugin(PluginRequest),
 }
 impl Job {
     fn identity(&self) -> (String, String) {
         match self {
-            Self::Direct(request) | Self::Bing(request) => (request.device_id.clone(), request.url.clone()),
+            Self::Direct(request) | Self::Bing(request,_,_) | Self::Saved(request,_) => (request.device_id.clone(), request.url.clone()),
             Self::Plugin(request) => (request.device_id.clone(), request.source.clone()),
         }
     }
@@ -89,9 +91,13 @@ impl Worker {
         let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
         Self::start_for(vec![request], context, Rendition::Wallpaper(side))
     }
-    pub fn start_bing(request:Request,context:eframe::egui::Context)->anyhow::Result<Self> {
+    pub fn start_bing(request:Request,catalog:Arc<super::bing_wallpaper::Catalog>,position:usize,context:eframe::egui::Context)->anyhow::Result<Self> {
         let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
-        Self::with_jobs(vec![Job::Bing(request)],context,Self::client()?,Rendition::Wallpaper(side))
+        Self::with_jobs(vec![Job::Bing(request,catalog,position)],context,Self::client()?,Rendition::Wallpaper(side))
+    }
+    pub fn start_saved(request:Request,bytes:Arc<Vec<u8>>,context:eframe::egui::Context)->anyhow::Result<Self>{
+        let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
+        Self::with_jobs(vec![Job::Saved(request,bytes)],context,Self::client()?,Rendition::Wallpaper(side))
     }
     pub fn start_plugin(request:PluginRequest, context:eframe::egui::Context)->anyhow::Result<Self> {
         let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
@@ -212,12 +218,13 @@ async fn download(client:reqwest::Client,request:Request)->anyhow::Result<Thumbn
 async fn download_job(client:reqwest::Client, job:Job, rendition:Rendition) -> anyhow::Result<Thumbnail> {
     match job {
         Job::Direct(request)=>download_for(client,request,rendition).await,
-        Job::Bing(request)=>{
-            let url=super::bing_wallpaper::resolve(client.clone()).await?;
+        Job::Saved(request,bytes)=>decode_for(request,(*bytes).clone(),rendition),
+        Job::Bing(request,catalog,position)=>{
+            let url=catalog.resolve(client.clone(),position).await?;
             download_for_image(client,request,url,rendition).await
         },
         Job::Plugin(request)=>{
-            let image_url=request.provider.resolve(client.clone(),&request.source_id).await?;
+            let image_url=request.provider.resolve_at(client.clone(),&request.source_id,request.position).await?;
             download_for_image(client,Request{device_id:request.device_id,url:request.source},image_url,rendition).await
         }
     }
@@ -458,7 +465,7 @@ mod tests {
             write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();
         });
         let source="plugin://example/artwork".to_string();
-        let request=PluginRequest{device_id:"background".into(),source:source.clone(),source_id:"artwork".into(),provider:Arc::new(Provider(format!("http://{address}/image")))};
+        let request=PluginRequest{device_id:"background".into(),source:source.clone(),source_id:"artwork".into(),position:0,provider:Arc::new(Provider(format!("http://{address}/image")))};
         let mut worker=Worker::with_jobs(vec![Job::Plugin(request)],Default::default(),reqwest::Client::builder().no_proxy().build().unwrap(),Rendition::Wallpaper(256)).unwrap();
         let deadline=Instant::now()+Duration::from_secs(5);
         let image=loop {if let Some(result)=worker.try_recv(){break match result{Ok(image)=>image,Err(failure)=>panic!("{}",failure.error)}};assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));};

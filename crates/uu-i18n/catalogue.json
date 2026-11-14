@@ -1,4 +1,7 @@
 {
+  "上一张壁纸": "Previous wallpaper",
+  "下一张壁纸": "Next wallpaper",
+  "返回今日壁纸": "Today's wallpaper",
   "本机输入优先暂不可用": "Local keyboard/mouse priority is temporarily unavailable",
   "当前平台尚不支持本机输入优先": "Local input priority is not supported on this platform",
   "检测不可用时不会自动让本机键鼠优先；仍可手动暂停远程键鼠。": "Automatic local priority is unavailable; you can still pause remote keyboard and mouse manually.",

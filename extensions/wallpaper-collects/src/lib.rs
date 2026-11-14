@@ -1,6 +1,5 @@
 //! Optional wallpaper sources; the application owns image decoding and caches.
 mod config;
-mod history;
 mod wallhaven;
 
 use anyhow::{ensure, Context as _, Result};
@@ -15,10 +14,34 @@ use uu_plugin_sdk::{egui, wallpaper, Action, Context, Page, PageState, Placement
 struct Sources {
     enabled: AtomicBool,
     config: Mutex<Config>,
-    history: Mutex<wallhaven::State>,
-    storage: uu_plugin_sdk::engine::Config,
+    catalog: Mutex<wallhaven::State>,
 }
 impl wallpaper::Provider for Sources {
+    fn ordered(&self, source: &str) -> bool {
+        source == "wallhaven"
+    }
+    fn resolve_at<'a>(
+        &'a self,
+        client: wallpaper::Client,
+        source: &'a str,
+        position: usize,
+    ) -> wallpaper::Resolution<'a> {
+        Box::pin(async move {
+            ensure!(
+                self.enabled.load(Ordering::Acquire),
+                "wallpaper plugin is disabled"
+            );
+            match source {
+                "anime" => Ok("https://img-api.pipw.top".into()),
+                "wallhaven" => {
+                    let config = self.config.lock().unwrap().clone();
+                    wallhaven::resolve_at(client, config, &self.catalog, position).await
+                }
+                _ => anyhow::bail!("unknown wallpaper source"),
+            }
+        })
+    }
+
     fn sources(&self) -> Vec<wallpaper::Source> {
         vec![
             wallpaper::Source {
@@ -38,20 +61,7 @@ impl wallpaper::Provider for Sources {
         client: wallpaper::Client,
         source: &'a str,
     ) -> wallpaper::Resolution<'a> {
-        Box::pin(async move {
-            ensure!(
-                self.enabled.load(Ordering::Acquire),
-                "wallpaper plugin is disabled"
-            );
-            match source {
-                "anime" => Ok("https://img-api.pipw.top".into()),
-                "wallhaven" => {
-                    let config = self.config.lock().unwrap().clone();
-                    wallhaven::resolve(client, config, &self.storage, &self.history).await
-                }
-                _ => anyhow::bail!("unknown wallpaper source"),
-            }
-        })
+        self.resolve_at(client, source, 0)
     }
 }
 struct Extension {
@@ -79,10 +89,7 @@ fn create(context: Context) -> Result<Box<dyn Plugin>> {
     let sources = Arc::new(Sources {
         enabled: AtomicBool::new(false),
         config: Mutex::new(Config::default()),
-        history: Mutex::new(wallhaven::State::new(
-            history::History::read(&context.data.at("wallhaven-history.json")).unwrap_or_default(),
-        )),
-        storage: context.data.clone(),
+        catalog: Mutex::new(wallhaven::State::default()),
     });
     Ok(Box::new(Extension {
         context,

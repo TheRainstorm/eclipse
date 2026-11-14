@@ -601,9 +601,11 @@ impl super::App {
         if actions.reset {
             if let super::workspace_ui::SettingsView::Software(section)=view {section.reset(&mut self.settings_draft);}
         }
-        if actions.refresh_wallpaper && self.settings_draft.wallpaper_enabled {
+        if actions.previous_wallpaper && self.settings_draft.wallpaper_enabled{self.background.sync(&self.settings_draft,ctx);self.background.previous(ctx);}
+        if actions.today_wallpaper && self.settings_draft.wallpaper_enabled{self.background.sync(&self.settings_draft,ctx);self.background.today(ctx);}
+        if actions.next_wallpaper && self.settings_draft.wallpaper_enabled {
             self.background.sync(&self.settings_draft, ctx);
-            self.background.refresh(ctx);
+            self.background.next(ctx);
         }
         if actions.apply {
             if let Err(error) = self.settings_draft.validate() {
@@ -743,7 +745,9 @@ impl super::App {
         }
         if actions.about {self.open_about();}
         if actions.tutorial {self.onboarding_open = true;}
-        if actions.refresh_wallpaper && self.settings_draft.wallpaper_enabled {self.background.sync(&self.settings_draft,ctx);self.background.refresh(ctx);}
+        if actions.previous_wallpaper && self.settings_draft.wallpaper_enabled{self.background.sync(&self.settings_draft,ctx);self.background.previous(ctx);}
+        if actions.today_wallpaper && self.settings_draft.wallpaper_enabled{self.background.sync(&self.settings_draft,ctx);self.background.today(ctx);}
+        if actions.next_wallpaper && self.settings_draft.wallpaper_enabled {self.background.sync(&self.settings_draft,ctx);self.background.next(ctx);}
         if actions.host {self.stream_settings_open=false;self.open_native_host();}
         let apply=actions.apply;
         let save_profile=actions.save_profile;

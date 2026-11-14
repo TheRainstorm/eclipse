@@ -24,9 +24,9 @@ fn image_url(bytes: &[u8]) -> Result<String> {
     );
     Ok(resolved.into())
 }
-pub(super) async fn resolve(client: reqwest::Client) -> Result<String> {
+async fn fetch(client: reqwest::Client, idx: usize) -> Result<Vec<String>> {
     let mut response = client
-        .get(ENDPOINT)
+        .get(ENDPOINT.replace("idx=0&n=1", &format!("idx={idx}&n=8")))
         .timeout(std::time::Duration::from_secs(8))
         .send()
         .await
@@ -45,11 +45,85 @@ pub(super) async fn resolve(client: reqwest::Client) -> Result<String> {
         );
         bytes.extend_from_slice(&chunk);
     }
-    image_url(&bytes)
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let images = value
+        .get("images")
+        .and_then(|v| v.as_array())
+        .context("Bing returned no image list")?;
+    images
+        .iter()
+        .map(|item| image_url(&serde_json::to_vec(&serde_json::json!({"images":[item]}))?))
+        .collect()
 }
+#[derive(Default)]
+pub(super) struct Catalog(std::sync::Mutex<(Vec<String>, bool)>);
+impl Catalog {
+    pub fn contains_or_can_extend(&self, position: usize) -> bool {
+        let state = self.0.lock().unwrap();
+        position < 15 && (position < state.0.len() || !state.1)
+    }
+
+    pub async fn resolve(&self, client: reqwest::Client, position: usize) -> Result<String> {
+        ensure!(position < 15, "已到必应可用历史的末尾");
+        if self.0.lock().unwrap().0.is_empty() {
+            let items = fetch(client.clone(), 0).await?;
+            let mut state = self.0.lock().unwrap();
+            if state.0.is_empty() {
+                state.0 = items;
+            }
+        }
+        let older = {
+            let state = self.0.lock().unwrap();
+            position >= state.0.len() && !state.1
+        };
+        if older {
+            let items = fetch(client, 7).await?;
+            let mut state = self.0.lock().unwrap();
+            for item in items {
+                if !state.0.contains(&item) {
+                    state.0.push(item);
+                }
+            }
+            state.1 = true;
+        }
+        self.0
+            .lock()
+            .unwrap()
+            .0
+            .get(position)
+            .cloned()
+            .context("已到必应可用历史的末尾")
+    }
+}
+#[cfg(test)]
+async fn resolve(client: reqwest::Client) -> Result<String> {
+    Catalog::default().resolve(client, 0).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn catalog_positions_are_stable_and_end_without_wrapping() {
+        let catalog = Catalog(std::sync::Mutex::new((
+            (0..15)
+                .map(|i| format!("https://cn.bing.com/th?id={i}"))
+                .collect(),
+            true,
+        )));
+        assert!(!catalog.contains_or_can_extend(15));
+        assert!(catalog.contains_or_can_extend(14));
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let client = reqwest::Client::new();
+            for p in [0, 14, 3, 0] {
+                assert_eq!(
+                    catalog.resolve(client.clone(), p).await.unwrap(),
+                    format!("https://cn.bing.com/th?id={p}")
+                );
+            }
+            assert!(catalog.resolve(client, 15).await.is_err());
+        });
+    }
     #[test]
     #[ignore = "requires the live Bing homepage and image endpoint"]
     fn live_daily_metadata_resolves_to_a_decodable_image() {

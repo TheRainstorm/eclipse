@@ -132,6 +132,11 @@ impl Favorites {
             item: item.clone(),
         })
     }
+    pub fn previous(&self,current:Option<&str>)->Option<String>{
+        if self.catalog.is_empty(){return None;}
+        let p=current.and_then(|id|self.catalog.iter().position(|e|e.id==id)).unwrap_or(0);
+        Some(self.catalog[(p+self.catalog.len()-1)%self.catalog.len()].id.clone())
+    }
     pub fn next(&self, current: Option<&str>) -> Option<String> {
         if self.catalog.is_empty() {
             return None;

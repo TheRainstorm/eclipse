@@ -55,7 +55,9 @@ pub(super) enum Action {
     Open(String),
     OpenPrepared(crate::sessions::StreamTarget),
     OpenConnectionServices,
-    RefreshWallpaper,
+    NextWallpaper,
+    PreviousWallpaper,
+    TodayWallpaper,
     FavoriteWallpaper,
     DownloadWallpaper,
     SelfStream,
@@ -64,6 +66,9 @@ pub(super) enum Action {
     SaveClientDefaults(uu_core::client_settings::ClientSettings),
 }
 pub(super) struct Info {
+    pub wallpaper_previous:bool,
+    pub wallpaper_next:bool,
+    pub wallpaper_bing:bool,
     pub wallpaper_enabled:bool,
     pub wallpaper_ready:bool,
     pub wallpaper_download_ready:bool,
@@ -199,7 +204,7 @@ mod tests {
     #[cfg(not(windows))]
     fn extension_settings_stay_with_their_provider_between_ip_and_self_hosted_cards() {
         let mut h=Harness::new();h.workspace.route.page=Page::Services;
-        let info=Info{wallpaper_enabled:false,wallpaper_ready:false,wallpaper_download_ready:false,wallpaper_size:None,nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Generated provider",version:"1"}]};
+        let info=Info{wallpaper_previous:false,wallpaper_next:false,wallpaper_bing:false,wallpaper_enabled:false,wallpaper_ready:false,wallpaper_download_ready:false,wallpaper_size:None,nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Generated provider",version:"1"}]};
         let draw=|ctx:&egui::Context,workspace:&mut Workspace| {
             egui::CentralPanel::default().show(ctx,|ui| {
                 workspace.show_with_connections(ui,&info,&mut |ui,id| {if let Some(id)=id{assert_eq!(id,"example-addon");ui.label("Generated account controls");}else{ui.label("Generated independent protocol");}});
@@ -258,7 +263,7 @@ mod tests {
         h.workspace.store.as_ref().unwrap().save_device(profile.clone()).unwrap();h.workspace.refresh();
         h.frame(Vec::new());
         assert!(h.workspace.route_visible(&profile.routes[0]));
-        let info=Info {wallpaper_enabled:false,wallpaper_ready:false,wallpaper_download_ready:false,wallpaper_size:None,nearby:Vec::new(),providers:Vec::new()};
+        let info=Info {wallpaper_previous:false,wallpaper_next:false,wallpaper_bing:false,wallpaper_enabled:false,wallpaper_ready:false,wallpaper_download_ready:false,wallpaper_size:None,nearby:Vec::new(),providers:Vec::new()};
         let _=h.ctx.run(Default::default(),|ctx|{egui::CentralPanel::default().show(ctx,|ui|{h.workspace.show(ui,&info);});});
         assert!(!h.workspace.route_visible(&profile.routes[0]),"a changed enabled-provider snapshot applies in the same window");
         assert_eq!(h.workspace.book.device(&profile.id).unwrap().selected_route,profile.selected_route);
@@ -294,7 +299,7 @@ mod tests {
             self.time += 0.02;
             let mut actions = Vec::new();
             let info = Info {
-                wallpaper_enabled:true,wallpaper_ready:true,wallpaper_download_ready:true,wallpaper_size:Some((2560,1440)),nearby:vec![("Generated nearby".into(),"192.0.2.20:48998".into())],providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Example connection",version:"1"}],
+                wallpaper_previous:true,wallpaper_next:true,wallpaper_bing:false,wallpaper_enabled:true,wallpaper_ready:true,wallpaper_download_ready:true,wallpaper_size:Some((2560,1440)),nearby:vec![("Generated nearby".into(),"192.0.2.20:48998".into())],providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Example connection",version:"1"}],
             };
             let output = self.ctx.run(
                 egui::RawInput {
@@ -461,7 +466,12 @@ mod tests {
             h.frame(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);
         }
         h.submenu("壁纸");
-        assert!(matches!(&h.click("刷新壁纸")[..],[Action::RefreshWallpaper]));
+        for (label,key) in [("下一张壁纸","F5"),("上一张壁纸","F6")] {
+            let title=h.texts.iter().find(|(s,_)|s==label).unwrap().1;
+            let shortcut=h.texts.iter().find(|(s,_)|s==key).unwrap().1;
+            assert!(shortcut.x>title.x,"shortcut must be right of label");
+        }
+        assert!(matches!(&h.click("下一张壁纸")[..],[Action::NextWallpaper]));
     }
 
     #[test]
@@ -469,10 +479,19 @@ mod tests {
         let mut h=Harness::new();
         let key=|pressed|egui::Event::Key{key:egui::Key::F5,physical_key:Some(egui::Key::F5),pressed,repeat:false,modifiers:Default::default()};
         h.focused=false;assert!(h.frame(vec![key(true)]).is_empty());h.frame(vec![key(false)]);
-        h.focused=true;assert!(matches!(&h.frame(vec![key(true)])[..],[Action::RefreshWallpaper]));h.frame(vec![key(false)]);
+        h.focused=true;assert!(matches!(&h.frame(vec![key(true)])[..],[Action::NextWallpaper]));h.frame(vec![key(false)]);
         h.workspace.route.page=Page::Settings;assert!(h.frame(vec![key(true)]).is_empty());
     }
 
+    #[test]
+    fn f6_and_f8_have_focused_home_scope_and_toggle_devices(){
+        let mut h=Harness::new();
+        let key=|key,pressed|egui::Event::Key{key,physical_key:Some(key),pressed,repeat:false,modifiers:Default::default()};
+        assert!(matches!(&h.frame(vec![key(egui::Key::F6,true)])[..],[Action::PreviousWallpaper]));h.frame(vec![key(egui::Key::F6,false)]);
+        assert!(matches!(&h.frame(vec![key(egui::Key::F8,true)])[..],[Action::DevicesHidden(true)]));h.frame(vec![key(egui::Key::F8,false)]);
+        assert!(matches!(&h.frame(vec![key(egui::Key::F8,true)])[..],[Action::DevicesHidden(false)]));h.frame(vec![key(egui::Key::F8,false)]);
+        h.focused=false;assert!(h.frame(vec![key(egui::Key::F6,true),key(egui::Key::F8,true)]).is_empty());
+    }
     #[test]
     fn device_menu_separates_library_actions_and_removal_requires_confirmation() {
         let mut h=Harness::new();
@@ -1421,9 +1440,12 @@ impl Workspace {
             self.device_details(ui, &id, actions);
             return;
         }
-        if ui.ctx().input(|input|input.focused) && !ui.ctx().wants_keyboard_input()
-            && ui.ctx().input_mut(|input|input.consume_key(egui::Modifiers::NONE,egui::Key::F5)) {
-            actions.push(Action::RefreshWallpaper);
+        if ui.ctx().input(|input|input.focused) && !ui.ctx().wants_keyboard_input(){
+            if ui.ctx().input_mut(|i|i.consume_key(egui::Modifiers::NONE,egui::Key::F5)){actions.push(Action::NextWallpaper);}
+            if ui.ctx().input_mut(|i|i.consume_key(egui::Modifiers::NONE,egui::Key::F6)){actions.push(Action::PreviousWallpaper);}
+            if ui.ctx().input_mut(|i|i.consume_key(egui::Modifiers::NONE,egui::Key::F8)){
+                self.toggle_device_list(actions);
+            }
         }
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
         blank.context_menu(|ui| self.library_menu(ui, info, actions));
@@ -2241,7 +2263,7 @@ impl super::App {
         self.context.request_repaint();
     }
     pub(super) fn workspace_info(&self)->Info {
-        Info {wallpaper_enabled:self.preferences.wallpaper_enabled,wallpaper_ready:self.background.has_wallpaper(),wallpaper_download_ready:self.background.can_download(),wallpaper_size:self.background.original_size(),nearby:self.lan.nearby(self.workspace.host.server_id()),providers:uu_core::plugins::registry().descriptors()}
+        Info {wallpaper_previous:self.background.can_previous(),wallpaper_next:self.background.can_next(),wallpaper_bing:self.background.is_bing(),wallpaper_enabled:self.preferences.wallpaper_enabled,wallpaper_ready:self.background.has_wallpaper(),wallpaper_download_ready:self.background.can_download(),wallpaper_size:self.background.original_size(),nearby:self.lan.nearby(self.workspace.host.server_id()),providers:uu_core::plugins::registry().descriptors()}
     }
     pub(super) fn workspace_home(&mut self, ctx: &egui::Context) {
         let info = self.workspace_info();
@@ -2316,9 +2338,11 @@ impl super::App {
                 }
                 Action::FavoriteWallpaper => self.background.favorite(ctx),
                 Action::DownloadWallpaper => self.background.download(ctx),
-                Action::RefreshWallpaper => {
-                    if self.preferences.wallpaper_enabled {self.background.sync(&self.preferences,ctx);self.background.refresh(ctx);}
+                Action::NextWallpaper => {
+                    if self.preferences.wallpaper_enabled {self.background.sync(&self.preferences,ctx);self.background.next(ctx);}
                 }
+                Action::PreviousWallpaper=>{if self.preferences.wallpaper_enabled{self.background.sync(&self.preferences,ctx);self.background.previous(ctx);}},
+                Action::TodayWallpaper=>{if self.preferences.wallpaper_enabled{self.background.sync(&self.preferences,ctx);self.background.today(ctx);}},
                 // The start button is dispatched after rendering to keep one
                 // owner of the runtime and immutable sharing configuration.
                 Action::StartSharing | Action::RestartSharing => {

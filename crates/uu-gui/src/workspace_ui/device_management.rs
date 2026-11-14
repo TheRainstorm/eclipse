@@ -14,6 +14,9 @@ pub(super) struct State {
 struct Drag(String);
 
 impl Workspace {
+    pub(super) fn toggle_device_list(&mut self,actions:&mut Vec<Action>){
+        self.devices_hidden=!self.devices_hidden;self.management=State::default();actions.push(Action::DevicesHidden(self.devices_hidden));
+    }
     pub(super) fn device_management_menu(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         if theme::menu_action(ui, true, uu_i18n::text("批量管理设备…")).clicked() {
             self.devices_hidden = false;
@@ -22,10 +25,8 @@ impl Workspace {
             ui.close_menu();
         }
         let label = if self.devices_hidden { "显示设备列表" } else { "隐藏设备列表" };
-        if theme::menu_action(ui, true, uu_i18n::text(label)).clicked() {
-            self.devices_hidden = !self.devices_hidden;
-            self.management = State::default();
-            actions.push(Action::DevicesHidden(self.devices_hidden));
+        if theme::menu_action_hint(ui, true, uu_i18n::text(label),"F8").clicked() {
+            self.toggle_device_list(actions);
             ui.close_menu();
         }
     }

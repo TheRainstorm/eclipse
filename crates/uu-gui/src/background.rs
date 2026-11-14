@@ -40,6 +40,11 @@ pub(super) struct Background {
     texture_source:String,
     plugin_mode:bool,
     bing_mode:bool,
+    bing_refresh_on_open:bool,
+    timeline:super::wallpaper_navigation::Timeline,
+    pending:Option<(usize,bool)>,
+    bing_catalog:Arc<super::bing_wallpaper::Catalog>,
+    pending_bing:Option<Arc<super::bing_wallpaper::Catalog>>,
     plugin_sources:Vec<wallpaper_plugins::Available>,
     provider:Option<wallpaper_plugins::Available>,
     received:bool,
@@ -77,6 +82,7 @@ impl Background {
         self.enabled=s.wallpaper_enabled;self.favorites_mode=s.wallpaper_source==WallpaperSource::Favorites;
         self.plugin_mode=s.wallpaper_source==WallpaperSource::Plugin;
         self.bing_mode=s.wallpaper_source==WallpaperSource::Bing;
+        self.bing_refresh_on_open=self.bing_mode&&s.wallpaper_refresh!=super::settings::WallpaperRefresh::Never;
         self.provider=next_provider;
         self.schedule.configure(s.wallpaper_refresh,s.wallpaper_refresh_hours,Instant::now());
         if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.current_encoded=None;self.painted_encoded.get_mut().take();self.painted_original.get_mut().take();self.original=None;self.initialized=false;self.plugin_mode=false;self.provider=None;return;}
@@ -114,6 +120,7 @@ impl Background {
             self.poll(ctx);return;
         }
         if !self.initialized || self.source!=next_source || provider_changed {
+            self.timeline.clear();self.pending=None;self.pending_bing=None;self.bing_catalog=Arc::default();
             self.initialized=true;self.source=next_source;self.notice.clear();
             self.schedule.reset();
             // A new source owns a new request; neither throttling nor a pending
@@ -138,7 +145,7 @@ impl Background {
             if let Some((image,age))=value {
                 if self.texture.is_none()||self.texture_source!=self.source {self.set(image,ctx,false);}
                 if self.favorites_mode {self.schedule.finished(true,Instant::now());}
-                else if self.schedule.opened(Some(age),Instant::now()) && self.worker.is_none() {self.refresh(ctx);}
+                else if (self.schedule.opened(Some(age),Instant::now())||self.bing_refresh_on_open) && self.worker.is_none() {self.refresh(ctx);}
             }else if self.favorites_mode {
                 self.failure=Some("favorite image could not be loaded".into());
                 self.notice.error(Scope::Wallpaper,uu_i18n::text("收藏图片无法加载，请扫描目录或选择其它图片。"));
@@ -156,6 +163,7 @@ impl Background {
         }
         if self.worker.as_ref().is_some_and(|w|w.finished()) {
             self.worker=None;
+            if !self.received{self.pending=None;self.pending_bing=None;}
             self.schedule.finished(self.received,Instant::now());
             if !self.received && self.failure.is_none() {self.notice.error(Scope::Wallpaper,if self.texture.is_some(){uu_i18n::text("壁纸更新失败，继续使用已有图片")}else{uu_i18n::text("图片暂时无法获取，正在使用内置背景；可在应用设置中刷新")});}
         }
@@ -170,6 +178,11 @@ impl Background {
         if image.url!=self.source{return;}
         self.original=Some(image.original);
         self.current_encoded=if image.encoded.is_empty(){None}else{Some(Arc::new(std::mem::take(&mut image.encoded)))};
+        if !self.favorites_mode {
+            let (position,reset)=self.pending.take().unwrap_or((self.timeline.position().unwrap_or(0),false));
+            if reset{self.timeline.clear();if let Some(catalog)=self.pending_bing.take(){self.bing_catalog=catalog;}}
+            if let Some(bytes)=&self.current_encoded{self.timeline.commit(position,bytes.clone());}
+        }
         self.texture_source=image.url.clone();
         self.texture=Some(ctx.load_texture("workspace-background",egui::ColorImage::from_rgba_unmultiplied([image.width as usize,image.height as usize],&image.rgba),egui::TextureOptions::LINEAR));
         // Loading a fallback after a network failure must not erase its reason.
@@ -204,7 +217,44 @@ impl Background {
         if changed {self.sync(s,ui.ctx());}
         changed
     }
-    pub fn refresh(&mut self,ctx:&egui::Context) {
+    fn ordered(&self)->bool{self.bing_mode||self.provider.as_ref().is_some_and(|p|p.provider.ordered(&p.source.id))}
+    fn previous_position(&self)->Option<usize>{if self.ordered(){self.timeline.position()?.checked_sub(1)}else{self.timeline.previous()}}
+    pub fn can_previous(&self)->bool{self.enabled && (if self.favorites_mode{self.favorites.loaded}else{self.previous_position().is_some()})}
+    pub fn can_next(&self)->bool{self.enabled && (!self.bing_mode||self.bing_catalog.contains_or_can_extend(self.timeline.position().map_or(0,|p|p+1)))}
+    pub fn is_bing(&self)->bool{self.bing_mode}
+    pub fn previous(&mut self,ctx:&egui::Context){
+        if self.favorites_mode{self.favorite_current=self.favorites.previous(self.favorite_current.as_deref());self.failure=None;ctx.request_repaint();return;}
+        if let Some(position)=self.previous_position(){self.load_position(position,false,ctx);}
+    }
+    pub fn next(&mut self,ctx:&egui::Context){
+        if self.favorites_mode{self.refresh(ctx);return;}
+        if self.worker.is_some(){return;}
+        if self.can_next(){self.load_position(self.timeline.position().map_or(0,|p|p+1),false,ctx);}
+    }
+    pub fn today(&mut self,ctx:&egui::Context){
+        if !self.bing_mode{return;}
+        self.load_position(0,true,ctx);
+    }
+    pub fn refresh(&mut self,ctx:&egui::Context){
+        if self.favorites_mode{self.fetch(ctx);return;}
+        if self.timeline.position().is_some(){
+            if !self.timeline.at_tip() || (self.bing_mode&&self.timeline.position()!=Some(0)) {self.schedule.finished(true,Instant::now());return;}
+            if self.bing_mode{self.today(ctx);}else{self.next(ctx);}
+        }else{self.load_position(0,false,ctx);}
+    }
+    fn load_position(&mut self,position:usize,reset:bool,ctx:&egui::Context){
+        self.worker=None;self.cache_rx=None;self.received=false;self.failure=None;self.retry_at=None;
+        self.pending=Some((position,reset));
+        self.pending_bing=if reset&&self.bing_mode{Some(Arc::default())}else{None};
+        if !reset {if let Some(bytes)=self.timeline.get(position){
+            match wallpapers::Worker::start_saved(wallpapers::Request{device_id:"background".into(),url:self.source.clone()},bytes,ctx.clone()){
+                Ok(worker)=>{self.worker=Some(worker);},Err(error)=>{self.pending=None;self.notice.error(Scope::Wallpaper,error.to_string());}
+            }
+            return;
+        }}
+        self.fetch(ctx);
+    }
+    fn fetch(&mut self,ctx:&egui::Context) {
         self.schedule.started();
         if self.favorites_mode {
             self.failure=None;self.favorite_current=self.favorites.next(self.favorite_current.as_deref());self.favorites.reload(ctx);
@@ -223,12 +273,13 @@ impl Background {
             return;
         }
         let result=if self.bing_mode {
-            wallpapers::Worker::start_bing(wallpapers::Request{device_id:"background".into(),url:self.source.clone()},ctx.clone())
+            wallpapers::Worker::start_bing(wallpapers::Request{device_id:"background".into(),url:self.source.clone()},self.pending_bing.as_ref().unwrap_or(&self.bing_catalog).clone(),self.pending.map_or(0,|p|p.0),ctx.clone())
         }else if let Some(provider)=&self.provider {
             wallpapers::Worker::start_plugin(wallpapers::PluginRequest{
                 device_id:"background".into(),
                 source:self.source.clone(),
                 source_id:provider.source.id.clone(),
+                position:self.pending.map_or(0,|p|p.0),
                 provider:provider.provider.clone(),
             },ctx.clone())
         } else {
@@ -275,6 +326,38 @@ impl Background {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn navigation_replays_history_without_refetching_or_destroying_forward_entries(){
+        use std::{net::TcpListener,io::{Read,Write}};
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move||{
+            for index in 0..3u8{
+                let (mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request=[0;4096];let _=stream.read(&mut request).unwrap();
+                let mut bytes=std::io::Cursor::new(Vec::new());
+                image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(2,2,image::Rgba([index,0,0,255]))).write_to(&mut bytes,image::ImageFormat::Png).unwrap();
+                let bytes=bytes.into_inner();write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();
+            }
+        });
+        struct Provider{url:String,positions:Arc<std::sync::Mutex<Vec<usize>>>}
+        impl uu_plugin_sdk::wallpaper::Provider for Provider{
+            fn sources(&self)->Vec<uu_plugin_sdk::wallpaper::Source>{Vec::new()}
+            fn resolve<'a>(&'a self,_:reqwest::Client,_:&'a str)->uu_plugin_sdk::wallpaper::Resolution<'a>{Box::pin(async move{Ok(self.url.clone())})}
+            fn resolve_at<'a>(&'a self,_:reqwest::Client,_:&'a str,p:usize)->uu_plugin_sdk::wallpaper::Resolution<'a>{Box::pin(async move{self.positions.lock().unwrap().push(p);Ok(self.url.clone())})}
+        }
+        let positions=Arc::new(std::sync::Mutex::new(Vec::new()));let ctx=egui::Context::default();
+        let selection=wallpaper_plugins::Selection{plugin:"test".into(),source:"ordered".into()};
+        let settings=Settings{wallpaper_source:WallpaperSource::Plugin,wallpaper_plugin:Some(selection.clone()),..Default::default()};
+        let mut background=Background::new(None);background.set_plugin_sources(vec![wallpaper_plugins::Available{selection,source:uu_plugin_sdk::wallpaper::Source{id:"ordered".into(),name:"Ordered".into(),revision:"1".into()},provider:Arc::new(Provider{url:format!("http://{address}/picture"),positions:positions.clone()})}]);
+        fn settle(b:&mut Background,ctx:&egui::Context,p:usize){let deadline=Instant::now()+Duration::from_secs(8);loop{b.poll(ctx);if b.worker.is_none()&&b.timeline.position()==Some(p){break;}assert!(Instant::now()<deadline,"navigation did not settle: {:?}",b.failure);std::thread::sleep(Duration::from_millis(5));}}
+        background.sync(&settings,&ctx);settle(&mut background,&ctx,0);let first=background.current_encoded.clone().unwrap();
+        background.next(&ctx);settle(&mut background,&ctx,1);let second=background.current_encoded.clone().unwrap();assert_ne!(first,second);
+        background.previous(&ctx);settle(&mut background,&ctx,0);assert_eq!(background.current_encoded.as_ref(),Some(&first));background.refresh(&ctx);assert!(background.worker.is_none(),"automatic refresh must not leave a historical position");
+        background.next(&ctx);settle(&mut background,&ctx,1);assert_eq!(background.current_encoded.as_ref(),Some(&second));assert_eq!(*positions.lock().unwrap(),vec![0,1]);
+        background.next(&ctx);settle(&mut background,&ctx,2);assert_eq!(*positions.lock().unwrap(),vec![0,1,2]);server.join().unwrap();
+        let last=background.current_encoded.clone();background.next(&ctx);settle(&mut background,&ctx,2);
+        assert!(background.failure.is_some());assert_eq!(background.timeline.position(),Some(2));assert_eq!(background.current_encoded,last);
+    }
     #[test]
     fn plugin_disable_cancels_pending_work_and_keeps_the_displayed_wallpaper() {
         use std::sync::atomic::{AtomicUsize,Ordering};

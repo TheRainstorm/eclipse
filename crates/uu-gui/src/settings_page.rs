@@ -81,7 +81,9 @@ pub struct Actions {
     pub about: bool,
     pub host: bool,
     pub maximize: bool,
-    pub refresh_wallpaper:bool,
+    pub next_wallpaper:bool,
+    pub previous_wallpaper:bool,
+    pub today_wallpaper:bool,
     pub tutorial: bool,
 }
 
@@ -435,7 +437,11 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
             ui.add(crate::theme::Input::new(&mut s.wallpaper_api).desired_width(f32::INFINITY).hint_text("https://example.com/image"));
         }
         note(ui,uu_i18n::text("摄影使用 Lorem Picsum；更多来源由插件提供。自定义 API 可填写图片地址，首次显示缓存后再按策略刷新；失败保留已有壁纸，收藏按顺序轮换。"));
-        if ui.add(crate::theme::secondary_button(uu_i18n::text("刷新壁纸"))).clicked(){actions.refresh_wallpaper=true;}
+        ui.horizontal(|ui|{
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("上一张壁纸"))).clicked(){actions.previous_wallpaper=true;}
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("下一张壁纸"))).clicked(){actions.next_wallpaper=true;}
+            if s.wallpaper_source==WallpaperSource::Bing && ui.add(crate::theme::secondary_button(uu_i18n::text("返回今日壁纸"))).clicked(){actions.today_wallpaper=true;}
+        });
     });
     },
     SoftwareSection::Discovery=>group(ui,uu_i18n::text("设备发现"),|ui| {

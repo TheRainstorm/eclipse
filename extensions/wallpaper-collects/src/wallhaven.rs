@@ -1,14 +1,10 @@
-use crate::{
-    config::{Config, Page},
-    history::History,
-};
+use crate::config::{Config, Page};
 use anyhow::{ensure, Context};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use std::sync::Mutex;
+#[cfg(test)]
+use std::time::Duration;
 
 const SEARCH_URL: &str = "https://wallhaven.cc/api/v1/search";
 const MAX_RESPONSE: usize = 256 * 1024;
@@ -48,50 +44,9 @@ struct Candidate {
     id: String,
     url: String,
 }
-struct Cached {
-    revision: String,
-    fetched: Instant,
-    next_page: u32,
-    complete: bool,
-    candidates: Vec<Candidate>,
-}
+#[derive(Default)]
 pub struct State {
-    history: History,
-    cached: Option<Cached>,
-}
-impl State {
-    pub fn new(history: History) -> Self {
-        Self {
-            history,
-            cached: None,
-        }
-    }
-    fn cached_fresh(&self, revision: &str) -> Option<&Cached> {
-        self.cached.as_ref().filter(|cache| {
-            cache.revision == revision && cache.fetched.elapsed() < Duration::from_secs(300)
-        })
-    }
-    fn pick(&mut self, storage: &uu_plugin_sdk::engine::Config) -> anyhow::Result<String> {
-        let candidates = &self
-            .cached
-            .as_ref()
-            .context("Wallhaven candidates unavailable")?
-            .candidates;
-        let ids: Vec<_> = candidates.iter().map(|item| item.id.clone()).collect();
-        let id = self
-            .history
-            .choose(&ids, rand::random::<u32>() as usize)
-            .context("Wallhaven returned no candidate")?
-            .to_owned();
-        let image = candidates
-            .iter()
-            .find(|item| item.id == id)
-            .context("Wallhaven candidate disappeared")?
-            .url
-            .clone();
-        self.history.remember(storage, &id)?;
-        Ok(image)
-    }
+    ordered: Option<(String, Vec<Candidate>, u32, bool)>,
 }
 
 fn search_url(base: &str, config: &Config, page: u32) -> anyhow::Result<reqwest::Url> {
@@ -196,80 +151,114 @@ async fn fetch(client: &reqwest::Client, url: reqwest::Url) -> anyhow::Result<Re
     Ok(serde_json::from_slice(&bytes).context("Wallhaven search response is invalid")?)
 }
 
-pub async fn resolve(
+/// Freeze result order for this filter revision, extending it page by page.
+pub async fn resolve_at(
     client: reqwest::Client,
     config: Config,
-    storage: &uu_plugin_sdk::engine::Config,
     state: &Mutex<State>,
+    position: usize,
 ) -> anyhow::Result<String> {
-    resolve_from(client, config, storage, state, SEARCH_URL).await
+    ordered_from(client, config, state, position, SEARCH_URL).await
 }
-async fn resolve_from(
+async fn ordered_from(
     client: reqwest::Client,
     config: Config,
-    storage: &uu_plugin_sdk::engine::Config,
     state: &Mutex<State>,
+    position: usize,
     base: &str,
 ) -> anyhow::Result<String> {
+    ensure!(position < 4096, "已到壁纸列表的浏览上限");
     let revision = config.revision();
-    let first_page = {
-        let mut state = state.lock().unwrap();
-        if let Some(cache) = state.cached_fresh(&revision) {
-            if cache.complete
-                || cache
-                    .candidates
-                    .iter()
-                    .any(|item| state.history.unseen(&item.id))
-            {
-                return state.pick(storage);
+    for _ in 0..5 {
+        let page = {
+            let mut state = state.lock().unwrap();
+            if state.ordered.as_ref().is_none_or(|v| v.0 != revision) {
+                state.ordered = Some((revision.clone(), Vec::new(), 1, false));
             }
-            cache.next_page
-        } else {
-            1
-        }
-    };
-    let mut available = Vec::new();
-    let mut last_page = first_page;
-    let mut fetched_page = first_page;
-    // A hundred recent IDs can exhaust four normal pages. Five pages bound
-    // requests while still giving refreshes a substantially larger new pool.
-    for page in first_page..first_page.saturating_add(5) {
-        if page > last_page {
-            break;
-        }
+            let (_, items, page, complete) = state.ordered.as_ref().unwrap();
+            if let Some(item) = items.get(position) {
+                return Ok(item.url.clone());
+            }
+            ensure!(!complete, "已到壁纸列表末尾");
+            *page
+        };
         let response = fetch(&client, search_url(base, &config, page)?).await?;
-        last_page = response.meta.last_page.max(1);
-        fetched_page = page;
-        available.extend(candidates(response.data, &config));
-        let state = state.lock().unwrap();
-        if available.iter().any(|item| state.history.unseen(&item.id)) {
-            break;
+        let last = response.meta.last_page.max(1);
+        let items = candidates(response.data, &config);
+        let mut state = state.lock().unwrap();
+        let ordered = state.ordered.as_mut().context("wallpaper list retired")?;
+        ensure!(ordered.0 == revision, "wallpaper filters changed");
+        if ordered.2 == page {
+            for item in items {
+                if !ordered.1.iter().any(|old| old.id == item.id) && ordered.1.len() < 4096 {
+                    ordered.1.push(item);
+                }
+            }
+            ordered.2 = page + 1;
+            ordered.3 = page >= last;
         }
     }
-    ensure!(
-        !available.is_empty(),
-        "Wallhaven returned no matching wallpaper"
-    );
-    let mut state = state.lock().unwrap();
-    state.cached = Some(Cached {
-        revision,
-        fetched: Instant::now(),
-        next_page: if fetched_page >= last_page {
-            1
-        } else {
-            fetched_page + 1
-        },
-        complete: first_page == 1 && fetched_page >= last_page,
-        candidates: available,
-    });
-    // Reserve before returning to the downloader, including failed image URLs.
-    // A broken candidate must not be selected again on every manual refresh.
-    state.pick(storage)
+    let state = state.lock().unwrap();
+    state
+        .ordered
+        .as_ref()
+        .and_then(|v| v.1.get(position))
+        .map(|v| v.url.clone())
+        .context("未找到此位置的可用壁纸")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordered_browsing_preserves_api_rank_and_extends_pages() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+        uu_plugin_sdk::engine::install_crypto_provider();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for (page, ids) in [(1, vec!["a", "b"]), (2, vec!["c"])] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                let n = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..n]).contains(&format!("page={page}")));
+                let data:Vec<_>=ids.into_iter().map(|id|serde_json::json!({"id":id,"category":"general","purity":"sfw","path":format!("https://w.wallhaven.cc/{id}.jpg"),"file_size":10,"dimension_x":100,"dimension_y":100})).collect();
+                let bytes =
+                    serde_json::to_vec(&serde_json::json!({"data":data,"meta":{"last_page":2}}))
+                        .unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                )
+                .unwrap();
+                stream.write_all(&bytes).unwrap();
+            }
+        });
+        let runtime = uu_plugin_sdk::tokio::runtime::Runtime::new().unwrap();
+        let state = Mutex::new(State::default());
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let base = format!("http://{address}/search");
+        for (position, id) in [(0, "a"), (1, "b"), (2, "c"), (1, "b")] {
+            let value = runtime
+                .block_on(ordered_from(
+                    client.clone(),
+                    Config::default(),
+                    &state,
+                    position,
+                    &base,
+                ))
+                .unwrap();
+            assert!(value.ends_with(&format!("/{id}.jpg")));
+        }
+        server.join().unwrap();
+    }
     #[test]
     fn filters_and_pagination_stay_in_the_discovery_request() {
         let config = Config::default();
@@ -288,98 +277,5 @@ mod tests {
         let mut config = Config::default();
         config.categories = [true, false, false];
         assert!(candidates(serde_json::from_str(items).unwrap(), &config).is_empty());
-    }
-    #[test]
-    fn an_exhausted_first_page_fetches_new_candidates_and_remembers_them() {
-        use std::{
-            io::{BufRead, Write},
-            net::TcpListener,
-        };
-        uu_plugin_sdk::engine::install_crypto_provider();
-        let directory =
-            std::env::temp_dir().join(format!("eclipse-wallpaper-pages-{}", rand::random::<u64>()));
-        let storage = uu_plugin_sdk::engine::Config {
-            data_dir: directory.clone(),
-            state_dir: directory.join("state"),
-            signaling_host: String::new(),
-        };
-        let history = Mutex::new(State::new(History::default()));
-        history
-            .lock()
-            .unwrap()
-            .history
-            .remember(&storage, "first")
-            .unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            for (page, id) in [(1, "first"), (2, "second")] {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_secs(3)))
-                    .unwrap();
-                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
-                let mut first = String::new();
-                reader.read_line(&mut first).unwrap();
-                assert!(
-                    first.contains(&format!("page={page}")),
-                    "unexpected request: {first}"
-                );
-                loop {
-                    let mut line = String::new();
-                    reader.read_line(&mut line).unwrap();
-                    if line == "\r\n" || line.is_empty() {
-                        break;
-                    }
-                }
-                let bytes = serde_json::to_vec(&serde_json::json!({"data":[{"id":id,"category":"general","purity":"sfw","path":format!("https://w.wallhaven.cc/{id}.jpg"),"file_size":100,"dimension_x":100,"dimension_y":100}],"meta":{"last_page":2}})).unwrap();
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    bytes.len()
-                )
-                .unwrap();
-                stream.write_all(&bytes).unwrap();
-            }
-        });
-        let runtime = uu_plugin_sdk::tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let base = format!("http://{address}/search");
-        let url = runtime
-            .block_on(resolve_from(
-                client.clone(),
-                Config::default(),
-                &storage,
-                &history,
-                &base,
-            ))
-            .unwrap();
-        assert_eq!(url, "https://w.wallhaven.cc/second.jpg");
-        assert!(!History::read(&storage.at("wallhaven-history.json"))
-            .unwrap()
-            .unseen("second"));
-        server.join().unwrap();
-        // The complete two-item pool rotates from memory. The mock server is
-        // already closed, so any redundant API request would fail this test.
-        for expected in ["first", "second", "first"] {
-            let url = runtime
-                .block_on(resolve_from(
-                    client.clone(),
-                    Config::default(),
-                    &storage,
-                    &history,
-                    &base,
-                ))
-                .unwrap();
-            assert_eq!(url, format!("https://w.wallhaven.cc/{expected}.jpg"));
-        }
-        std::fs::remove_dir_all(directory).unwrap();
     }
 }

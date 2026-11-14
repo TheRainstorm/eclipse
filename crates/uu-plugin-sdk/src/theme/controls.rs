@@ -532,6 +532,11 @@ pub fn menu_action(ui: &mut Ui, enabled: bool, label: impl Into<WidgetText>) -> 
     ui.add_enabled_ui(enabled, |ui| menu_row_with_gutter(ui, None, false, false, label, false, "", false)).inner
 }
 
+/// An ordinary action row with a right-aligned shortcut label.
+pub fn menu_action_hint(ui:&mut Ui,enabled:bool,label:impl Into<WidgetText>,hint:&str)->Response{
+    ui.add_enabled_ui(enabled,|ui|menu_row_with_gutter(ui,None,false,false,label,false,hint,false)).inner
+}
+
 pub fn menu_control(
     ui: &mut Ui,
     label: impl Into<WidgetText>,

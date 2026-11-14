@@ -44,9 +44,10 @@ impl Workspace {
             if theme::menu_action(ui, info.wallpaper_download_ready, uu_i18n::text("下载当前壁纸…")).clicked() {
                 actions.push(Action::DownloadWallpaper); ui.close_menu();
             }
-            if theme::menu_action(ui, info.wallpaper_enabled, uu_i18n::text("刷新壁纸")).clicked() {
-                actions.push(Action::RefreshWallpaper); ui.close_menu();
-            }
+            ui.separator();
+            if theme::menu_action_hint(ui,info.wallpaper_previous,uu_i18n::text("上一张壁纸"),"F6").clicked(){actions.push(Action::PreviousWallpaper);ui.close_menu();}
+            if theme::menu_action_hint(ui,info.wallpaper_next,uu_i18n::text("下一张壁纸"),"F5").clicked(){actions.push(Action::NextWallpaper);ui.close_menu();}
+            if info.wallpaper_bing && theme::menu_action(ui,info.wallpaper_enabled,uu_i18n::text("返回今日壁纸")).clicked(){actions.push(Action::TodayWallpaper);ui.close_menu();}
             if let Some((width, height)) = info.wallpaper_size {
                 ui.separator();
                 ui.weak(uu_i18n::format!("原图：{} × {} 像素", width, height));
