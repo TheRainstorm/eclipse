@@ -1,13 +1,13 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-14T07:02:40Z",
+  "updated_at": "2026-11-14T18:48:23Z",
   "files": {
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "1ad160e6b2262f414a7dd0cf1d9d03afbea4b77eb872437a820b760ea9594f4c",
-      "size": 128754,
-      "normalized_sha256": "1ad160e6b2262f414a7dd0cf1d9d03afbea4b77eb872437a820b760ea9594f4c"
+      "sha256": "de9d93c40485631096178b62335150441857259e3fbef3b01d8d45b966102415",
+      "size": 128819,
+      "normalized_sha256": "de9d93c40485631096178b62335150441857259e3fbef3b01d8d45b966102415"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1697,9 +1697,9 @@
     },
     "crates/uu-plugin-sdk/src/loader.rs": {
       "role": "index",
-      "sha256": "d00c480fec6e3efdc5fd80b7d8eb9fb62ddb99ac73ed708a6dbfe17836270fa7",
-      "size": 6726,
-      "normalized_sha256": "d00c480fec6e3efdc5fd80b7d8eb9fb62ddb99ac73ed708a6dbfe17836270fa7"
+      "sha256": "b0d920a866e003fb2df5046670657feefda604e08c38eec89b53ba6b34f77176",
+      "size": 7783,
+      "normalized_sha256": "b0d920a866e003fb2df5046670657feefda604e08c38eec89b53ba6b34f77176"
     },
     "crates/uu-plugin-sdk/src/runtime.rs": {
       "role": "index",
