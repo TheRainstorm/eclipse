@@ -39,6 +39,7 @@ pub(super) struct Background {
     source:String,
     texture_source:String,
     plugin_mode:bool,
+    bing_mode:bool,
     plugin_sources:Vec<wallpaper_plugins::Available>,
     provider:Option<wallpaper_plugins::Available>,
     received:bool,
@@ -75,6 +76,7 @@ impl Background {
             != next_provider.as_ref().map(|p|(&p.selection,&p.source.revision));
         self.enabled=s.wallpaper_enabled;self.favorites_mode=s.wallpaper_source==WallpaperSource::Favorites;
         self.plugin_mode=s.wallpaper_source==WallpaperSource::Plugin;
+        self.bing_mode=s.wallpaper_source==WallpaperSource::Bing;
         self.provider=next_provider;
         self.schedule.configure(s.wallpaper_refresh,s.wallpaper_refresh_hours,Instant::now());
         if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.current_encoded=None;self.painted_encoded.get_mut().take();self.painted_original.get_mut().take();self.original=None;self.initialized=false;self.plugin_mode=false;self.provider=None;return;}
@@ -220,7 +222,9 @@ impl Background {
             self.schedule.finished(false,Instant::now());
             return;
         }
-        let result=if let Some(provider)=&self.provider {
+        let result=if self.bing_mode {
+            wallpapers::Worker::start_bing(wallpapers::Request{device_id:"background".into(),url:self.source.clone()},ctx.clone())
+        }else if let Some(provider)=&self.provider {
             wallpapers::Worker::start_plugin(wallpapers::PluginRequest{
                 device_id:"background".into(),
                 source:self.source.clone(),

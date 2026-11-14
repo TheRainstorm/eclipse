@@ -46,12 +46,13 @@ pub(super) struct PluginRequest {
 
 enum Job {
     Direct(Request),
+    Bing(Request),
     Plugin(PluginRequest),
 }
 impl Job {
     fn identity(&self) -> (String, String) {
         match self {
-            Self::Direct(request) => (request.device_id.clone(), request.url.clone()),
+            Self::Direct(request) | Self::Bing(request) => (request.device_id.clone(), request.url.clone()),
             Self::Plugin(request) => (request.device_id.clone(), request.source.clone()),
         }
     }
@@ -87,6 +88,10 @@ impl Worker {
     pub fn start_wallpaper(request:Request, context:eframe::egui::Context)->anyhow::Result<Self> {
         let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
         Self::start_for(vec![request], context, Rendition::Wallpaper(side))
+    }
+    pub fn start_bing(request:Request,context:eframe::egui::Context)->anyhow::Result<Self> {
+        let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
+        Self::with_jobs(vec![Job::Bing(request)],context,Self::client()?,Rendition::Wallpaper(side))
     }
     pub fn start_plugin(request:PluginRequest, context:eframe::egui::Context)->anyhow::Result<Self> {
         let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
@@ -207,6 +212,10 @@ async fn download(client:reqwest::Client,request:Request)->anyhow::Result<Thumbn
 async fn download_job(client:reqwest::Client, job:Job, rendition:Rendition) -> anyhow::Result<Thumbnail> {
     match job {
         Job::Direct(request)=>download_for(client,request,rendition).await,
+        Job::Bing(request)=>{
+            let url=super::bing_wallpaper::resolve(client.clone()).await?;
+            download_for_image(client,request,url,rendition).await
+        },
         Job::Plugin(request)=>{
             let image_url=request.provider.resolve(client.clone(),&request.source_id).await?;
             download_for_image(client,Request{device_id:request.device_id,url:request.source},image_url,rendition).await

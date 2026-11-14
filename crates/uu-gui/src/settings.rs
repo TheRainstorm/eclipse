@@ -56,7 +56,7 @@ pub(super) const PHOTOGRAPHY_WALLPAPER: &str = "https://picsum.photos/1920/1080"
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WallpaperSource { #[default] Photography, #[serde(alias="anime",alias="wallhaven")] Plugin, CustomApi, Favorites }
+pub enum WallpaperSource { #[default] Photography, Bing, #[serde(alias="anime",alias="wallhaven")] Plugin, CustomApi, Favorites }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all="snake_case")]
@@ -66,10 +66,10 @@ impl WallpaperRefresh {
     pub fn label(self)->&'static str {uu_i18n::text(match self {Self::Never=>"不刷新",Self::OnOpen=>"每次打开",Self::EveryHours=>"每 X 小时"})}
 }
 impl WallpaperSource {
-    pub const ALL: [Self; 3] = [Self::Photography, Self::CustomApi, Self::Favorites];
+    pub const ALL: [Self; 4] = [Self::Bing, Self::Photography, Self::CustomApi, Self::Favorites];
     pub fn label(self) -> &'static str {
         uu_i18n::text(match self {
-            Self::Photography => "摄影", Self::Plugin => "插件", Self::CustomApi => "自定义 API", Self::Favorites => "收藏",
+            Self::Bing=>"必应每日壁纸", Self::Photography => "摄影", Self::Plugin => "插件", Self::CustomApi => "自定义 API", Self::Favorites => "收藏",
         })
     }
     fn legacy(api: &str) -> Self {
@@ -149,6 +149,7 @@ impl Settings {
     }
     pub fn wallpaper_url(&self) -> &str {
         match self.wallpaper_source {
+            WallpaperSource::Bing => "bing://daily/zh-CN",
             WallpaperSource::Photography => PHOTOGRAPHY_WALLPAPER,
             WallpaperSource::Plugin => "plugin",
             WallpaperSource::CustomApi => self.wallpaper_api.trim(),
@@ -209,16 +210,11 @@ impl Settings {
                 s.wallpaper_plugin=Some(super::wallpaper_plugins::Selection{plugin:source.into(),source:source.into()});
             }
         }
-        if let Some(selection)=&mut s.wallpaper_plugin {
-            if selection.plugin=="wallpapers" && matches!(selection.source.as_str(),"anime"|"wallhaven") {
-                selection.plugin=selection.source.clone();
-            }
-        }
-        if let Some(selection)=&mut s.wallpaper_plugin {
-            match selection.plugin.as_str() {
-                "anime"=>selection.plugin="wallpaper-pipw".into(),
-                "wallhaven"=>selection.plugin="wallpaper-wallhaven".into(),
-                _=>{},
+        if s.wallpaper_plugin.as_ref().is_some_and(|v|v.plugin=="wallpaper-bing") {
+            s.wallpaper_source=WallpaperSource::Bing;s.wallpaper_plugin=None;
+        } else if let Some(selection)=&mut s.wallpaper_plugin {
+            if matches!(selection.plugin.as_str(),"wallpapers"|"anime"|"wallhaven"|"wallpaper-pipw"|"wallpaper-wallhaven") {
+                selection.plugin="wallpaper-collects".into();
             }
         }
         // Legacy files only recorded a URL. Infer once on read, without writing
@@ -813,6 +809,23 @@ impl super::App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wallpaper_reorganization_preserves_the_selected_source() {
+        let directory=std::env::temp_dir().join(format!("eclipse-wallpaper-migrate-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path=directory.join("settings.json");
+        for (plugin,source) in [("wallpaper-pipw","anime"),("wallpaper-wallhaven","wallhaven"),("wallpapers","anime")] {
+            std::fs::write(&path,format!(r#"{{"wallpaper_source":"plugin","wallpaper_plugin":{{"plugin":"{plugin}","source":"{source}"}}}}"#)).unwrap();
+            let value=super::Settings::load(&path).unwrap();
+            assert_eq!(value.wallpaper_plugin.as_ref().unwrap().plugin,"wallpaper-collects");
+            assert_eq!(value.wallpaper_plugin.as_ref().unwrap().source,source);
+        }
+        std::fs::write(&path,r#"{"wallpaper_source":"plugin","wallpaper_plugin":{"plugin":"wallpaper-bing","source":"daily"}}"#).unwrap();
+        let value=super::Settings::load(&path).unwrap();
+        assert_eq!(value.wallpaper_source,super::WallpaperSource::Bing);assert!(value.wallpaper_plugin.is_none());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     use super::*;
     #[test]
     fn service_startup_is_independent_of_login_and_persists_an_explicit_opt_out() {

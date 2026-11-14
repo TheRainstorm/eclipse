@@ -20,11 +20,18 @@ struct Sources {
 }
 impl wallpaper::Provider for Sources {
     fn sources(&self) -> Vec<wallpaper::Source> {
-        vec![wallpaper::Source {
-            id: "wallhaven".into(),
-            name: "Wallhaven 壁纸".into(),
-            revision: self.config.lock().unwrap().revision(),
-        }]
+        vec![
+            wallpaper::Source {
+                id: "anime".into(),
+                name: "二次元壁纸（Pipw）".into(),
+                revision: "1".into(),
+            },
+            wallpaper::Source {
+                id: "wallhaven".into(),
+                name: "Wallhaven 壁纸".into(),
+                revision: self.config.lock().unwrap().revision(),
+            },
+        ]
     }
     fn resolve<'a>(
         &'a self,
@@ -37,6 +44,7 @@ impl wallpaper::Provider for Sources {
                 "wallpaper plugin is disabled"
             );
             match source {
+                "anime" => Ok("https://img-api.pipw.top".into()),
                 "wallhaven" => {
                     let config = self.config.lock().unwrap().clone();
                     wallhaven::resolve(client, config, &self.storage, &self.history).await
@@ -64,8 +72,8 @@ fn options(preferences: &PluginPreferences, previous: &Config) -> Result<Config>
 }
 fn create(context: Context) -> Result<Box<dyn Plugin>> {
     ensure!(
-        context.id == "wallpaper-wallhaven",
-        "wallpaper plugin manifest ID must be wallpaper-wallhaven"
+        context.id == "wallpaper-collects",
+        "wallpaper plugin manifest ID must be wallpaper-collects"
     );
     let previous = Config::previous(&context.application);
     let sources = Arc::new(Sources {

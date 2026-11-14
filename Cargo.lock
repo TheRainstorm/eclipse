@@ -1380,23 +1380,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "eclipse-anime"
-version = "0.1.0"
-dependencies = [
- "uu-plugin-sdk",
-]
-
-[[package]]
-name = "eclipse-bing"
-version = "0.1.0"
-dependencies = [
- "reqwest",
- "serde_json",
- "uu-plugin-sdk",
-]
-
-[[package]]
-name = "eclipse-wallhaven"
+name = "eclipse-wallpaper-collects"
 version = "0.1.0"
 dependencies = [
  "anyhow",

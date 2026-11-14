@@ -73,6 +73,7 @@ mod native_keys;
 mod native_host_ui;
 mod native_interfaces;
 mod wallpaper_plugins;
+mod bing_wallpaper;
 mod wallpapers;
 mod wallpaper_favorites;
 mod wallpaper_cache;
