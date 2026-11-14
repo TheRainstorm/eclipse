@@ -211,7 +211,8 @@ impl Settings {
             }
         }
         if s.wallpaper_plugin.as_ref().is_some_and(|v|v.plugin=="wallpaper-bing") {
-            s.wallpaper_source=WallpaperSource::Bing;s.wallpaper_plugin=None;
+            if s.wallpaper_source==WallpaperSource::Plugin {s.wallpaper_source=WallpaperSource::Bing;}
+            s.wallpaper_plugin=None;
         } else if let Some(selection)=&mut s.wallpaper_plugin {
             if matches!(selection.plugin.as_str(),"wallpapers"|"anime"|"wallhaven"|"wallpaper-pipw"|"wallpaper-wallhaven") {
                 selection.plugin="wallpaper-collects".into();
@@ -823,6 +824,9 @@ mod tests {
         std::fs::write(&path,r#"{"wallpaper_source":"plugin","wallpaper_plugin":{"plugin":"wallpaper-bing","source":"daily"}}"#).unwrap();
         let value=super::Settings::load(&path).unwrap();
         assert_eq!(value.wallpaper_source,super::WallpaperSource::Bing);assert!(value.wallpaper_plugin.is_none());
+        std::fs::write(&path,r#"{"wallpaper_source":"photography","wallpaper_plugin":{"plugin":"wallpaper-bing","source":"daily"}}"#).unwrap();
+        let value=super::Settings::load(&path).unwrap();
+        assert_eq!(value.wallpaper_source,super::WallpaperSource::Photography);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
