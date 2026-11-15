@@ -50,6 +50,7 @@ pub mod host_runtime;
 pub mod service_admin;
 pub mod host_admin;
 pub mod host_input;
+pub mod host_lock;
 pub mod device_book;
 pub mod client_settings;
 pub mod device_internet;

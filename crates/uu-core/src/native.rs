@@ -278,7 +278,7 @@ pub async fn view_direct(signaling: &mut dyn SessionSignaling, ice: &crate::dire
         let mut peer = NativePeer::new_direct(ice, Some(stats.clone()), false).await?;
         let result = tokio::select! {
             result=receive_session(&mut peer,signaling,frames,stats.clone(),input)=>result,
-            _=cancelled(&mut stop)=>{peer.diagnostics.exit("stop_requested");Ok(ViewOutcome::Ended)},
+            _=cancelled(&mut stop)=>{peer.diagnostics.exit("stop_requested");stats.desktop_lock.ending().await;Ok(ViewOutcome::Ended)},
         };
         peer.diagnostics.exit(match &result {Ok(ViewOutcome::Switch(_))=>"display_switch",Ok(_)=>"session_ended",Err(_)=>"session_error"});
         peer.close().await;
@@ -870,7 +870,7 @@ async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaS
         let mut peer=NativePeer::new_with_advertised(local_ip,advertised_ip,Some(stats.clone()),false).await?;
         let result=tokio::select! {
             result=receive_session(&mut peer,&mut signaling,frames,stats.clone(),input)=>result,
-            _=cancelled(&mut stop)=>{peer.diagnostics.exit("stop_requested");Ok(ViewOutcome::Ended)},
+            _=cancelled(&mut stop)=>{peer.diagnostics.exit("stop_requested");stats.desktop_lock.ending().await;Ok(ViewOutcome::Ended)},
         };
         peer.diagnostics.exit(match &result {Ok(ViewOutcome::Switch(_))=>"display_switch",Ok(_)=>"session_ended",Err(_)=>"session_error"});
         peer.close().await;
@@ -1312,6 +1312,39 @@ mod tests {
         let viewed=viewer.await.unwrap();let hosted=host.await.unwrap();
         result.unwrap().unwrap();viewed.unwrap();hosted.unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn workstation_policy_and_acknowledged_exit_use_the_authenticated_control_channel() {
+        use crate::{device_auth::PairingControl,device_trust::{Permissions,TrustStore},shared_host::{Access,SessionContext,SessionGate}};
+        struct Desktop;
+        impl crate::host_lock::Backend for Desktop {
+            fn desktop(&self)->Result<crate::host_lock::Desktop>{Ok(crate::host_lock::Desktop{session:1,logon:1,locked:true})}
+            fn lock(&self,_:crate::host_lock::Desktop)->Result<()>{panic!("network viewing must never lock a real workstation in this fixture")}
+        }
+        let root=std::env::temp_dir().join(format!("eclipse-desktop-stream-{}",uuid::Uuid::new_v4()));
+        let trust=TrustStore::open(root.join("host")).unwrap();
+        let (sender,_)=mpsc::unbounded_channel();
+        let access=Arc::new(Access{store:trust,name:"Generated host".into(),pairing:Arc::new(PairingControl::new(sender)),sessions:Arc::new(SessionGate::default())});
+        access.sessions.desktop.enable(Arc::new(Desktop),crate::host_lock::Policy::Restore);
+        let lease=access.sessions.claim("generated-client").unwrap();
+        let (mut config,file)=config();config.session=Some(SessionContext{access:access.clone(),peer:"generated-client".into(),permissions:Permissions::VIEW,session_id:Some(lease.id().into())});
+        let (host_stop,rx)=watch::channel(false);let host=tokio::spawn(serve(config,rx));
+        let invite=invitation(&file).await;let stats=Arc::new(MediaStats::default());let observed=stats.clone();
+        let (frames,_images)=frame_channel();let (stop,rx)=watch::channel(false);
+        let viewer=tokio::spawn(async move{view(&invite,frames,observed,rx).await});
+        let result=timeout(Duration::from_secs(12),async {
+            while stats.desktop_lock.status().is_none()||stats.decoded_total.load(Ordering::Acquire)<3 {tokio::time::sleep(Duration::from_millis(10)).await;}
+            let status=stats.desktop_lock.status().unwrap();assert_eq!(status.originally_locked,Some(true));assert!(!status.can_lock);
+            assert!(stats.desktop_lock.lock(true).is_err(),"view-only sessions cannot request a workstation lock");
+        }).await;
+        stop.send_replace(true);let viewed=viewer.await.unwrap();
+        host_stop.send_replace(true);let hosted=host.await.unwrap();
+        result.unwrap();viewed.unwrap();hosted.unwrap();
+        // The first lease is still alive, so inspect intent without touching the
+        // fake or real desktop. Dropping the lease later only schedules expiry.
+        access.sessions.expire_desktop_lock(false);
+        assert!(access.sessions.explicit_session_end(lease.id()),"normal client stop must arrive and be acknowledged before closing media");
+        drop(lease);std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]
     async fn client_changes_frame_rate_and_bitrate_on_one_encrypted_media_session() {

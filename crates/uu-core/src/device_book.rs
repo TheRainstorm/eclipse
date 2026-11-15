@@ -56,6 +56,7 @@ pub struct Sharing {
     pub encoder_tuning:uu_media::encoder::Tuning,
     pub control: bool,
     pub host_input: crate::host_input::Policy,
+    pub lock_after_stream: crate::host_lock::Policy,
     pub audio: bool,
     pub mute_host_audio: bool,
     #[serde(default)]
@@ -87,6 +88,7 @@ impl Default for Sharing {
             encoder_tuning:Default::default(),
             control: true,
             host_input: Default::default(),
+            lock_after_stream: Default::default(),
             audio: true,
             mute_host_audio: true,
             clipboard: true,

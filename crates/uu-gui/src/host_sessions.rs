@@ -70,6 +70,19 @@ pub(super) fn show(ui: &mut egui::Ui, center: &SessionCenter) -> Vec<Request> {
                 });
             });
         });
+        if let Some(desktop) = &center.desktop {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(uu_i18n::text("最后一个串流会话结束后"));
+                let mut policy = desktop.policy;
+                crate::theme::Select::from_id_salt("host-lock-policy").selected_text(policy.label()).show_ui(ui, |ui| {
+                    for value in uu_core::host_lock::Policy::ALL { crate::theme::selectable_value(ui, &mut policy, value, value.label()); }
+                });
+                if policy != desktop.policy { actions.push(Request::SetLockPolicy { policy }); }
+                if ui.add(crate::theme::secondary_button(uu_i18n::text("锁定本机")).small()).clicked() { actions.push(Request::LockDesktop); }
+            });
+            ui.weak(uu_i18n::text("多个屏幕和客户端共用此策略；异常断线保留 10 秒重连时间。"));
+            if let Some(error) = &desktop.error { ui.colored_label(crate::theme::palette(ui.visuals()).warning, error); }
+        }
         if center.input.keyboard_mouse_paused {
             ui.small(uu_i18n::text("远程键鼠已暂停，手柄不受影响"));
         }
@@ -253,6 +266,7 @@ pub(super) fn fixture() -> SessionCenter {
         primary: true,
     };
     SessionCenter {
+        desktop: None,
         input: uu_core::host_input::Snapshot {
             policy: uu_core::host_input::Policy {
                 game_room: true,

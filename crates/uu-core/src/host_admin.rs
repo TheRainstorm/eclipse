@@ -16,6 +16,8 @@ pub enum Request {
     SessionControls,
     SessionCenter,
     SetHostInput {policy:crate::host_input::Policy},
+    SetLockPolicy {policy:crate::host_lock::Policy},
+    LockDesktop,
     PauseHostInput {paused:bool},
     AllViewOnly,
     SessionPermissions {session:String,input:InputPermissions},
@@ -48,6 +50,8 @@ pub struct SessionControl {
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCenter {
+    #[serde(default)]
+    pub desktop:Option<crate::host_lock::Status>,
     pub input:crate::host_input::Snapshot,
     pub sessions:Vec<SessionControl>,
 }
@@ -170,6 +174,7 @@ impl Service {
                 // The live control center owns these settings; an unrelated
                 // media-settings draft must not revert its newer policy.
                 settings.host_input=active.host_input;
+                settings.lock_after_stream=active.lock_after_stream;
                 ensure!(expected.len()==64,"{}", uu_i18n::format!("服务配置版本无效，请重新读取"));
                 self.store.edit(|book| {
                     ensure!(revision(&book.sharing)?==expected,"{}", uu_i18n::format!("服务配置已被其它窗口修改，请重新读取后保存"));
@@ -207,9 +212,17 @@ impl Service {
                     };
                     SessionControl{id:id.clone(),peer,name,status,permissions,control:access.sessions.session_control_snapshot(&id)}
                 }).collect();
-                if center {Ok(Response::SessionCenter{center:SessionCenter{input:access.sessions.input_state(),sessions}})}
+                if center {Ok(Response::SessionCenter{center:SessionCenter{input:access.sessions.input_state(),desktop:access.sessions.desktop_status(None),sessions}})}
                 else {Ok(Response::SessionControls{sessions})}
             },
+            Request::SetLockPolicy{policy}=>{
+                let mut active=self.active.lock().unwrap();
+                self.store.edit(|book|{book.sharing.lock_after_stream=policy;Ok(())})?;
+                active.lock_after_stream=policy;
+                access.sessions.configure_lock_policy(policy);
+                Ok(Response::Applied)
+            },
+            Request::LockDesktop=>{access.sessions.lock_desktop(None)?;Ok(Response::Applied)},
             Request::SetHostInput{policy}=>{
                 let mut active=self.active.lock().unwrap();
                 self.store.edit(|book| {book.sharing.host_input=policy;Ok(())})?;
@@ -305,15 +318,18 @@ mod tests {
         assert!(initial.audio,"already admitted media retains its immutable settings");
         assert!(service.execute_local_manager(&context.access,Request::Save{revision:server.revision,settings:Sharing::default(),restart:false}).unwrap_err().to_string().contains("其它窗口"));
         let policy=crate::host_input::Policy{game_room:true,..Default::default()};
-        for request in [Request::SessionCenter,Request::SetHostInput{policy},Request::PauseHostInput{paused:true},Request::AllViewOnly] {
+        for request in [Request::SessionCenter,Request::SetHostInput{policy},Request::SetLockPolicy{policy:crate::host_lock::Policy::Always},Request::LockDesktop,Request::PauseHostInput{paused:true},Request::AllViewOnly] {
             assert!(service.execute(&context,request).is_err(),"a network client cannot change host admission or local input priority");
         }
         service.execute_local_manager(&context.access,Request::SetHostInput{policy}).unwrap();
         assert_eq!(store.read().unwrap().sharing.host_input,policy);
         assert_eq!(context.access.sessions.input_state().policy,policy);
+        service.execute_local_manager(&context.access,Request::SetLockPolicy{policy:crate::host_lock::Policy::Always}).unwrap();
+        assert_eq!(store.read().unwrap().sharing.lock_after_stream,crate::host_lock::Policy::Always);
         let current=store.read().unwrap().sharing;
         service.execute_local_manager(&context.access,Request::Save{revision:revision(&current).unwrap(),settings:Sharing::default(),restart:false}).unwrap();
         assert_eq!(store.read().unwrap().sharing.host_input,policy,"an unrelated media draft cannot undo the control center policy");
+        assert_eq!(store.read().unwrap().sharing.lock_after_stream,crate::host_lock::Policy::Always,"unrelated media saves preserve the live lock policy");
         trust.revoke(&client.id()).unwrap();
         assert!(service.execute(&context,Request::Inspect).is_err());
         std::fs::remove_dir_all(root).unwrap();

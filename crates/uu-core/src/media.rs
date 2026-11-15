@@ -34,6 +34,7 @@ pub struct MediaStats {
     pub native_progress:crate::native_controller::Progress,
     pub decoder_preference:std::sync::OnceLock<DecoderKind>,
     pub host_admin:crate::host_admin::Client,
+    pub desktop_lock:crate::host_lock::Client,
     /// The authenticated native host owns live quality and display changes.
     pub server_managed:std::sync::atomic::AtomicBool,
     pub virtual_displays:crate::native_virtual_display::Client,

@@ -64,6 +64,7 @@ pub struct Runner {
     emit: Arc<dyn Fn(Event) + Send + Sync>,
     _owner: HostOwner,
     _input_activity: Option<uu_input::local_activity::Monitor>,
+    _desktop_lock: Option<crate::host_lock::Monitor>,
     persistent: bool,
 }
 
@@ -121,6 +122,7 @@ fn prepare_inner(
         sessions: Arc::new(SessionGate::with_history(config.at("device-trust/connection-history.json"))),
     });
     access.sessions.configure_input_policy(book.sharing.host_input);
+    let desktop_lock = crate::host_lock::Monitor::start(&access.sessions, book.sharing.lock_after_stream)?;
     #[cfg(all(windows,not(test)))]
     let input_activity=match uu_input::local_activity::start() {
         Ok(observer)=>Some(observer),
@@ -196,6 +198,7 @@ fn prepare_inner(
             emit: Arc::new(emit),
             _owner: owner,
             _input_activity: input_activity,
+            _desktop_lock: desktop_lock,
             persistent,
         },
     })
@@ -225,6 +228,7 @@ impl Runner {
             emit,
             _owner,
             _input_activity,
+            _desktop_lock,
             persistent,
         } = self;
         let sharing = book.sharing;
@@ -345,6 +349,7 @@ impl Runner {
         if let Err(error)=preparation.await {tracing::warn!(%error,"virtual display preparation worker failed");}
         let history = access.sessions.history.clone();
         let _ = tokio::task::spawn_blocking(move || history.close()).await;
+        drop(_desktop_lock);
         drop(_input_activity);
         drop(_owner);
         Ok(())

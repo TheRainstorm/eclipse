@@ -33,6 +33,11 @@ pub use protocol_input::InputSession;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Packet {
+    DesktopStatus { status: crate::host_lock::Status },
+    LockDesktop { request: u64 },
+    DesktopLocked { request: u64, error: Option<String> },
+    SessionEnding,
+    SessionEndingAck,
     Quality {request:u64,settings:crate::native_quality::Update},
     QualityApplied {applied:crate::native_quality::Applied},
     AdminStatus {available:bool},
@@ -77,6 +82,8 @@ async fn send(channel: &RTCDataChannel, packet: Packet) -> Result<()> {
         .context("native control send timed out")??;
     Ok(())
 }
+
+pub(crate) async fn send_session_ending(channel: &RTCDataChannel) -> Result<()> { send(channel, Packet::SessionEnding).await }
 
 struct KeyboardOwner {
     lease: crate::input_ownership::Lease,
@@ -514,6 +521,25 @@ impl HostControl {
     }
     pub(crate) fn set_server_managed(&self,managed:bool) {self.server_managed.store(managed,Ordering::Release);}
     pub(crate) fn server_managed(&self)->bool {self.server_managed.load(Ordering::Acquire)}
+    pub(crate) fn keyboard_allowed(&self) -> bool { self.input_current.load(Ordering::Acquire) & 1 != 0 }
+    fn desktop_status(&self) -> Option<crate::host_lock::Status> {
+        let context = self.session.lock().unwrap().clone()?;
+        context.access.sessions.desktop_status(Some(context.session_id.as_deref()?))
+    }
+    async fn lock_desktop(self:Arc<Self>, channel:Arc<RTCDataChannel>, request:u64) {
+        if self.admin_busy.swap(true,Ordering::AcqRel) {
+            let _=send(&channel,Packet::DesktopLocked{request,error:Some(uu_i18n::text("另一项管理请求尚未完成").into())}).await; return;
+        }
+        struct Reset<'a>(&'a AtomicBool);
+        impl Drop for Reset<'_>{fn drop(&mut self){self.0.store(false,Ordering::Release);}}
+        let _reset=Reset(&self.admin_busy);
+        let context=self.session.lock().unwrap().clone();
+        let result=match context.filter(|c|c.session_id.is_some()) {
+            Some(context)=>tokio::task::spawn_blocking(move||context.access.sessions.lock_desktop(context.session_id.as_deref())).await.map_err(anyhow::Error::from).and_then(|r|r),
+            None=>Err(anyhow::anyhow!("当前主机不支持锁屏")),
+        };
+        let _=send(&channel,Packet::DesktopLocked{request,error:result.err().map(|e|e.to_string().chars().take(512).collect())}).await;
+    }
     fn admin_status(&self)->Packet {
         Packet::AdminStatus{available:self.session.lock().unwrap().as_ref().is_some_and(|s|s.access.sessions.administration.lock().unwrap().is_some())}
     }
@@ -759,6 +785,12 @@ impl HostControl {
                         };
                         if host.stopped.load(Ordering::Acquire){return;}
                         match packet {
+                            Some(Packet::LockDesktop{request})=>{tokio::spawn(host.clone().lock_desktop(channel.clone(),request));},
+                            Some(Packet::SessionEnding)=>{
+                                let context=host.session.lock().unwrap().clone();
+                                if let Some(context)=context {if let Some(id)=context.session_id {context.access.sessions.session_ending(&id);}}
+                                let _=send(&channel,Packet::SessionEndingAck).await;
+                            },
                             Some(Packet::Quality{request,settings})=>{
                                 if host.server_managed() {
                                     let _=send(&channel,Packet::QualityApplied{applied:crate::native_quality::Applied{request,settings,bitrate_kbps:0,error:Some(uu_i18n::text("画质由被控端服务面板控制").into())}}).await;
@@ -787,6 +819,7 @@ impl HostControl {
                                 let _ = send(&channel, Packet::Pong { sequence }).await;
                                 let _ = send(&channel, host.status()).await;
                                 let _ = send(&channel, host.admin_status()).await;
+                                if let Some(status)=host.desktop_status(){let _=send(&channel,Packet::DesktopStatus{status}).await;}
                                 let _ = send(&channel, Packet::ServerManaged{managed:host.server_managed()}).await;
                                 let _ = send(&channel,Packet::Telemetry{version:1,stages:host.timing.snapshot()}).await;
                                 if host.timing.video_e2e.enabled() {let _=send(&channel,Packet::InputTimingSupport{version:1}).await;}
@@ -812,6 +845,7 @@ impl HostControl {
                                 }
                                 let _ = send(&channel, host.status()).await;
                                 let _ = send(&channel, host.admin_status()).await;
+                                if let Some(status)=host.desktop_status(){let _=send(&channel,Packet::DesktopStatus{status}).await;}
                             }
                             Some(Packet::Input { event }) => {
                                 if !host
@@ -888,6 +922,7 @@ impl HostControl {
 }
 
 pub(crate) struct ViewerControl {
+    desktop:mpsc::Receiver<crate::host_lock::Command>,
     admin:mpsc::Receiver<crate::host_admin::Command>,
     gamepads:Option<crate::native_gamepad::Viewer>,
     media_epoch:u64,
@@ -907,6 +942,7 @@ impl ViewerControl {
     ) -> Self {
         let media_epoch=stats.native_media_epoch.load(Ordering::Acquire);
         let admin=stats.host_admin.attach();
+        let desktop=stats.desktop_lock.attach(&channel);
         *stats.native_quality_applied.lock().unwrap()=None;
         stats.control_open.store(0,Ordering::Release);
         stats.server_managed.store(false,Ordering::Release);
@@ -938,6 +974,7 @@ impl ViewerControl {
             if closed.native_media_epoch.load(Ordering::Acquire)!=media_epoch{return Box::pin(async {});}
             closed.control_open.store(0, Ordering::Release);
             closed.host_admin.disconnect();
+            closed.desktop_lock.retire();
             closed.capabilities.enable(Capability::Input, false);
             closed
                 .native_input_available
@@ -953,6 +990,9 @@ impl ViewerControl {
         channel.on_message(Box::new(move |message| {
             if incoming.native_media_epoch.load(Ordering::Acquire)!=media_epoch{return Box::pin(async {});}
             match parse(&message.data) {
+                Some(Packet::DesktopStatus{status})=>incoming.desktop_lock.status_received(status),
+                Some(Packet::DesktopLocked{request,error})=>incoming.desktop_lock.locked(request,error),
+                Some(Packet::SessionEndingAck)=>incoming.desktop_lock.ended(),
                 Some(Packet::QualityApplied{applied})=>{
                     let mut previous=incoming.native_quality_applied.lock().unwrap();
                     if previous.as_ref().is_none_or(|old|applied.request>=old.request) {
@@ -1028,6 +1068,7 @@ impl ViewerControl {
             Box::pin(async {})
         }));
         Self {
+            desktop,
             admin,
             gamepads:None,
             media_epoch,
@@ -1100,6 +1141,7 @@ impl ViewerControl {
         let mut sequence = 0u64;
         loop {
             tokio::select! {biased;
+                Some(crate::host_lock::Command::Lock(request))=self.desktop.recv()=>send(&self.channel,Packet::LockDesktop{request}).await?,
                 Some(command)=self.admin.recv()=>{
                     send(&self.channel,Packet::AdminRequest{request:command.id,command:command.request}).await?;
                 },
@@ -1515,6 +1557,29 @@ mod tests {
         host.stop().await;
     }
 
+    #[tokio::test]
+    async fn workstation_lock_requires_live_keyboard_permission_not_just_a_device_grant() {
+        use crate::{device_trust::{InputPermissions,Permissions},shared_host::SessionGate};
+        struct Desktop(AtomicU64);
+        impl crate::host_lock::Backend for Desktop {
+            fn desktop(&self)->Result<crate::host_lock::Desktop>{Ok(crate::host_lock::Desktop{session:1,logon:1,locked:false})}
+            fn lock(&self,_:crate::host_lock::Desktop)->Result<()>{self.0.fetch_add(1,Ordering::Relaxed);Ok(())}
+        }
+        let gate=Arc::new(SessionGate::default());let backend=Arc::new(Desktop(AtomicU64::new(0)));
+        gate.desktop.enable(backend.clone(),crate::host_lock::Policy::Restore);
+        let lease=gate.claim("viewer").unwrap();gate.connected(lease.id());
+        let host=HostControl::with_injector(true,Some(uu_capture::DesktopRect{x:0,y:0,width:640,height:480}),None,
+            Some(Box::new(Fixture{events:Arc::default(),releases:Arc::default()})),gate.input.clone()).await;
+        host.set_permissions(Permissions::CONTROL);gate.attach_control(lease.id(),host.clone());
+        gate.set_session_input(lease.id(),InputPermissions::NONE).unwrap();
+        assert!(!gate.desktop_status(Some(lease.id())).unwrap().can_lock);
+        assert!(gate.lock_desktop(Some(lease.id())).is_err());assert_eq!(backend.0.load(Ordering::Relaxed),0);
+        gate.set_session_input(lease.id(),InputPermissions{keyboard:true,..Default::default()}).unwrap();
+        assert!(gate.desktop_status(Some(lease.id())).unwrap().can_lock);
+        gate.lock_desktop(Some(lease.id())).unwrap();assert_eq!(backend.0.load(Ordering::Relaxed),1);
+        gate.set_session_input(lease.id(),InputPermissions::NONE).unwrap();assert!(gate.lock_desktop(Some(lease.id())).is_err());
+        host.stop().await;
+    }
     #[tokio::test]
     async fn game_room_admission_is_view_only_and_uses_the_admission_policy() {
         use crate::{device_trust::{InputPermissions, Permissions},host_input::Policy,shared_host::SessionGate};

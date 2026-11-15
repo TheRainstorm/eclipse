@@ -63,6 +63,7 @@ mod sharing_ui;
 mod service_ui;
 mod server_config_ui;
 mod remote_admin_ui;
+mod remote_lock_ui;
 mod host_sessions;
 mod pairing_ui;
 mod onboarding;

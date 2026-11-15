@@ -184,6 +184,7 @@ impl App {
     }
 
     pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
+        self.poll_remote_lock(ctx);
         if !self.fullscreen { self.connection_bar(ctx); }
         let was_open = self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open;
         let mut controls = self.stream_controls(ctx);

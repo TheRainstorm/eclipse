@@ -947,6 +947,7 @@ impl super::App {
                                             }
 
                                         }
+                                        self.remote_lock_menu(ui);
                                     });
                                     }
                                     {
@@ -987,9 +988,7 @@ impl super::App {
                                         )
                                         .clicked()
                                         {
-                                            self.stream_menu.open = false;
-                                            if let Some(tabs)=&self.workspace_tabs {tabs.actions.borrow_mut().push(super::stream_workspace::Action::CloseGroup(tabs.active));}
-                                            else{self.disconnect();}
+                                            self.current_stream_exit();
                                         }
                                     });
                                 },

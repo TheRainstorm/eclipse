@@ -55,7 +55,7 @@ pub struct SessionContext {
     /// The authenticated session lease, independent of peer/device identity.
     pub session_id: Option<String>,
 }
-struct Active { peer: String, record: crate::connection_history::Record, stop: watch::Sender<bool>, status: crate::native::HostStatus, completed: Option<bool>, control: Option<Arc<crate::native_control::HostControl>>, input: crate::device_trust::InputPermissions, guest: bool }
+struct Active { peer: String, record: crate::connection_history::Record, stop: watch::Sender<bool>, status: crate::native::HostStatus, completed: Option<bool>, explicit_end: bool, control: Option<Arc<crate::native_control::HostControl>>, input: crate::device_trust::InputPermissions, guest: bool }
 #[derive(Default)]
 pub struct SessionGate {
     active: Mutex<HashMap<String, Active>>,
@@ -63,6 +63,7 @@ pub struct SessionGate {
     pub input: Arc<crate::input_ownership::Authority>,
     pub administration: Mutex<Option<Arc<crate::host_admin::Service>>>,
     pub history: crate::connection_history::History,
+    pub(crate) desktop: crate::host_lock::State,
 }
 impl SessionGate {
     pub fn with_history(path: std::path::PathBuf) -> Self {
@@ -76,6 +77,7 @@ impl SessionGate {
         let peer = session.peer.clone();
         let notify = !active.values().any(|s| s.peer == peer && s.record.connected_at.is_some());
         self.history.connected(&mut active.get_mut(id).unwrap().record, notify);
+        self.desktop.connected();
     }
     /// Reserve an idle host while its verified replacement is activated. Both
     /// admission and this reservation hold `active`, so a new stream cannot
@@ -116,16 +118,17 @@ impl SessionGate {
         // accepted machine-wide setup transaction. Existing streams continue.
         anyhow::ensure!(!crate::virtual_display::Manager::shared().preparation_in_flight(),
             "{}",uu_i18n::text("源机正在准备虚拟副屏，请在准备完成后连接。"));
+        if active.is_empty() { self.desktop.begin(); }
         let session = uuid::Uuid::new_v4().to_string();
         let (stop, receiver) = watch::channel(false);
         let record = self.history.begin(&session, peer, name);
         let guest=self.input.priority.policy().game_room;
         let input = if guest { crate::device_trust::InputPermissions::NONE } else { crate::device_trust::InputPermissions::ALL };
-        active.insert(session.clone(), Active { peer: peer.into(), record, stop, status: crate::native::HostStatus::Starting, completed: None, control: None, input, guest });
+        active.insert(session.clone(), Active { peer: peer.into(), record, stop, status: crate::native::HostStatus::Starting, completed: None, explicit_end: false, control: None, input, guest });
         Ok(SessionLease { gate: self.clone(), session, receiver,temporary:None })
     }
     pub fn disconnect(&self) {
-        for active in self.active.lock().unwrap().values() { active.stop.send_replace(true); }
+        for active in self.active.lock().unwrap().values_mut() { active.explicit_end = true; active.stop.send_replace(true); }
     }
     pub fn revoke(&self, peer: &str) {
         for active in self.active.lock().unwrap().values().filter(|s| s.peer == peer) { active.stop.send_replace(true); }
@@ -184,14 +187,39 @@ impl SessionGate {
             .context(uu_i18n::text("该会话尚未建立显示器控制"))?;
         control.select_display(id)
     }
+    pub(crate) fn configure_lock_policy(&self, policy: crate::host_lock::Policy) { self.desktop.configure(policy); }
+    pub(crate) fn desktop_status(&self, id: Option<&str>) -> Option<crate::host_lock::Status> {
+        let active = self.active.lock().unwrap();
+        let allowed = id.is_none() || id.and_then(|id|active.get(id)).and_then(|s|s.control.as_ref())
+            .is_some_and(|control|control.keyboard_allowed());
+        self.desktop.status(active.len(), allowed)
+    }
+    pub(crate) fn lock_desktop(&self, id: Option<&str>) -> Result<()> {
+        let active = self.active.lock().unwrap();
+        if let Some(id) = id {
+            let session = active.get(id).context("会话已经结束")?;
+            ensure!(session.record.connected_at.is_some() && session.control.as_ref().is_some_and(|c|c.keyboard_allowed()),
+                "当前会话没有锁定远端的权限");
+        }
+        self.desktop.lock_now()
+    }
+    #[cfg(test)]
+    pub(crate) fn explicit_session_end(&self,id:&str)->bool {self.active.lock().unwrap().get(id).is_some_and(|a|a.explicit_end)}
+    pub(crate) fn session_ending(&self, id: &str) {
+        if let Some(active) = self.active.lock().unwrap().get_mut(id) { active.explicit_end = true; }
+    }
+    pub(crate) fn expire_desktop_lock(&self, shutdown: bool) {
+        let active = self.active.lock().unwrap();
+        if active.is_empty() { self.desktop.expire(std::time::Instant::now(), shutdown); }
+    }
     pub fn disconnect_session(&self, id: &str) {
-        if let Some(active) = self.active.lock().unwrap().get(id) { active.stop.send_replace(true); }
+        if let Some(active) = self.active.lock().unwrap().get_mut(id) { active.explicit_end = true; active.stop.send_replace(true); }
     }
 }
 pub struct SessionLease { gate: Arc<SessionGate>, session: String, receiver: watch::Receiver<bool>,temporary:Option<crate::device_auth::TemporaryGrant> }
 impl SessionLease {
     pub fn id(&self)->&str {&self.session}
-    pub fn cancel(&self) { self.gate.disconnect_session(&self.session); }
+    pub fn cancel(&self) { if let Some(active) = self.gate.active.lock().unwrap().get(&self.session) { active.stop.send_replace(true); } }
     pub fn stopped(&self) -> watch::Receiver<bool> { self.receiver.clone() }
     pub fn source(&self, source: crate::connection_history::Source, address: Option<std::net::IpAddr>) {
         if let Some(active) = self.gate.active.lock().unwrap().get_mut(&self.session) {
@@ -207,9 +235,11 @@ impl SessionLease {
     }
 }
 impl Drop for SessionLease { fn drop(&mut self) {
-    if let Some(mut active) = self.gate.active.lock().unwrap().remove(&self.session) {
+    let mut sessions = self.gate.active.lock().unwrap();
+    if let Some(mut active) = sessions.remove(&self.session) {
         let successful = active.completed.unwrap_or(active.record.connected_at.is_some());
         self.gate.history.end(&mut active.record, successful);
+        if sessions.is_empty() { self.gate.desktop.end(active.explicit_end, std::time::Instant::now()); }
     }
 } }
 #[derive(Clone)]
