@@ -2,6 +2,9 @@
 """Prepare version-named release assets from verified platform build packages."""
 import argparse
 import copy
+import hashlib
+import json
+import zipfile
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -23,8 +26,16 @@ def prepare(input_dir, output_dir, tag, revision):
     if output.exists():
         raise ValueError('Release output directory already exists; use a fresh directory')
     packages = {}
+    plugins = []
+    manifests = {}
     for path in sorted(Path(input_dir).rglob('*')):
         if not path.is_file() or not path.name.endswith(('.zip', '.tar.gz')):
+            continue
+        plugin = download.PLUGIN_ARCHIVE.fullmatch(path.name)
+        if plugin:
+            if plugin[3] not in (revision[:12], tag):
+                raise ValueError('Plugin archive does not match release revision: ' + path.name)
+            plugins.append((path, plugin[1], plugin[2]))
             continue
         match = download.ARCHIVE.fullmatch(path.name)
         if not match:
@@ -37,6 +48,7 @@ def prepare(input_dir, output_dir, tag, revision):
         if manifest.get('source_commit') != revision:
             raise ValueError('Archive source does not match release revision: ' + path.name)
         packages[platform] = (path, suffix)
+        manifests[platform] = manifest
     if set(packages) != {'windows-x64', 'linux-x86_64'}:
         raise ValueError('Release requires one verified Windows and one verified Linux package')
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -65,6 +77,30 @@ def prepare(input_dir, output_dir, tag, revision):
                         renamed.pax_headers = {k: v for k, v in member.pax_headers.items() if k != 'path'}
                         archive.addfile(renamed, original.extractfile(member))
                 download.linux_manifest(destination)
+            records.append({'archive': destination.name, 'sha256': download.digest(destination)})
+        seen = set()
+        for source, plugin_id, target in plugins:
+            platform = 'windows-x64' if target == 'x86_64-pc-windows-gnu' else 'linux-x86_64'
+            identity = (plugin_id, target)
+            if identity in seen:
+                raise ValueError('Duplicate plugin archive for platform')
+            seen.add(identity)
+            prefix = 'plugins/' + plugin_id + '/'
+            with zipfile.ZipFile(source) as archive:
+                manifest = json.loads(archive.read(prefix + 'plugin.json'))
+                build = json.loads(archive.read(prefix + 'build.json'))
+                library = manifest['library']
+                if (manifest.get('id') != plugin_id or manifest.get('api_version') != 1
+                    or not manifests[platform].get('plugin_sdk_id')
+                    or manifest.get('sdk_id') != manifests[platform]['plugin_sdk_id']
+                    or build.get('sdk_id') != manifest.get('sdk_id')
+                    or build.get('source_commit') != revision or build.get('application_source_commit') != revision
+                    or build.get('target') != target or PurePosixPath(library).name != library
+                    or not all(n.startswith(prefix) and '/' not in n[len(prefix):] for n in archive.namelist())
+                    or hashlib.sha256(archive.read(prefix + library)).hexdigest() != manifest.get('library_sha256')):
+                    raise ValueError('Plugin source, SDK or payload does not match application: ' + source.name)
+            destination = stage / f'eclipse-plugin-{plugin_id}-{target}-{tag}.zip'
+            shutil.copy2(source, destination)
             records.append({'archive': destination.name, 'sha256': download.digest(destination)})
         (stage / 'SHA256SUMS').write_text(''.join(r['sha256'] + '  ' + r['archive'] + '\n' for r in records))
         # No partial output directory becomes visible if verification fails.

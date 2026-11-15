@@ -25,6 +25,7 @@ TAG = re.compile(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?')
 LABEL = rf'(?:[0-9a-f]{{12}}|{TAG.pattern})'
 ARCHIVE = re.compile(rf'(?:eclipse|uu-client)-(windows-x64|linux-x86_64)-({LABEL})\.(zip|tar\.gz)')
 SIGNAL_ARCHIVE = re.compile(rf'eclipse-signal-linux-x86_64-{LABEL}\.tar\.gz')
+PLUGIN_ARCHIVE = re.compile(rf'eclipse-plugin-([a-z0-9][a-z0-9-]{{0,63}})-(x86_64-pc-windows-gnu|x86_64-unknown-linux-gnu)-({LABEL})\.zip')
 
 
 def gh(arguments):
@@ -43,7 +44,7 @@ def checksums(text):
         if len(fields) != 2 or not re.fullmatch('[0-9a-fA-F]{64}', fields[0]):
             raise ValueError('Invalid SHA256SUMS')
         name = fields[1].removeprefix('*')
-        if not (ARCHIVE.fullmatch(name) or SIGNAL_ARCHIVE.fullmatch(name)) or name in result:
+        if not (ARCHIVE.fullmatch(name) or SIGNAL_ARCHIVE.fullmatch(name) or PLUGIN_ARCHIVE.fullmatch(name)) or name in result:
             raise ValueError('Unsafe or duplicate archive name in SHA256SUMS')
         result[name] = fields[0].lower()
     if not result:
