@@ -1,4 +1,6 @@
 {
+  "临时屏随当前进程退出清理；持久屏在程序退出后仍保持启用，下次启动会接管原设备。": "Temporary displays are removed when the process exits. Persistent displays stay enabled and are adopted on the next start.",
+  "由后台服务管理；持久屏在服务停止或更新时仍保持启用，手动禁用或删除才会断开。": "Managed by the background service. Persistent displays remain enabled while it stops or updates; disable or delete them explicitly to disconnect.",
   "不锁屏": "Do not lock",
   "恢复连接前的锁屏状态": "Restore the previous lock state",
   "始终锁屏": "Always lock",

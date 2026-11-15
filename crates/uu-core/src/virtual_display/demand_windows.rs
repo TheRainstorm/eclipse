@@ -143,7 +143,7 @@ fn recover_record(record: &Record) -> Result<()> {
     if let Some(base)=load()?.directory {driver::remove_monitor_configuration(&base,record.token)?;}
     Ok(())
 }
-pub(super) fn reconcile_owner(scope: &str) -> Result<()> {
+pub(super) fn reconcile_owner(scope: &str, retained: &BTreeSet<Uuid>) -> Result<()> {
     let mut state = load()?;
     let records: Vec<_> = state
         .records
@@ -152,6 +152,9 @@ pub(super) fn reconcile_owner(scope: &str) -> Result<()> {
         .cloned()
         .collect();
     for record in records {
+        // A ready persistent device outlives the previous process. Its next
+        // owner verifies the exact instance and acquires a new target claim.
+        if record.ready && retained.contains(&record.lease) { continue; }
         let _claim = record
             .target
             .as_ref()
@@ -206,8 +209,35 @@ fn select_configuration(
     }
     driver::demand_configuration(directory)
 }
+/// Adopt a completed device by its protected logical identity, never its name.
+fn adopt_ready(scope:&str,id:LeaseId)->Result<Option<(Target,Box<dyn Claim>)>> {
+    let mut state=load()?;
+    let Some(record)=state.records.iter().find(|r|r.scope==scope&&r.lease==id.0&&r.ready).cloned() else{return Ok(None);};
+    let Some(instance)=&record.instance else{return Ok(None);};
+    if !driver::verify_demand_device(instance,&record.token.to_string(),true)? {return Ok(None);}
+    let mut targets=targets_for_instance(instance)?;
+    if targets.len()>1 {return Err(fail("持久虚拟显示器的目标身份不唯一，未接管或移除该设备。"));}
+    let Some(target)=targets.pop() else{return Err(Error::TargetPending);};
+    let claim=super::super::ownership_windows::claim(&target.key)?;
+    // Windows may change the adapter LUID after a reboot. The protected PnP
+    // instance and token remain authoritative; publish the fresh full key.
+    if record.target.as_ref()!=Some(&target.key) {
+        state.records.iter_mut().find(|r|r.token==record.token).unwrap().target=Some(target.key.clone());
+        save(&state)?;
+    }
+    Ok(Some((target,claim)))
+}
 pub(super) fn create_configured(scope:&str,id:LeaseId,saved:&BTreeSet<TargetKey>,name:&str,spec:Spec,position:Option<Position>,existing:&[(TargetKey,Spec)])->Result<(Target,Box<dyn Claim>)> {
     let before=snapshot()?;
+    if let Some((target,claim))=adopt_ready(scope,id)? {
+        if target.active && target.actual==Some(spec) {return Ok((target,claim));}
+        let mut desired=owned_placements(&before.scene.active,existing)?;
+        desired.push((target.key.clone(),spec,position));
+        // This is an existing persistent device, not a newly created one. A
+        // reconnect failure must retain it and its ledger for explicit retry.
+        configure_owned_set(&desired,Some(&before),None)?;
+        return Ok((inventory(Some(scope))?.targets.into_iter().find(|t|t.key==target.key&&t.active).ok_or(Error::UnknownSlot)?,claim));
+    }
     let mut desired=owned_placements(&before.scene.active,existing)?;
     let (target,claim)=create_named(scope,id,saved,name,spec)?;
     desired.push((target.key.clone(),spec,position));
@@ -560,7 +590,7 @@ mod live_tests {
             })();
             // Clean exact resources even when an assertion above fails. Never
             // restore a desktop snapshot or remove unrelated adapters.
-            let cleanup=reconcile_owner(&scope);
+            let cleanup=reconcile_owner(&scope,&BTreeSet::new());
             let final_state=load().unwrap();
             if cleanup.is_ok() && final_state.records.is_empty() && driver::demand_instances().unwrap().is_empty() {
                 if let Some(directory)=&final_state.directory {

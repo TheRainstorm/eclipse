@@ -225,7 +225,9 @@ impl Manager {
             ));
         }
         if state.file.as_ref().is_none_or(|old|old.directory!=file.directory) {
-            self.backend.configure_store(&file.directory,&saved.displays.iter().filter(|d|!d.target.monitor_path.is_empty()).map(|d|d.target.clone()).collect::<Vec<_>>())?;
+            self.backend.configure_store(&file.directory,
+                &saved.displays.iter().filter(|d|!d.target.monitor_path.is_empty()).map(|d|d.target.clone()).collect::<Vec<_>>(),
+                &saved.displays.iter().filter(|d|d.enabled&&d.persistent).map(|d|LeaseId(d.id)).collect::<Vec<_>>())?;
             // A temporary screen never reconnects just because the host starts.
             file.edit(|policy|{for display in &mut policy.displays {if !display.persistent {display.enabled=false;}}Ok(())})?;
         }
@@ -434,13 +436,13 @@ impl Manager {
             let display = match self.create_restored(&saved) {
                 Ok(display) => display,
                 Err(error) => {
-                    if self.has_queued_preparation() || matches!(error, Error::Claimed) {
+                    if self.has_queued_preparation() || matches!(error, Error::Claimed|Error::TargetPending) {
                         let mut state = self
                             .policy
                             .lock()
                             .map_err(|_| platform("saved display policy is poisoned"))?;
                         state.restore_pending = true;
-                        state.waiting_for_capacity = !matches!(error, Error::Claimed);
+                        state.waiting_for_capacity = !matches!(error, Error::Claimed|Error::TargetPending);
                     }
                     return Err(error);
                 }

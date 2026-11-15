@@ -280,6 +280,8 @@ pub enum Error {
     Preparation(preparation::Status),
     #[error("this virtual display is already leased by another host process")]
     Claimed,
+    #[error("持久虚拟显示器正在等待 Windows 枚举，原设备已保留，请稍后重试")]
+    TargetPending,
     #[error("invalid virtual display size or refresh rate")]
     InvalidSpec,
     #[error("this virtual display belongs to another session or was created manually")]
@@ -365,7 +367,7 @@ trait Claim: Send + Sync {}
 
 trait Backend: Send + Sync {
     fn on_demand(&self) -> bool { false }
-    fn configure_store(&self, _directory:&std::path::Path, _saved:&[TargetKey]) -> Result<()> { Ok(()) }
+    fn configure_store(&self, _directory:&std::path::Path, _saved:&[TargetKey], _retained:&[LeaseId]) -> Result<()> { Ok(()) }
     fn prepare_on_demand(&self, _package:Option<&[(String,Vec<u8>)]>) -> Result<()> { Err(Error::Unsupported) }
     fn allocate(&self, _id:LeaseId) -> Result<Option<(Target,Box<dyn Claim>)>> { Ok(None) }
     fn allocate_configured(&self,id:LeaseId,_name:&str,_spec:Spec,_position:Option<Position>,_existing:&[(TargetKey,Spec)]) -> Result<Option<(Target,Box<dyn Claim>)>> {self.allocate(id)}
@@ -847,7 +849,7 @@ impl Manager {
             cleanup_pending: false,
             last_error: None,
         };
-        let activation=if self.backend.allocation_configures_mode() {Ok(target.clone())}else if self.backend.on_demand()&&saved.is_some()&&target.active {self.backend.reconfigure(&target.key,spec)}else if self.backend.on_demand() {self.backend.activate(&target.key,spec)}else if saved.is_some()&&target.active {Ok(target.clone())}else{self.backend.activate(&target.key,spec)};
+        let activation=if self.backend.allocation_configures_mode() {Ok(target.clone())}else if self.backend.on_demand()&&saved.is_some()&&target.active&&target.actual==Some(spec) {Ok(target.clone())}else if self.backend.on_demand()&&saved.is_some()&&target.active {self.backend.reconfigure(&target.key,spec)}else if self.backend.on_demand() {self.backend.activate(&target.key,spec)}else if saved.is_some()&&target.active {Ok(target.clone())}else{self.backend.activate(&target.key,spec)};
         match activation {
             Ok(observed) => {
                 display.active = observed.active;
@@ -1059,7 +1061,7 @@ impl Manager {
             }
             // Persisted targets intentionally outlive this process. A later
             // host must reacquire the recorded target under a fresh claim.
-            if !self.backend.on_demand() { _ownership.retain(|_,entry|entry.display.owner!=Owner::Manual||!entry.display.persistent); }
+            _ownership.retain(|_,entry|entry.display.owner!=Owner::Manual||!entry.display.persistent||entry.display.cleanup_pending);
         }
         self.release_manual()
     }

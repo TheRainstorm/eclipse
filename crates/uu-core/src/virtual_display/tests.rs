@@ -9,6 +9,8 @@ const TEST_DISPLAY_LIMIT: u16 = 2;
 #[derive(Default)]
 struct Fake {
     on_demand: AtomicBool,
+    identities: Mutex<BTreeMap<LeaseId,TargetKey>>,
+    adopt_pending: AtomicBool,
     targets: Mutex<Vec<Target>>,
     fail_recover: AtomicBool,
     recover_calls: AtomicUsize,
@@ -43,11 +45,18 @@ impl Drop for FakeClaim {
 }
 impl Backend for Arc<Fake> {
     fn on_demand(&self)->bool {self.on_demand.load(Ordering::Relaxed)}
-    fn allocate(&self,_id:LeaseId)->Result<Option<(Target,Box<dyn Claim>)>> {
+    fn allocate(&self,id:LeaseId)->Result<Option<(Target,Box<dyn Claim>)>> {
         if !self.on_demand() {return Ok(None);}
+        let previous=self.identities.lock().unwrap().get(&id).cloned();
+        if let Some(key)=previous {
+            if self.adopt_pending.load(Ordering::Relaxed){return Err(Error::TargetPending);}
+            let target=self.targets.lock().unwrap().iter().find(|t|t.key==key).cloned();
+            if let Some(target)=target {let claim=self.claim(&key)?;return Ok(Some((target,claim)));}
+        }
         let index=self.provision_calls.fetch_add(1,Ordering::SeqCst) as u32+1;
         let target=capacity_target(index);
         self.targets.lock().unwrap().push(target.clone());
+        self.identities.lock().unwrap().insert(id,target.key.clone());
         let claim=self.claim(&target.key)?;
         Ok(Some((target,claim)))
     }
@@ -1120,7 +1129,7 @@ fn saved_policy(manager:&Manager)->std::path::PathBuf {
     path
 }
 #[test]
-fn on_demand_limits_create_no_targets_and_shutdown_preserves_only_persistent_intent() {
+fn on_demand_shutdown_keeps_persistent_device_and_restarts_without_recreation() {
     let (_,backend)=fixture();backend.targets.lock().unwrap().clear();backend.on_demand.store(true,Ordering::Relaxed);
     let first=another_manager(&backend);let path=saved_policy(&first);
     first.set_limit_persisted(1).unwrap();first.set_limit_persisted(2).unwrap();
@@ -1133,16 +1142,52 @@ fn on_demand_limits_create_no_targets_and_shutdown_preserves_only_persistent_int
     first.set_limit_persisted(1).unwrap();
     assert_eq!(backend.targets.lock().unwrap().len(),1);
     assert_eq!(first.status().unwrap().limit,16);
+    let key=first.lock().unwrap()[&persistent.id].target.clone();
+    let allocations=backend.provision_calls.load(Ordering::Relaxed);
+    let activations=backend.activated.lock().unwrap().len();
     first.shutdown_manual().unwrap();
-    assert!(backend.targets.lock().unwrap().is_empty());
+    assert_eq!(backend.targets.lock().unwrap().len(),1);
+    assert!(backend.targets.lock().unwrap()[0].active);
+    assert!(backend.claims.lock().unwrap().is_empty(),"normal shutdown releases only the process claim");
     assert_eq!(first.saved_records().unwrap().len(),1);
     let next=another_manager(&backend);next.configure_saved_displays(&path).unwrap();
+    backend.adopt_pending.store(true,Ordering::Relaxed);
+    assert!(matches!(next.restore_saved_displays(),Err(Error::TargetPending)));
+    assert!(next.saved_restore_pending());assert_eq!(backend.provision_calls.load(Ordering::Relaxed),allocations);
+    backend.adopt_pending.store(false,Ordering::Relaxed);
     next.restore_saved_displays().unwrap();
     assert_eq!(backend.targets.lock().unwrap().len(),1);
     assert_eq!(next.list().unwrap()[0].id,persistent.id);
+    assert_eq!(next.lock().unwrap()[&persistent.id].target,key);
+    assert_eq!(backend.provision_calls.load(Ordering::Relaxed),allocations);
+    assert_eq!(backend.activated.lock().unwrap().len(),activations);
+    assert!(backend.reconfigured.lock().unwrap().is_empty());
+    let competing=another_manager(&backend);competing.configure_saved_displays(&path).unwrap();
+    assert!(matches!(competing.restore_saved_displays(),Err(Error::Claimed)));
+    assert_eq!(backend.provision_calls.load(Ordering::Relaxed),allocations,"an active owner must prevent duplicate creation");
     next.remove(persistent.id).unwrap();
     assert!(backend.targets.lock().unwrap().is_empty());
     assert!(next.saved_records().unwrap().is_empty());
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn on_demand_exit_removes_only_temporary_displays_and_explicit_disable_still_removes_persistent() {
+    let (_,backend)=fixture();backend.targets.lock().unwrap().clear();backend.on_demand.store(true,Ordering::Relaxed);
+    let first=another_manager(&backend);let path=saved_policy(&first);
+    let durable=first.create_manual(Spec::default(),true).unwrap();
+    let temporary=first.create_manual(Spec::default(),false).unwrap();
+    let persistent_key=first.lock().unwrap()[&durable.id].target.clone();
+    let temporary_key=first.lock().unwrap()[&temporary.id].target.clone();
+    first.shutdown_manual().unwrap();
+    assert_eq!(*backend.removed.lock().unwrap(),vec![temporary_key]);
+    let targets=backend.targets.lock().unwrap().clone();assert_eq!(targets.len(),1);assert_eq!(targets[0].key,persistent_key);assert!(targets[0].active);
+    assert!(first.saved_records().unwrap().iter().any(|d|d.id==durable.id.0&&d.enabled&&d.persistent));
+    assert!(first.saved_records().unwrap().iter().any(|d|d.id==temporary.id.0&&!d.enabled&&!d.persistent));
+    let second=another_manager(&backend);second.configure_saved_displays(&path).unwrap();second.restore_saved_displays().unwrap();
+    second.set_persistent(durable.id,false).unwrap();second.shutdown_manual().unwrap();
+    assert!(backend.targets.lock().unwrap().is_empty());
+    assert_eq!(backend.removed.lock().unwrap().len(),2);
     std::fs::remove_dir_all(path).unwrap();
 }
 

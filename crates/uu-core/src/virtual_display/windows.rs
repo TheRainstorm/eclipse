@@ -156,11 +156,11 @@ fn scoped_worker<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
 
 impl Backend for Windows {
     fn on_demand(&self) -> bool { true }
-    fn configure_store(&self, directory:&std::path::Path, saved:&[TargetKey]) -> Result<()> {
+    fn configure_store(&self, directory:&std::path::Path, saved:&[TargetKey], retained:&[LeaseId]) -> Result<()> {
         let scope=crate::service_profile::directory_key(directory).map_err(|e|Error::Platform(e.to_string()))?;
         *self.scope.lock().map_err(|_|Error::Platform("display owner is poisoned".into()))? = Some((scope.clone(),saved.iter().cloned().collect()));
         if crate::service_admin::windows::require_administrator().is_ok() {
-            scoped_worker(move||demand::reconcile_owner(&scope))??;
+            scoped_worker(move||demand::reconcile_owner(&scope,&retained.iter().map(|id|id.0).collect()))??;
             if let Err(error)=scoped_worker(demand::retire_idle_pool)? {tracing::warn!(%error,"legacy virtual display pool cleanup is waiting for its owner");}
         }
         Ok(())
