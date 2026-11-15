@@ -365,6 +365,20 @@ jobs:
             cargo build -p uu-capture --example wayland_recovery_probe --release --locked
             python3 tools/native/wayland_capture_recovery.py --probe target/release/examples/wayland_recovery_probe --output artifacts/native-capture-recovery
           fi
+      - name: Test keyboard restore with an isolated configuration
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          # Older immutable sources do not contain this regression fixture.
+          if rg -q 'fn delivered_ui_keys_keep_single_modifier_owner_on_restore' crates/uu-gui/src/main.rs; then
+            keyboard_root="$RUNNER_TEMP/keyboard-state"
+            mkdir -p "$keyboard_root"
+            touch "$keyboard_root/owner.token"
+            env ECLIPSE_KEYBOARD_TEST_ROOT="$keyboard_root" \
+              XDG_DATA_HOME="$keyboard_root/data" XDG_STATE_HOME="$keyboard_root/state" \
+              XDG_CONFIG_HOME="$keyboard_root/config" XDG_CACHE_HOME="$keyboard_root/cache" \
+              cargo test -p uu-gui --bin eclipse --release --features vaapi --locked \
+                delivered_ui_keys_keep_single_modifier_owner_on_restore -- --ignored --test-threads=1
+          fi
       - name: Package Windows
         if: matrix.platform == 'windows-x64'
         run: |

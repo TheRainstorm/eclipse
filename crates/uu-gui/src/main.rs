@@ -109,7 +109,7 @@ mod tests {use super::*;
     }
     #[test]
     #[ignore = "run alone with a new, private XDG_DATA_HOME"]
-    fn delivered_ui_keys_survive_native_capture_and_keep_focus_ownership() {
+    fn delivered_ui_keys_keep_single_modifier_owner_on_restore() {
         use std::sync::{Arc,atomic::Ordering::Relaxed};
         use raw_window_handle::{HandleError,WindowHandle,DisplayHandle,HasWindowHandle,HasDisplayHandle};
         struct NoWindow;
@@ -135,6 +135,7 @@ mod tests {use super::*;
         let (close,_)=tokio::sync::mpsc::unbounded_channel();
         app.controller=crate::connection::Controller::new(ControllerHandle{stopped:Arc::new(false.into()),events,frames,input:raw.clone(),native_input:Some(input),settings:raw,close,stats});
         app.stream_target=Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::NativeDevice("generated-keyboard".into()),alias:"Generated".into(),view_only:false});
+        app.onboarding_open=false;
         app.input_capture.request();
         let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let key=|pressed,repeat|egui::Event::Key{key:egui::Key::A,physical_key:Some(egui::Key::A),pressed,repeat,modifiers:Default::default()};
@@ -151,6 +152,43 @@ mod tests {use super::*;
                 }});
                 assert_eq!(next,uu_core::native_input::InputCommand::Key{usage:4,pressed});
             }
+        }
+        // Native routes own physical modifiers after the window is restored.
+        // egui can still hold the Ctrl/Alt snapshot from the restoring hotkey:
+        // its matching ups were consumed before reaching the GUI event queue.
+        // A fallback key must not synthesize a second modifier down from it.
+        let stale_modifiers=egui::Modifiers{ctrl:true,alt:true,..Default::default()};
+        for (window_capture,system_capture) in [(true,false),(true,true),(false,true)] {
+            app.release_all_keys();
+            while runtime.block_on(async {tokio::time::timeout(std::time::Duration::from_millis(5),receiver.next_protocol()).await}).is_ok() {}
+            app.native_window_keyboard=window_capture;app.native_keyboard_capture=system_capture;
+            let stale=egui::Event::Key{key:egui::Key::A,physical_key:Some(egui::Key::A),pressed:true,repeat:false,modifiers:stale_modifiers};
+            let _=ctx.run(egui::RawInput{focused:true,..Default::default()},|ctx|app.forward_keyboard_events(ctx,std::slice::from_ref(&stale)));
+            let next=runtime.block_on(async {loop {
+                match tokio::time::timeout(std::time::Duration::from_millis(100),receiver.next_protocol()).await.unwrap().unwrap() {
+                    uu_core::native_input::ProtocolCommand::Input(value)=>break value,
+                    _=>{},
+                }
+            }});
+            assert_eq!(next,uu_core::native_input::InputCommand::Key{usage:4,pressed:true},
+                "native capture must not replay stale GUI modifiers after restore");
+            assert!(app.pressed_vks.is_empty(),"GUI snapshots cannot acquire native modifier ownership");
+            assert!(runtime.block_on(async {tokio::time::timeout(std::time::Duration::from_millis(5),receiver.next_protocol()).await}).is_err());
+        }
+        // A GUI-owned input stream still needs its aggregate modifiers.
+        app.release_all_keys();
+        while runtime.block_on(async {tokio::time::timeout(std::time::Duration::from_millis(5),receiver.next_protocol()).await}).is_ok() {}
+        app.native_window_keyboard=false;app.native_keyboard_capture=false;
+        let shifted=egui::Event::Key{key:egui::Key::A,physical_key:Some(egui::Key::A),pressed:true,repeat:false,modifiers:egui::Modifiers{shift:true,..Default::default()}};
+        let _=ctx.run(egui::RawInput{focused:true,..Default::default()},|ctx|app.forward_keyboard_events(ctx,std::slice::from_ref(&shifted)));
+        for usage in [225,4] {
+            let next=runtime.block_on(async {tokio::time::timeout(std::time::Duration::from_millis(100),receiver.next_protocol()).await.unwrap().unwrap()});
+            assert!(matches!(next,uu_core::native_input::ProtocolCommand::Input(uu_core::native_input::InputCommand::Key{usage:actual,pressed:true}) if actual==usage));
+        }
+        let _=ctx.run(egui::RawInput{focused:true,..Default::default()},|ctx|app.forward_keyboard_events(ctx,&[key(false,false)]));
+        for usage in [225,4] {
+            let next=runtime.block_on(async {tokio::time::timeout(std::time::Duration::from_millis(100),receiver.next_protocol()).await.unwrap().unwrap()});
+            assert!(matches!(next,uu_core::native_input::ProtocolCommand::Input(uu_core::native_input::InputCommand::Key{usage:actual,pressed:false}) if actual==usage));
         }
         for (focused,view_only,local_ui) in [(false,false,false),(true,true,false),(true,false,true)] {
             app.view_only=view_only;app.displays.menu_open=local_ui;
@@ -1069,6 +1107,10 @@ impl App {
     }
 
     fn sync_modifiers(&mut self, modifiers: egui::Modifiers) {
+        // Native routing owns modifier downs and ups. egui can retain an old
+        // snapshot when those messages were consumed, including on focus return;
+        // replaying it would leave the remote modifier down without a new up.
+        if self.native_window_keyboard || self.native_keyboard_capture { return; }
         for (vk, down, index) in [
             (0xA2, modifiers.ctrl, 0),
             (0xA0, modifiers.shift, 1),
