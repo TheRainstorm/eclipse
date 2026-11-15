@@ -798,6 +798,18 @@ pub fn import_plugins(source: PathBuf) -> Result<()> {
     let _lock = installation_lock()?;
     import_plugins_locked(source)
 }
+fn plugin_source_directory(path: &Path, required: bool) -> Result<()> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        // Plugins may have no private data yet, even when enabled. This is
+        // independent of whether they declare optional files for import.
+        Err(error) if !required && error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("检查插件目录失败：{}", path.display())),
+    };
+    ensure!(meta.is_dir() && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+        "插件目录必须是普通目录：{}", path.display());
+    Ok(())
+}
 fn import_plugins_locked(source: PathBuf) -> Result<()> {
     require_data_profile(&source)?;
     let paths = Paths::discover()?;
@@ -826,11 +838,12 @@ fn import_plugins_locked(source: PathBuf) -> Result<()> {
     let mut total=0usize;
     for plugin in selected.into_iter().filter(|p|preferences.get(&p.manifest.id).enabled) {
         ensure!(plugin.compatible(),"插件 {} 与当前程序 SDK 不匹配",plugin.manifest.id);
-        for directory in [source.join("plugins"),source.join("plugins").join(&plugin.manifest.id),source_program.join("plugins"),plugin.directory.clone()] {
-            let meta=fs::symlink_metadata(directory)?;
-            ensure!(meta.is_dir()&&meta.file_attributes()&FILE_ATTRIBUTE_REPARSE_POINT==0,"插件目录不能是重解析点");
+        for (directory, required) in [(source.join("plugins"),false),(source.join("plugins").join(&plugin.manifest.id),false),
+            (source_program.join("plugins"),true),(plugin.directory.clone(),true)] {
+            plugin_source_directory(&directory, required).with_context(||format!("检查插件 {} 的同步来源失败",plugin.manifest.id))?;
         }
-        let library=regular(&plugin.directory.join(&plugin.manifest.library),256*1024*1024)?;
+        let library=regular(&plugin.directory.join(&plugin.manifest.library),256*1024*1024)
+            .with_context(||format!("读取插件 {} 的程序文件失败：{}",plugin.manifest.id,plugin.manifest.library))?;
         ensure!(hex::encode(Sha256::digest(&library))==plugin.manifest.library_sha256.to_ascii_lowercase(),"插件 {} 完整性校验失败",plugin.manifest.id);
         let program=target_program.join("plugins").join(&plugin.manifest.id);
         let data=paths.runtime_config()?.at("plugins").join(&plugin.manifest.id);
@@ -874,6 +887,19 @@ fn import_plugins_locked(source: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plugin_sync_allows_missing_private_data_but_requires_program_directories() {
+        let root=std::env::temp_dir().join(format!("eclipse-plugin-sync-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let missing=root.join("not-created-yet");
+        assert!(plugin_source_directory(&missing,false).is_ok());
+        assert!(plugin_source_directory(&missing,true).is_err());
+        assert!(!missing.exists(),"preflight must not create private data directories");
+        fs::write(root.join("file"),b"not a directory").unwrap();
+        assert!(plugin_source_directory(&root.join("file"),false).is_err());
+        assert!(plugin_source_directory(&root,true).is_ok());
+        fs::remove_dir_all(&root).unwrap();
+    }
     #[test]
     fn service_and_unassigned_sessions_cannot_supply_an_installation_owner() {
         assert!(interactive_owner(0).is_err());
