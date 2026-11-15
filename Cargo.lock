@@ -5418,7 +5418,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uu-capture"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -5442,7 +5442,7 @@ dependencies = [
 
 [[package]]
 name = "uu-cli"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5467,7 +5467,7 @@ dependencies = [
 
 [[package]]
 name = "uu-clipboard"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5479,7 +5479,7 @@ dependencies = [
 
 [[package]]
 name = "uu-core"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5525,7 +5525,7 @@ dependencies = [
 
 [[package]]
 name = "uu-gui"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5571,7 +5571,7 @@ dependencies = [
 
 [[package]]
 name = "uu-i18n"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -5580,7 +5580,7 @@ dependencies = [
 
 [[package]]
 name = "uu-i18n-macros"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5590,7 +5590,7 @@ dependencies = [
 
 [[package]]
 name = "uu-input"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "anyhow",
  "cc",
@@ -5612,7 +5612,7 @@ dependencies = [
 
 [[package]]
 name = "uu-media"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "anyhow",
  "audiopus_sys",
@@ -5637,7 +5637,7 @@ dependencies = [
 
 [[package]]
 name = "uu-plugin-sdk"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "animal-island-ui",
  "anyhow",
@@ -5667,7 +5667,7 @@ dependencies = [
 
 [[package]]
 name = "uu-proto"
-version = "0.24.6"
+version = "0.24.7"
 dependencies = [
  "base64 0.22.1",
  "bytes",
