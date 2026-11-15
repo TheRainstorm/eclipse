@@ -1,0 +1,89 @@
+name: Verify built keyboard regression
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: 'Successful tagged Build and release run ID'
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  keyboard:
+    name: Run keyboard regression from verified Windows build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve successful release build
+        id: build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BUILD_RUN_ID -notmatch '^\d+$') { throw 'Invalid build run ID' }
+          $json = gh api "repos/$env:GH_REPO/actions/runs/$env:BUILD_RUN_ID"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read the build run' }
+          $build = $json | ConvertFrom-Json
+          if ($build.name -ne 'Build and release' -or $build.conclusion -ne 'success' -or
+              $build.event -ne 'push' -or $build.head_branch -notmatch '^v\d+\.\d+\.\d+' -or
+              $build.head_sha -notmatch '^[0-9a-f]{40}$') { throw 'Expected a successful tagged build' }
+          "source_commit=$($build.head_sha)" >> $env:GITHUB_OUTPUT
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: eclipse-windows-x64
+          path: downloads
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: validation-windows-fixtures
+          path: platform-validation
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify package and run isolated keyboard regression
+        shell: pwsh
+        env:
+          SOURCE_COMMIT: ${{ steps.build.outputs.source_commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = @(Get-ChildItem downloads -Filter '*.zip')
+          if ($zip.Count -ne 1) { throw 'Expected one Windows package' }
+          $unpack = Join-Path $env:RUNNER_TEMP 'keyboard-build'
+          Expand-Archive -LiteralPath $zip[0].FullName -DestinationPath $unpack
+          $manifest = Get-Content -Raw -Encoding UTF8 (Join-Path $unpack 'version.json') | ConvertFrom-Json
+          if ($manifest.source_commit -ne $env:SOURCE_COMMIT) { throw 'Package source mismatch' }
+          foreach ($item in $manifest.sha256.PSObject.Properties) {
+            if ((Get-FileHash -LiteralPath (Join-Path $unpack $item.Name) -Algorithm SHA256).Hash -ne $item.Value) {
+              throw 'Payload checksum mismatch'
+            }
+          }
+          $tester = Join-Path $unpack 'keyboard-tests.exe'
+          Copy-Item -LiteralPath 'platform-validation/keyboard-tests.exe' -Destination $tester
+          $root = Join-Path $env:RUNNER_TEMP 'keyboard-state'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          New-Item -ItemType File -Path (Join-Path $root 'owner.token') -Force | Out-Null
+          $env:ECLIPSE_KEYBOARD_TEST_ROOT = $root
+          $env:ECLIPSE_PROFILE_DIR = Join-Path $root 'profile'
+          $env:XDG_DATA_HOME = Join-Path $root 'data'
+          $env:XDG_STATE_HOME = Join-Path $root 'state'
+          $env:XDG_CONFIG_HOME = Join-Path $root 'config'
+          $env:XDG_CACHE_HOME = Join-Path $root 'cache'
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          & $tester 'tests::delivered_ui_keys_keep_single_modifier_owner_on_restore' --exact --ignored --test-threads=1 --nocapture 2>&1 | Tee-Object artifacts/keyboard-regression.log | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Keyboard restore regression failed' }
+          $result = Get-Content -Raw artifacts/keyboard-regression.log
+          if ($result -notmatch 'test result: ok\. 1 passed') { throw 'Expected exactly one passing regression' }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: keyboard-regression-result
+          path: artifacts/keyboard-regression.log
+          if-no-files-found: warn
+          retention-days: 14

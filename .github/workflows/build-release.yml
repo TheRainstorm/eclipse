@@ -369,7 +369,7 @@ jobs:
         if: matrix.platform == 'linux-x86_64'
         run: |
           # Older immutable sources do not contain this regression fixture.
-          if rg -q 'fn delivered_ui_keys_keep_single_modifier_owner_on_restore' crates/uu-gui/src/main.rs; then
+          if grep -q 'fn delivered_ui_keys_keep_single_modifier_owner_on_restore' crates/uu-gui/src/main.rs; then
             keyboard_root="$RUNNER_TEMP/keyboard-state"
             mkdir -p "$keyboard_root"
             touch "$keyboard_root/owner.token"
