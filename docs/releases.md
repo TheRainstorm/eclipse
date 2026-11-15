@@ -1,6 +1,6 @@
 # 构建与版本发布
 
-当前稳定版：[0.24.5](releases/v0.24.5.md)；上一版：[0.24.4](releases/v0.24.4.md)，下载以 GitHub Releases 实际发布为准。[0.24.5-rc.1](releases/v0.24.5-rc.1.md)保留候选阶段的测试说明；后续 RC 用于本地构建验证。此前开发版：[0.23.5-dev.20261104](releases/v0.23.5-dev.20261104.md)、[0.23.4-dev.20261104](releases/v0.23.4-dev.20261104.md)、[0.23.3-dev.20261104](releases/v0.23.3-dev.20261104.md)、[0.23.2-dev.20261104](releases/v0.23.2-dev.20261104.md)。此前源码里程碑：[Eclipse v0.23.1](releases/v0.23.1.md)、[v0.21.2](releases/v0.21.2.md)。历史开发版：[0.21.3-dev.20261103](releases/v0.21.3-dev.20261103.md)。
+当前稳定版：[0.24.6](releases/v0.24.6.md)；上一版：[0.24.5](releases/v0.24.5.md)，下载以 GitHub Releases 实际发布为准。[0.24.5-rc.1](releases/v0.24.5-rc.1.md)保留候选阶段的测试说明；后续 RC 用于本地构建验证。此前开发版：[0.23.5-dev.20261104](releases/v0.23.5-dev.20261104.md)、[0.23.4-dev.20261104](releases/v0.23.4-dev.20261104.md)、[0.23.3-dev.20261104](releases/v0.23.3-dev.20261104.md)、[0.23.2-dev.20261104](releases/v0.23.2-dev.20261104.md)。此前源码里程碑：[Eclipse v0.23.1](releases/v0.23.1.md)、[v0.21.2](releases/v0.21.2.md)。历史开发版：[0.21.3-dev.20261103](releases/v0.21.3-dev.20261103.md)。
 
 服务端会话控制与多客户端同屏已合入0.24.4；[早期开发说明](releases/v0.25.0-dev.20261112.md)保留最初迭代背景，当前行为以正式版本说明为准。
 

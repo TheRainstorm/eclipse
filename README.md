@@ -47,6 +47,8 @@ Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应
 
 ## 开始使用
 
+**0.24.6** 增加串流结束后的锁屏策略、手动锁定远端及持久虚拟屏退出保留；修复本机输入检测与服务插件同步，内置必应并支持壁纸前后浏览和独立壁纸合集。详见[0.24.6 版本说明](docs/releases/v0.24.6.md)。
+
 **0.24.5** 改进桌面切换与无首图时的采集恢复、多客户端键鼠交接、Linux 托盘和闲置后输入恢复；修复 Windows 首次安装，增加 Wallhaven 壁纸来源，并统一发布预检和失败诊断。Windows/Linux 完整包使用版本标签命名，详见[0.24.5 版本说明](docs/releases/v0.24.5.md)。
 
 **0.24.4** 增加服务端逐会话权限、共享游戏厅、本机键鼠优先和悬浮球会话中心，支持Windows多客户端同屏；老板键只隐藏串流窗口。详见[0.24.4版本说明](docs/releases/v0.24.4.md)。Windows和Linux完整包由GitHub CI构建，正式资产以Releases为准。自建连接服务说明见[部署指南](docs/connection-service.md)。
@@ -87,7 +89,7 @@ python3 tools/release/download.py
 
 ## 可选 UU 兼容插件
 
-插件在[独立仓库](https://github.com/TheRainstorm/uu-client-plugins)分发。下载与主程序 SDK 匹配的版本，解压到软件目录，使文件位于 `plugins/uu/`，重启 Eclipse 后在“应用设置 → 插件”手动启用。
+UU 插件在[独立仓库](https://github.com/TheRainstorm/uu-client-plugins)分发；壁纸合集插件随本仓库 Release 提供对应平台的独立附件。下载与主程序 SDK 匹配的版本，解压到软件目录，使文件位于 `plugins/uu/`，重启 Eclipse 后在“应用设置 → 插件”手动启用。
 
 三个模块可分别开关：**UU 兼容客户端**提供原设备列表和远程协助；**UU 账号连接服务**为原生设备提供账号寻址；**UU 兼容服务器（实验性）**提供官方客户端连接本机的兼容入口。允许官方中转默认关闭，只有显式开启后才允许无法 P2P 时使用官方中转。真实官方手机互通仍待验收。[插件安装与默认值](docs/plugins.md)
 
