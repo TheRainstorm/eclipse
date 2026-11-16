@@ -673,6 +673,11 @@ impl App {
         }
         let mut frames = Vec::new();
         while let Ok(f) = h.frames.try_recv_observed_image() {
+            if f.1.is_some_and(|frozen|frozen.receive.is_some()) {
+                if let Some(observation)=video_texture::frame_observation::FrameObservation::new(&h.stats,&f.0,f.1) {
+                    observation.trace(uu_core::pipeline_trace::Stage::MailboxTake);
+                }
+            }
             frames.push(f);
         }
         let mut arrived=Vec::new();

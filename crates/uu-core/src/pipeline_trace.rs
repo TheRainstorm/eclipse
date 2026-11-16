@@ -202,6 +202,25 @@ impl Trace {
             s.rows[i].at_us[stage as usize].get_or_insert(at);
         }
     }
+    /// Observe the exact image frozen at decoder publication. Render hooks
+    /// must not resolve a reused PTS to a newer source or wait on trace work.
+    pub fn observed_image(&self, image:ImageIdentity, stage:Stage) -> bool {
+        if !self.enabled { return false; }
+        self.observed_image_at(image,stage,Instant::now())
+    }
+    pub fn observed_image_at(&self, image:ImageIdentity, stage:Stage, observed:Instant) -> bool {
+        if !self.enabled { return false; }
+        let at=self.offset(observed);
+        let Ok(mut s)=self.state.try_lock() else { return false; };
+        let Some(i)=Self::index(&s,image.row_id) else { return false; };
+        let row=&mut s.rows[i];
+        if (row.epoch,row.track,row.ssrc,row.rtp,row.generation,row.pts_us)
+            != (image.media_epoch,image.track,image.ssrc,image.rtp_timestamp,Some(image.decode_generation),Some(image.pts_us)) {
+            return false;
+        }
+        row.at_us[stage as usize].get_or_insert(at);
+        true
+    }
     pub fn report(&self) -> Option<serde_json::Value> {
         if !self.enabled {
             return None;
@@ -256,6 +275,34 @@ mod tests {
         assert!(t.image_identity(2,0,0).is_none());
         let _held=t.state.lock().unwrap();
         assert!(t.image_identity(1,0,0).is_none());
+    }
+    #[test]
+    fn render_stages_follow_frozen_identity_across_pts_reuse_and_do_not_wait() {
+        let t=Trace::new(true);
+        t.packet(1,0,9,100,true,Instant::now());
+        t.frame(1,0,9,100,Stage::DecodeStart,Some((0,3)));
+        let old=t.image_identity(1,0,0).unwrap();
+        t.packet(1,0,10,200,true,Instant::now());
+        t.frame(1,0,10,200,Stage::DecodeStart,Some((0,4)));
+        assert!(t.observed_image(old,Stage::MailboxTake));
+        let submitted=Instant::now();
+        assert!(t.observed_image_at(old,Stage::Draw,submitted));
+        let report=t.report().unwrap();
+        let first=report["frames"][0]["at_us"][7].clone();
+        assert_eq!(first,t.offset(submitted));
+        assert!(report["frames"][1]["at_us"][6].is_null());
+        assert!(report["frames"][1]["at_us"][7].is_null());
+        assert!(t.observed_image(old,Stage::Draw));
+        assert_eq!(t.report().unwrap()["frames"][0]["at_us"][7],first,"repainting does not refresh first draw");
+        for changed in [ImageIdentity{ssrc:10,..old},ImageIdentity{decode_generation:4,..old},ImageIdentity{media_epoch:2,..old}] {
+            assert!(!t.observed_image(changed,Stage::Draw));
+        }
+        let held=t.state.lock().unwrap();
+        assert!(!t.observed_image(old,Stage::Draw));
+        drop(held);
+        for n in 201..201+LIMIT {t.packet(1,0,10,n as u32,true,Instant::now());}
+        assert!(!t.observed_image(old,Stage::Draw),"evicted identity cannot attach to a reused row slot");
+        assert!(!Trace::new(false).observed_image(old,Stage::Draw));
     }
     #[test]
     fn wrap_duplicates_reorder_and_epoch_are_distinct() {

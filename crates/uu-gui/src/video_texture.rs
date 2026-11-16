@@ -326,6 +326,14 @@ impl VideoTexture {
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
+            if let Some(observation)=self.fallback_observation.as_ref().filter(|o|o.tracing()).cloned() {
+                ui.painter().add(egui::PaintCallback {
+                    rect,
+                    callback:Arc::new(eframe::egui_glow::CallbackFn::new(move |_,_| {
+                        observation.trace(uu_core::pipeline_trace::Stage::Draw);
+                    })),
+                });
+            }
             if let (Some(cursor),Some(background))=(&*self.cursor.lock().unwrap(),&self.fallback_pixels) {
                 self.fallback_cursor.lock().unwrap().paint(ui,rect,cursor,background);
             }
@@ -373,6 +381,7 @@ struct Planes {
     color: YuvColor,
     paint_timings: video_timing::Timings,
     pending: Option<(RawFrame, YuvColor,Option<FrameObservation>)>,
+    observation:Option<FrameObservation>,
     uv_scale_uniform: Option<glow::UniformLocation>,
     dma_active: bool,
     d3d_active: bool,
@@ -487,6 +496,7 @@ impl Planes {
             color: YuvColor::default(),
             paint_timings: Default::default(),
             pending: None,
+            observation:None,
             uv_scale_uniform,
             dma_active: false,
             d3d_active: false,
@@ -695,6 +705,7 @@ impl Planes {
                             self.layout = Some(f.format);
                             self.color = color;
                             self.d3d_active = true;
+                            self.observation=observation;
                         }
                         Err(error) => {
                             eprintln!("D3D11 GPU video unavailable, using readback: {error}");
@@ -715,6 +726,7 @@ impl Planes {
                             self.layout = Some(f.format);
                             self.color = color;
                             self.dma_active = true;
+                            self.observation=observation;
                         }
                         Ok(false) => {
                             self.pending = Some((f, color,observation));
@@ -792,6 +804,7 @@ impl Planes {
                 self.size = [f.width, f.height];
                 self.layout = Some(f.format);
                 self.color = color;
+                self.observation=observation;
             }
         }
         let uploaded=started.elapsed().as_secs_f64();
@@ -864,6 +877,7 @@ impl Planes {
         self.cursor.bind(gl);
         let configured=started.elapsed().as_secs_f64();
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        if let Some(observation)=&self.observation {observation.trace(uu_core::pipeline_trace::Stage::Draw);}
         let drawn=started.elapsed().as_secs_f64();
         #[cfg(target_os = "linux")]
         if self.dma_active {

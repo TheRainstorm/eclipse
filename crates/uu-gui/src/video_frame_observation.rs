@@ -92,6 +92,18 @@ impl FrameObservation {
             && self.identity.token.is_none_or(|token| stats.video_e2e.current_token(token.into())))
         .then_some(stats)
     }
+    pub(crate) fn tracing(&self) -> bool { self.identity.receive.is_some() }
+    /// This metadata belongs to these pixels, including an older converted
+    /// image offered while a newer pending image is deferred.
+    pub(crate) fn trace(&self, stage:uu_core::pipeline_trace::Stage) -> bool {
+        let Some(image)=self.identity.receive else { return false; };
+        self.current_stats().is_some_and(|stats|stats.pipeline_trace.observed_image(image,stage))
+    }
+    #[cfg(windows)]
+    pub(crate) fn trace_at(&self, stage:uu_core::pipeline_trace::Stage, observed:std::time::Instant) -> bool {
+        let Some(image)=self.identity.receive else { return false; };
+        self.current_stats().is_some_and(|stats|stats.pipeline_trace.observed_image_at(image,stage,observed))
+    }
     #[cfg(any(windows, test))]
     pub(crate) fn same_display_owner(&self, other: &Self) -> bool {
         Weak::ptr_eq(&self.stats, &other.stats)

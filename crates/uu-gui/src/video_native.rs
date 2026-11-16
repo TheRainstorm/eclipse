@@ -432,7 +432,8 @@ impl Presenter for NativePresenter {
         });
         let unchanged = self.reuse_ui && self.inspection.is_none()
             && scene.is_some() && scene == self.last_scene;
-        let prepared=started.elapsed().as_secs_f64()*1000.;
+        let composition_started=std::time::Instant::now();
+        let prepared=composition_started.duration_since(started).as_secs_f64()*1000.;
         let result = self
             .native
             .present_if_changed(self.index as u32, vsync, &mut submitted, unchanged);
@@ -475,6 +476,13 @@ impl Presenter for NativePresenter {
         };
         if let Some(image) = self.image.take() {
             if submitted > 0 {
+                // The native call actually queued its image read and consumer
+                // signal. An offer or an admission-only Deferred cannot mark
+                // Draw. Use that compose-call boundary, before raw Present,
+                // even when the subsequent nonblocking Present was busy.
+                if let Some(observation)=&image.observation {
+                    observation.trace_at(uu_core::pipeline_trace::Stage::Draw,composition_started);
+                }
                 image.consumed.store(submitted, Ordering::Release);
             }
             if result.is_err() {
