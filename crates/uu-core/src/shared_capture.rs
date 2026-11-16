@@ -14,7 +14,7 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use uu_capture::{Capture, CaptureError, CaptureSource, DesktopMapping, DesktopRect, OpenOptions};
+use uu_capture::{Capture, CaptureError, CaptureSource, DesktopMapping, DesktopRect, FrameTiming, OpenOptions};
 use uu_media::{encoder::InputDevice, hdr::Metadata as HdrMetadata, RawFrame};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -48,10 +48,15 @@ struct Metadata {
     cursor: Option<uu_capture::cursor::Stream>,
     mapping: Option<DesktopMapping>,
     input_device: Option<InputDevice>,
-    frame_info: Option<uu_capture::frame_info::FrameInfo>,
+}
+#[derive(Clone, Debug)]
+struct PublishedFrame {
+    frame: RawFrame,
+    source: Option<uu_capture::frame_info::FrameInfo>,
+    timing: FrameTiming,
 }
 struct Slot {
-    frame: Option<RawFrame>,
+    frame: Option<PublishedFrame>,
     error: Option<String>,
     closed: bool,
 }
@@ -70,7 +75,7 @@ impl Subscriber {
             changed: Condvar::new(),
         })
     }
-    fn publish(&self, frame: &RawFrame) {
+    fn publish(&self, frame: &PublishedFrame) {
         let mut slot = self.slot.lock().unwrap();
         if slot.closed { return; }
         slot.error = None;
@@ -92,7 +97,7 @@ impl Subscriber {
         slot.error = error;
         self.changed.notify_all();
     }
-    fn take(&self, wait: Option<Duration>) -> Result<Option<RawFrame>, CaptureError> {
+    fn take(&self, wait: Option<Duration>) -> Result<Option<PublishedFrame>, CaptureError> {
         let deadline = wait.map(|limit| Instant::now() + limit);
         let mut slot = self.slot.lock().unwrap();
         loop {
@@ -199,12 +204,12 @@ impl Owner {
             ready = self.ready_changed.wait(ready).unwrap();
         }
     }
-    fn publish(&self, frame: &RawFrame) {
+    fn publish(&self, frame: &RawFrame, source: Option<uu_capture::frame_info::FrameInfo>, timing: FrameTiming) {
+        let frame = PublishedFrame { frame: frame.clone(), source, timing };
         let subscribers: Vec<_> = self.subscribers.lock().unwrap().values().cloned().collect();
-        for subscriber in subscribers { subscriber.publish(frame); }
+        for subscriber in subscribers { subscriber.publish(&frame); }
     }
     fn suspend(&self, reason: &str) {
-        self.metadata.lock().unwrap().frame_info = None;
         let subscribers: Vec<_> = self.subscribers.lock().unwrap().values().cloned().collect();
         for subscriber in subscribers { subscriber.suspend(reason); }
     }
@@ -336,6 +341,7 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
             if next > now { std::thread::sleep(next - now); }
             else if now.duration_since(next) >= period { next = now; }
         }
+        let started = Instant::now();
         let frame = match capture.next_frame() {
             Ok(frame) => frame,
             Err(CaptureError::Suspended(error)) => {
@@ -348,13 +354,13 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
             }
             Err(error) => { fail(&owner, error.to_string()); break; }
         };
+        let timing = capture.frame_timing().unwrap_or(FrameTiming { started, ready: Instant::now() });
         {
             let mut metadata = owner.metadata.lock().unwrap();
             metadata.resolution = capture.resolution();
             metadata.hdr = capture.hdr_metadata();
-            metadata.frame_info = capture.frame_info();
         }
-        owner.publish(&frame);
+        owner.publish(&frame, capture.frame_info(), timing);
         next += period;
     }
     if let Some(owner) = owner.upgrade() {
@@ -375,6 +381,8 @@ fn fail(owner: &Arc<Owner>, error: String) {
 pub struct SharedCapture {
     owner: Arc<Owner>,
     subscriber: Arc<Subscriber>,
+    last_frame_info: Option<uu_capture::frame_info::FrameInfo>,
+    last_frame_timing: Option<FrameTiming>,
 }
 impl SharedCapture {
     fn acquire(source: &CaptureSource, options: OpenOptions) -> Result<Box<dyn Capture>, CaptureError> {
@@ -410,18 +418,30 @@ impl SharedCapture {
             if empty { owner.stop_and_join(); }
             return Err(error);
         }
-        Ok(Box::new(Self { owner, subscriber }))
+        Ok(Box::new(Self { owner, subscriber, last_frame_info: None, last_frame_timing: None }))
     }
     fn metadata(&self) -> std::sync::MutexGuard<'_, Metadata> { self.owner.metadata.lock().unwrap() }
+    fn take(&mut self, wait: Option<Duration>) -> Result<Option<RawFrame>, CaptureError> {
+        self.last_frame_info = None;
+        self.last_frame_timing = None;
+        self.subscriber.take(wait).map(|published| published.map(|published| {
+            // The shared owner may already have captured the next image. Keep
+            // source identity bound to this subscriber's actual delivery.
+            self.last_frame_info = published.source;
+            self.last_frame_timing = Some(published.timing);
+            published.frame
+        }))
+    }
 }
 impl Capture for SharedCapture {
     fn cursor(&self) -> Option<uu_capture::cursor::Stream> { self.metadata().cursor.clone() }
     fn enable_overlap(&mut self) -> Result<(), CaptureError> { Ok(()) }
     fn wait_updated_frame(&mut self, wait: Duration) -> Result<Option<RawFrame>, CaptureError> {
         self.owner.default_input_format();
-        self.subscriber.take(Some(wait))
+        self.take(Some(wait))
     }
-    fn frame_info(&self) -> Option<uu_capture::frame_info::FrameInfo> { self.metadata().frame_info }
+    fn frame_info(&self) -> Option<uu_capture::frame_info::FrameInfo> { self.last_frame_info }
+    fn frame_timing(&self) -> Option<FrameTiming> { self.last_frame_timing }
     fn hdr_metadata(&self) -> Option<HdrMetadata> { self.metadata().hdr }
     fn set_frame_rate(&mut self, fps: u32) -> Result<(), CaptureError> {
         if !(1..=240).contains(&fps) { return Err(CaptureError::Backend(uu_i18n::text("共享采集帧率无效").into())); }
@@ -435,7 +455,7 @@ impl Capture for SharedCapture {
     fn desktop_mapping(&self) -> Option<DesktopMapping> { self.metadata().mapping.clone() }
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
         self.owner.default_input_format();
-        self.subscriber.take(None)?.ok_or_else(|| CaptureError::Suspended(uu_i18n::text("共享采集源暂无新画面").into()))
+        self.take(None)?.ok_or_else(|| CaptureError::Suspended(uu_i18n::text("共享采集源暂无新画面").into()))
     }
 }
 impl Drop for SharedCapture {
@@ -473,6 +493,103 @@ mod tests {
 
     fn options(fps: u32) -> OpenOptions {
         OpenOptions { fps, ..Default::default() }
+    }
+
+    fn delivery_fixture() -> (Arc<Owner>, SharedCapture, SharedCapture) {
+        let source = CaptureSource::Monitor("owned-delivery-metadata-fixture".into());
+        let owner = Owner::new(Key::new(&source), source, options(60));
+        let first = SharedCapture { subscriber: owner.subscribe(60), owner: owner.clone(), last_frame_info: None, last_frame_timing: None };
+        let second = SharedCapture { subscriber: owner.subscribe(60), owner: owner.clone(), last_frame_info: None, last_frame_timing: None };
+        (owner, first, second)
+    }
+
+    fn source_info(frame_id: u64, duplicate: bool) -> uu_capture::frame_info::FrameInfo {
+        uu_capture::frame_info::FrameInfo {
+            generation: 7,
+            frame_id,
+            duplicate,
+            accumulated_frames: if duplicate { 0 } else { 1 },
+            present: Some(uu_capture::frame_info::SourceTime { qpc_ticks: frame_id * 100, frequency_hz: 1_000_000 }),
+            present_age_us: Some(50),
+        }
+    }
+
+    #[test]
+    fn each_subscriber_keeps_the_source_identity_of_its_delivered_image() {
+        let (owner, mut first, mut second) = delivery_fixture();
+        let picture = |pts| RawFrame::new_i420(2, 2, vec![0; 6], uu_media::Timestamp(pts));
+        let old = source_info(11, false);
+        let new = source_info(12, false);
+        let base = Instant::now() - Duration::from_millis(100);
+        let old_timing = FrameTiming { started: base, ready: base + Duration::from_millis(1) };
+        let new_timing = FrameTiming { started: base + Duration::from_millis(16), ready: base + Duration::from_millis(17) };
+        owner.publish(&picture(1000), Some(old), old_timing);
+        assert_eq!(first.next_frame().unwrap().pts.0, 1000);
+        assert_eq!(first.frame_info(), Some(old));
+        assert_eq!(first.frame_timing(), Some(old_timing));
+
+        // A fast owner replaces the slow subscriber's pending image without
+        // changing the identity already delivered to the other subscriber.
+        owner.publish(&picture(2000), Some(new), new_timing);
+        assert_eq!(first.frame_info(), Some(old));
+        assert_eq!(first.frame_timing(), Some(old_timing));
+        assert_eq!(second.next_frame().unwrap().pts.0, 2000);
+        assert_eq!(second.frame_info(), Some(new));
+        assert_eq!(second.frame_timing(), Some(new_timing));
+        assert_eq!(first.frame_info(), Some(old));
+        assert_eq!(first.next_frame().unwrap().pts.0, 2000);
+        assert_eq!(first.frame_info(), Some(new));
+        assert_eq!(first.frame_timing(), Some(new_timing));
+
+        owner.publish(&picture(3000), None, new_timing);
+        assert_eq!(first.next_frame().unwrap().pts.0, 3000);
+        assert_eq!(first.frame_info(), None, "unknown source metadata cannot reuse an earlier image's identity");
+    }
+
+    #[test]
+    fn repeated_images_preserve_the_published_source_identity_and_duplicate_flag() {
+        let (owner, mut first, _second) = delivery_fixture();
+        let picture = |pts| RawFrame::new_i420(2, 2, vec![0; 6], uu_media::Timestamp(pts));
+        let original = source_info(11, false);
+        let base = Instant::now() - Duration::from_millis(100);
+        let timing = FrameTiming { started: base, ready: base + Duration::from_millis(1) };
+        owner.publish(&picture(1000), Some(original), timing);
+        first.next_frame().unwrap();
+        let repeated = source_info(11, true);
+        owner.publish(&picture(2000), Some(repeated), timing);
+        assert_eq!(first.frame_info(), Some(original));
+        assert_eq!(first.next_frame().unwrap().pts.0, 2000);
+        assert_eq!(first.frame_info(), Some(repeated));
+    }
+
+    #[test]
+    fn unsuccessful_delivery_clears_source_identity_and_recovery_publishes_a_new_one() {
+        let (owner, mut first, _second) = delivery_fixture();
+        let frame = RawFrame::new_i420(2, 2, vec![0; 6], uu_media::Timestamp(1000));
+        let base = Instant::now() - Duration::from_millis(100);
+        let timing = FrameTiming { started: base, ready: base + Duration::from_millis(1) };
+        owner.publish(&frame, Some(source_info(11, false)), timing);
+        first.next_frame().unwrap();
+        assert_eq!(first.frame_timing(), Some(timing));
+        owner.suspend("owned desktop transition");
+        assert!(matches!(first.next_frame(), Err(CaptureError::Suspended(_))));
+        assert_eq!(first.frame_info(), None);
+        assert_eq!(first.frame_timing(), None);
+
+        owner.publish(&frame, Some(source_info(12, false)), timing);
+        first.next_frame().unwrap();
+        assert_eq!(first.frame_info(), Some(source_info(12, false)));
+        assert_eq!(first.frame_timing(), Some(timing));
+        assert!(first.wait_updated_frame(Duration::ZERO).unwrap().is_none());
+        assert_eq!(first.frame_info(), None);
+        assert_eq!(first.frame_timing(), None);
+
+        owner.publish(&frame, Some(source_info(13, false)), timing);
+        first.next_frame().unwrap();
+        owner.close(Some("owned device removed".into()));
+        assert!(matches!(first.next_frame(), Err(CaptureError::Backend(_))));
+        assert_eq!(first.frame_info(), None);
+        assert_eq!(first.frame_timing(), None);
     }
 
     #[test]
@@ -538,7 +655,7 @@ mod tests {
         owner.wait_ready().unwrap();
         let picture = |pts| RawFrame::new_i420(2, 2, vec![0; 6], uu_media::Timestamp(pts));
         send.send(Ok(picture(1))).unwrap();
-        assert_eq!(first.take(Some(Duration::from_secs(1))).unwrap().unwrap().pts.0, 1);
+        assert_eq!(first.take(Some(Duration::from_secs(1))).unwrap().unwrap().frame.pts.0, 1);
         // The second viewer deliberately leaves this old picture queued.
         send.send(Err(CaptureError::Suspended("desktop switch".into()))).unwrap();
         assert!(matches!(first.take(Some(Duration::from_secs(1))), Err(CaptureError::Suspended(_))));
@@ -548,7 +665,7 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(1);
             loop {
                 match subscriber.take(Some(Duration::from_millis(20))) {
-                    Ok(Some(frame)) => { assert_eq!(frame.pts.0, 2); break; }
+                    Ok(Some(frame)) => { assert_eq!(frame.frame.pts.0, 2); break; }
                     Err(CaptureError::Suspended(_)) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
                     other => panic!("source did not recover: {other:?}"),
                 }

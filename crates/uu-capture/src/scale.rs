@@ -11,12 +11,13 @@ pub fn dimensions(source:(u32,u32),bounds:Option<[u32;2]>)->(u32,u32) {
 }
 pub fn bounded(inner:Box<dyn Capture>,bounds:Option<[u32;2]>)->Box<dyn Capture> {
     let output=dimensions(inner.resolution(),bounds);
-    if output==inner.resolution(){inner}else{Box::new(Scaled{inner,output})}
+    if output==inner.resolution(){inner}else{Box::new(Scaled{inner,output,last_timing:None})}
 }
-struct Scaled {inner:Box<dyn Capture>,output:(u32,u32)}
+struct Scaled {inner:Box<dyn Capture>,output:(u32,u32),last_timing:Option<crate::FrameTiming>}
 impl Capture for Scaled {
     fn cursor(&self)->Option<crate::cursor::Stream>{self.inner.cursor()}
     fn frame_info(&self)->Option<crate::frame_info::FrameInfo>{self.inner.frame_info()}
+    fn frame_timing(&self)->Option<crate::FrameTiming>{self.last_timing}
     fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{self.inner.hdr_metadata()}
     fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice>{self.inner.encoder_input_device()}
     fn set_frame_rate(&mut self,fps:u32)->Result<(),CaptureError>{self.inner.set_frame_rate(fps)}
@@ -26,11 +27,13 @@ impl Capture for Scaled {
     fn desktop_mapping(&self)->Option<crate::DesktopMapping>{self.inner.desktop_mapping()}
     fn input_injector(&self)->Option<Box<dyn uu_input::InputInjector>>{self.inner.input_injector()}
     fn next_frame(&mut self)->Result<RawFrame,CaptureError> {
+        self.last_timing=None;
         let frame=self.inner.next_frame()?;
         if frame.gpu && frame.d3d11.is_some() {
             // BGRA capture surfaces retain their source geometry; the hardware
             // encoder scales directly to these negotiated output dimensions.
             let (width,height)=self.output;
+            self.last_timing=self.inner.frame_timing();
             return Ok(RawFrame{width,height,stride:frame.format.row_bytes(width),..frame});
         }
         if frame.gpu||!frame.is_consistent()||frame.width%2!=0||frame.height%2!=0 {
@@ -55,6 +58,7 @@ impl Capture for Scaled {
                 for i in 0..2 {plane(&frame.data[base+i*chroma..base+(i+1)*chroma],sw/2,sw/2,sh/2,&mut output[w*h+i*w*h/4..w*h+(i+1)*w*h/4],w/2,w/2,h/2,1);}
             }
         }
+        self.last_timing=self.inner.frame_timing();
         Ok(RawFrame{width:w as u32,height:h as u32,stride:if frame.format==PixelFormat::Bgra8 {w*4}else{w} as u32,data:output.into(),..frame})
     }
 }
@@ -93,5 +97,34 @@ mod tests {
         let mut capture=bounded(inner,Some([320,180]));let frame=capture.next_frame().unwrap();
         assert_eq!((frame.width,frame.height,frame.stride),(320,180,320));assert!(frame.is_consistent());
         let info=capture.frame_info().unwrap();assert_eq!(info.frame_id,1);assert!(!info.duplicate);
+    }
+    #[test]
+    fn scaling_keeps_the_inner_acquisition_interval() {
+        struct Timed {
+            timing: crate::FrameTiming,
+            delivered: bool,
+        }
+        impl Capture for Timed {
+            fn resolution(&self)->(u32,u32){(4,4)}
+            fn frame_timing(&self)->Option<crate::FrameTiming>{self.delivered.then_some(self.timing)}
+            fn next_frame(&mut self)->Result<RawFrame,CaptureError>{
+                if self.delivered {
+                    // The inner acquisition succeeds, but scaling must reject
+                    // its invalid pixels and clear the previous observation.
+                    return Ok(RawFrame::new_i420(4,4,vec![0;1],uu_media::Timestamp(1)));
+                }
+                self.delivered=true;
+                Ok(RawFrame::new_i420(4,4,vec![0;24],uu_media::Timestamp(0)))
+            }
+        }
+        let base=std::time::Instant::now()-std::time::Duration::from_millis(100);
+        let timing=crate::FrameTiming{started:base,ready:base+std::time::Duration::from_micros(500)};
+        let mut capture=bounded(Box::new(Timed{timing,delivered:false}),Some([2,2]));
+        assert_eq!(capture.frame_timing(),None);
+        let frame=capture.next_frame().unwrap();
+        assert_eq!((frame.width,frame.height),(2,2));
+        assert_eq!(capture.frame_timing(),Some(timing));
+        assert!(capture.next_frame().is_err());
+        assert_eq!(capture.frame_timing(),None);
     }
 }

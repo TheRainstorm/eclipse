@@ -2,7 +2,7 @@
 use crate::latest_capture::{self, Owner, Packet};
 use anyhow::Result;
 use std::time::{Duration, Instant};
-use uu_capture::{frame_info::FrameInfo, Capture, CaptureError};
+use uu_capture::{frame_info::FrameInfo, Capture, CaptureError, FrameTiming};
 use uu_media::{encoder::InputDevice, RawFrame};
 
 pub fn requested(value: Option<&str>) -> Result<bool> {
@@ -84,7 +84,9 @@ impl latest_capture::Source for Desktop {
         let same = source
             .zip(self.last.as_ref().and_then(|v| v.source))
             .is_some_and(|(a, b)| a.generation == b.generation && a.frame_id == b.frame_id);
-        let (started, ready) = if same {
+        let (started, ready) = if let Some(timing) = self.capture.frame_timing() {
+            (timing.started, timing.ready)
+        } else if same {
             let previous = self.last.as_ref().unwrap();
             (previous.started, previous.ready)
         } else {
@@ -106,7 +108,8 @@ impl latest_capture::Source for Desktop {
         let started = Instant::now();
         match self.capture.wait_updated_frame(wait) {
             Ok(Some(frame)) => {
-                let ready = Instant::now();
+                let FrameTiming { started, ready } = self.capture.frame_timing()
+                    .unwrap_or(FrameTiming { started, ready: Instant::now() });
                 let source = self.capture.frame_info();
                 let image = Image {
                     frame,
@@ -263,7 +266,8 @@ impl Input {
             Mode::Serial(capture) => {
                 let started = Instant::now();
                 let frame = capture.next_frame()?;
-                let ready = Instant::now();
+                let FrameTiming { started, ready } = capture.frame_timing()
+                    .unwrap_or(FrameTiming { started, ready: Instant::now() });
                 let source = if metadata { capture.frame_info() } else { None };
                 Ok(Observed {
                     frame,
@@ -381,6 +385,65 @@ fn repeat_pts(base:u64,elapsed:u64,previous:Option<u64>)->u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct BufferedCapture {
+        base: Instant,
+        delivered: u64,
+        timing: Option<FrameTiming>,
+    }
+    impl BufferedCapture {
+        fn new(base: Instant) -> Self { Self { base, delivered: 0, timing: None } }
+    }
+    impl Capture for BufferedCapture {
+        fn resolution(&self) -> (u32, u32) { (2, 2) }
+        fn enable_overlap(&mut self) -> std::result::Result<(), CaptureError> { Ok(()) }
+        fn frame_timing(&self) -> Option<FrameTiming> { self.timing }
+        fn frame_info(&self) -> Option<FrameInfo> {
+            self.timing.map(|_| FrameInfo {
+                generation: 1, frame_id: 9, duplicate: self.delivered > 1,
+                accumulated_frames: 1, present: None, present_age_us: None,
+            })
+        }
+        fn next_frame(&mut self) -> std::result::Result<RawFrame, CaptureError> {
+            let started = self.base + Duration::from_millis(self.delivered);
+            self.timing = Some(FrameTiming { started, ready: started + Duration::from_micros(500) });
+            self.delivered += 1;
+            Ok(RawFrame::new_i420(2, 2, vec![0; 6], uu_media::Timestamp(self.delivered * 1000)))
+        }
+        fn wait_updated_frame(&mut self, _: Duration) -> std::result::Result<Option<RawFrame>, CaptureError> {
+            self.next_frame().map(Some)
+        }
+    }
+
+    #[test]
+    fn serial_capture_keeps_acquisition_times_before_the_subscriber_dequeue() {
+        let base = Instant::now() - Duration::from_millis(100);
+        let mut input = Input::new(Box::new(BufferedCapture::new(base)), false, 60, false, None).unwrap();
+        let observed = input.next(true).unwrap();
+        assert_eq!(observed.started, base);
+        assert_eq!(observed.ready, base + Duration::from_micros(500));
+        assert_eq!(observed.source.unwrap().frame_id, 9);
+        assert!(observed.ready < Instant::now() - Duration::from_millis(50), "a later dequeue must not relabel buffered acquisition");
+    }
+
+    #[test]
+    fn overlap_configuration_and_updates_prefer_the_delivered_capture_times() {
+        use crate::latest_capture::Source;
+        let base = Instant::now() - Duration::from_millis(100);
+        let mut desktop = Desktop { capture: Box::new(BufferedCapture::new(base)), last: None };
+        let config = Config { fps: 60, gpu: false, vendor: None, owner_pacing: false };
+        let first = desktop.configure(config).unwrap().unwrap();
+        assert_eq!((first.started, first.ready), (base, base + Duration::from_micros(500)));
+        // Even a repeated source image has the explicitly supplied acquisition
+        // interval of this delivery; fallback cache times cannot replace it.
+        let repeated = desktop.configure(config).unwrap().unwrap();
+        assert_eq!(repeated.source.unwrap().frame_id, first.source.unwrap().frame_id);
+        assert_eq!(repeated.started, base + Duration::from_millis(1));
+        let update = desktop.next(Duration::ZERO).unwrap_or_else(|_| panic!("owned buffered capture failed")).unwrap();
+        assert_eq!(update.started, base + Duration::from_millis(2));
+        assert_eq!(update.ready, base + Duration::from_micros(2500));
+    }
+
     #[test]
     fn option_is_strict_and_default_off() {
         assert!(!requested(None).unwrap());

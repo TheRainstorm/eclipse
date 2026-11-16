@@ -36,6 +36,15 @@ pub enum CaptureError {
     Denied,
 }
 
+/// Acquisition interval of a successfully delivered image, measured with this
+/// process's monotonic clock. It excludes time waiting in a subscriber's slot;
+/// it is neither the source's presentation time nor a GPU completion receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameTiming {
+    pub started: std::time::Instant,
+    pub ready: std::time::Instant,
+}
+
 /// A running capture stream.
 ///
 /// Frames come back as `uu_media::RawFrame` so the same value flows straight
@@ -51,6 +60,10 @@ pub trait Capture: Send {
     fn wait_updated_frame(&mut self,_wait:std::time::Duration)->Result<Option<RawFrame>,CaptureError>{Err(CaptureError::NoBackend)}
     /// Last returned source image; unsupported metadata is unknown, never inferred from PTS.
     fn frame_info(&self) -> Option<crate::frame_info::FrameInfo> { None }
+    /// Timing belongs to the last successfully returned image, alongside
+    /// `frame_info`. Buffered backends retain its original acquisition interval
+    /// instead of relabeling a later dequeue. Failed or empty reads clear it.
+    fn frame_timing(&self) -> Option<FrameTiming> { None }
     /// Actual HDR source metadata, never inferred from bit depth alone.
     fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{None}
     /// Hint capture pacing without replacing the authorized desktop session.
