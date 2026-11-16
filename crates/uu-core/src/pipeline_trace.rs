@@ -152,7 +152,12 @@ impl Trace {
         };
         if let Some(i) = Self::index(&s, id) {
             let r = &mut s.rows[i];
-            r.at_us[1] = Some(at);
+            // Freeze the reads that preceded this AU's completion. Late
+            // duplicates/repairs remain packet observations, but cannot move
+            // its assembly endpoint past CompleteAu or fill missing reads.
+            if r.at_us[Stage::CompleteAu as usize].is_none() {
+                r.at_us[1] = Some(at);
+            }
             if primary {
                 r.primary_packets += 1
             } else {
@@ -318,6 +323,60 @@ mod tests {
         assert_eq!(r["frames"][0]["repair_packets"], 1);
     }
     #[test]
+    fn completed_au_freezes_its_reads_while_interleaved_packets_keep_their_counts() {
+        let t=Trace::new(true);
+        let first=Instant::now();
+        t.packet(1,0,9,100,true,first);
+        let next=Instant::now();
+        t.packet(1,0,9,200,true,next);
+        // An out-of-order or repeated read for the older, still assembling AU
+        // extends only that identity, not the newer AU's packet span.
+        let repair=Instant::now();
+        t.packet(1,0,9,100,false,repair);
+        let before=t.report().unwrap();
+        assert_eq!(before["frames"][0]["at_us"][0],t.offset(first));
+        assert_eq!(before["frames"][0]["at_us"][1],t.offset(repair));
+        assert_eq!(before["frames"][1]["at_us"][1],t.offset(next));
+        t.frame(1,0,9,100,Stage::CompleteAu,None);
+        let completed=t.report().unwrap()["frames"][0]["at_us"][2].clone();
+        assert!(completed.as_u64().unwrap()>=t.offset(repair));
+        // Both original and repaired packets can arrive after assembly. They
+        // count as observed traffic without changing the completed AU timing.
+        let late=Instant::now()+std::time::Duration::from_millis(20);
+        t.packet(1,0,9,100,true,late);
+        t.packet(1,0,9,100,false,late+std::time::Duration::from_millis(1));
+        t.frame(1,0,9,100,Stage::CompleteAu,None);
+        let after=t.report().unwrap();
+        assert_eq!(after["frames"][0]["at_us"][0],t.offset(first));
+        assert_eq!(after["frames"][0]["at_us"][1],t.offset(repair));
+        assert_eq!(after["frames"][0]["at_us"][2],completed);
+        assert_eq!(after["frames"][0]["primary_packets"],2);
+        assert_eq!(after["frames"][0]["repair_packets"],2);
+        assert_eq!(after["frames"][1]["at_us"][1],t.offset(next));
+    }
+    #[test]
+    fn late_packets_do_not_invent_missing_reads_for_a_completed_au() {
+        let t=Trace::new(true);
+        t.packet(1,0,9,100,true,Instant::now());
+        t.frame(1,0,9,100,Stage::CompleteAu,None);
+        {
+            let mut state=t.state.lock().unwrap();
+            state.rows[0].at_us[0]=None;
+            state.rows[0].at_us[1]=None;
+        }
+        t.packet(1,0,9,100,false,Instant::now());
+        let report=t.report().unwrap();
+        assert!(report["frames"][0]["at_us"][0].is_null());
+        assert!(report["frames"][0]["at_us"][1].is_null());
+        assert!(report["frames"][0]["at_us"][2].is_number());
+        // A stage with no packet identity stays unmatched; it must not create
+        // a synthetic row or retroactively supply a first packet timestamp.
+        t.frame(1,0,9,200,Stage::CompleteAu,None);
+        let report=t.report().unwrap();
+        assert_eq!(report["total_frames"],1);
+        assert_eq!(report["unmatched_events"],1);
+    }
+    #[test]
     fn bounded_ring_and_missing_identity_are_reported() {
         let t = Trace::new(true);
         for n in 0..LIMIT + 2 {
@@ -382,7 +441,9 @@ mod tests {
     #[test]
     fn disabled_has_no_observations() {
         let t = Trace::new(false);
+        let _held=t.state.lock().unwrap();
         t.packet(1, 0, 9, 1, true, Instant::now());
+        t.frame(1,0,9,1,Stage::CompleteAu,None);
         assert!(t.report().is_none());
     }
 }
