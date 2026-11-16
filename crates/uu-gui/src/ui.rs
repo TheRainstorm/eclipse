@@ -183,7 +183,7 @@ impl App {
         super::window::paint_frame(ctx);
     }
 
-    pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
+    pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event], mut input_trace: Option<&mut super::input_trace::Update>) {
         self.poll_remote_lock(ctx);
         if !self.fullscreen { self.connection_bar(ctx); }
         let was_open = self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open;
@@ -223,7 +223,22 @@ impl App {
                     self.platform.focus_window();
                 }
                 if controls_active {messages.extend(self.pointer.release_all(input_screen));}
-                if self.input_capture.pointer(self.input_conditions(ctx),controls_active) {
+                let conditions=self.input_conditions(ctx);
+                let pointer_allowed=self.input_capture.pointer(conditions,controls_active);
+                if let Some(trace)=input_trace.as_deref_mut() {
+                    use super::input_trace::{Gate,Gates};
+                    let mut gates=Gates::default();
+                    gates.set(Gate::NotRequested,!self.input_capture.requested());
+                    gates.set(Gate::NotReady,!conditions.ready||(controls_active&&!picture_blocked&&!hud_pointer));
+                    gates.set(Gate::NotFocusedOrActive,!conditions.focused);
+                    gates.set(Gate::ViewOnly,conditions.view_only);
+                    gates.set(Gate::LocalUi,conditions.local_ui);
+                    gates.set(Gate::LocalControls,picture_blocked||hud_pointer);
+                    let relative_wait=self.preferences.relative_mouse&&!self.mouse_captured;
+                    gates.set(Gate::RelativeNotCaptured,relative_wait);
+                    trace.pointer(events,self.preferences.relative_mouse,pointer_allowed&&!relative_wait,gates);
+                }
+                if pointer_allowed {
                     if self.preferences.relative_mouse {
                         if self.mouse_captured {messages.extend(self.pointer.events_relative(events,input_screen));}
                     } else {messages.extend(self.pointer.events(events,draw,pointer,input_screen));}
@@ -237,6 +252,7 @@ impl App {
                     self.cursor.paint(ctx,shape,pointer,draw,input_screen,self.platform.cursor_size(ctx));
                 }
             }else{
+                if let Some(trace)=input_trace.as_deref_mut() {trace.skip(self.preferences.relative_mouse,super::input_trace::Gate::NoVideo);}
                 let center=rect.center();
                 let message=Rect::from_center_size(center-egui::vec2(0.0,24.0),egui::vec2((rect.width()-48.0).clamp(1.0,640.0),80.0));
                 ui.put(message,egui::Label::new(RichText::new(self.displays.connection_error().unwrap_or_else(||if !self.displays.notice.is_empty(){&self.displays.notice}else{&self.status})).size(16.0).color(C::from_rgb(180,190,205))).wrap());
@@ -268,6 +284,7 @@ impl App {
 
         });
         for message in messages {
+            if let Some(trace)=input_trace.as_deref_mut() {trace.handed(&message);}
             self.send_input(message, 15);
         }
     }

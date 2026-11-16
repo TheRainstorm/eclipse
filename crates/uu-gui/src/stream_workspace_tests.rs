@@ -249,7 +249,7 @@ fn failed_virtual_tab_disconnect_button_preserves_the_other_stream_and_window() 
     state.windows[0].sessions[1].app.workspace_tabs=Some(tabs);
     let view=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
     let mut render=|events|ctx.run(egui::RawInput{screen_rect:Some(view),events,..Default::default()},|ctx|{
-        state.windows[0].sessions[1].app.stream_ui(ctx,&[]);
+        state.windows[0].sessions[1].app.stream_ui(ctx,&[],None);
     });
     let mut output=render(vec![]);
     for _ in 0..2 {output=render(vec![]);}

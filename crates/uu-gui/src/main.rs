@@ -16,6 +16,7 @@ mod connection_notice;
 mod connection_history_ui;
 mod connection_service_ui;
 mod input;
+mod input_trace;
 mod displays;
 mod display_layout;
 mod clipboard;
@@ -1408,6 +1409,7 @@ impl App {
         hide_requested
     }
     fn update_frame(&mut self,ctx:&egui::Context,cpu_usage:Option<f32>) {
+        let mut input_trace = if self.stream_target.is_some() { input_trace::Update::begin(self.platform.window_id(),ctx) } else { None };
         if self.boss_hidden!=boss_key::hidden(){self.boss_hidden=boss_key::hidden();if self.boss_hidden{self.release_session_input();}}
         if self.stream_target.is_none(){boss_key::normal_visibility(ctx.viewport_id(),!self.launcher_hidden);}
         if self.workspace_tabs.is_none(){boss_key::apply();}
@@ -1587,6 +1589,7 @@ impl App {
                     "keyboard_repeats_forwarded":self.pressed_vks.forwarded_repeats(),
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()});
                 report["network_loss"]=serde_json::to_value(s.network_loss.lock().unwrap().as_ref()).unwrap_or_default();
+                if let Some(trace)=input_trace::snapshot(self.platform.window_id()) {report["client_input_trace"]=trace;}
                 report["decoded_batch_skips_all_tracks"]=s.decoded_batch_skips.load(Relaxed).into();
                 report["decoded_conversion_skips_all_tracks"]=s.decoded_conversion_skips.load(Relaxed).into();
                 report["build"]=self.build_label.clone().into();
@@ -1650,9 +1653,10 @@ impl App {
             }
         }
         if self.stream_settings_open {
+            if let Some(trace)=&mut input_trace {trace.skip(self.preferences.relative_mouse,input_trace::Gate::StreamSettings);}
             self.stream_settings_ui(ctx);
         } else if self.stream_target.is_some() {
-            self.stream_ui(ctx, &events);
+            self.stream_ui(ctx, &events, input_trace.as_mut());
         } else {
             self.home_ui(ctx);
         }
@@ -1740,6 +1744,11 @@ fn main() -> eframe::Result {
     }
     let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(preferences.vsync);
     let options = eframe::NativeOptions {
+        #[cfg(windows)]
+        event_loop_builder: if input_trace::enabled() {Some(Box::new(|builder| {
+            use winit::platform::windows::EventLoopBuilderExtWindows;
+            builder.with_msg_hook(input_trace::message_hook);
+        }))} else {None},
         // Winit cannot unmap an existing Wayland window. A tray-enabled home
         // window uses XWayland when available; streams and capture stay native.
         #[cfg(target_os = "linux")]

@@ -98,6 +98,7 @@ impl Platform {
                 Some(RawWindowHandle::Win32(handle)) => handle.hwnd.get() as _,
                 _ => std::ptr::null_mut(),
             };
+            crate::input_trace::register(window as isize);
             if let Some(origin) = _origin {
                 unsafe {
                     windows::place_startup(window, origin);
@@ -270,6 +271,7 @@ pub fn global_toggle_registered()->bool {
 #[cfg(windows)]
 impl Drop for Platform {
     fn drop(&mut self) {
+        crate::input_trace::unregister(self.window as isize);
         unsafe {
             self.hook.take();
             windows::remove_window_keyboard(self.window,&self.route);
