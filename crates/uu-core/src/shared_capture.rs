@@ -338,7 +338,7 @@ fn run_owner(owner: Weak<Owner>) {
 /// One owner opportunity: a known duplicate may wait for a fresh source image
 /// within this absolute cycle. Never retain the discarded pool lease across a
 /// retry or hold the DXGI device lock while yielding to the encoder.
-fn capture_in_cycle(capture: &mut dyn Capture, deadline: Instant, stop: &AtomicBool) -> Result<Option<PublishedFrame>, CaptureError> {
+fn capture_in_cycle(capture: &mut dyn Capture, deadline: Instant, retry_wait: Duration, stop: &AtomicBool) -> Result<Option<PublishedFrame>, CaptureError> {
     loop {
         if stop.load(Ordering::Acquire) { return Ok(None); }
         let started = Instant::now();
@@ -348,13 +348,20 @@ fn capture_in_cycle(capture: &mut dyn Capture, deadline: Instant, stop: &AtomicB
         let timing = capture.frame_timing().unwrap_or(FrameTiming { started, ready: Instant::now() });
         let source = capture.frame_info();
         if stop.load(Ordering::Acquire) { return Ok(None); }
-        let wait = deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(1));
+        let wait = deadline.saturating_duration_since(Instant::now()).min(retry_wait);
         if !source.is_some_and(|info| info.duplicate) || wait.is_zero() {
             return Ok(Some(PublishedFrame { frame, source, timing }));
         }
         drop(frame);
         std::thread::sleep(wait);
     }
+}
+
+fn duplicate_retry_interval(period: Duration, previous_cycle_repeated: bool) -> Duration {
+    // A completed repeated cycle identifies idle content. Probe less often
+    // within the same deadline; any fresh image restores the fine interval.
+    if previous_cycle_repeated { (period / 4).min(Duration::from_millis(4)) }
+    else { Duration::from_millis(1) }
 }
 
 /// Establish source phase once per generation, or after the caller explicitly
@@ -404,6 +411,7 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
     let mut applied_vendor = 0;
     let mut next = Instant::now();
     let mut anchored_generation = None;
+    let mut previous_cycle_repeated = false;
     loop {
         let Some(owner) = owner.upgrade() else { break; };
         if owner.stop.load(Ordering::Acquire) { break; }
@@ -413,6 +421,7 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
             configured_fps = fps;
             next = Instant::now();
             anchored_generation = None;
+            previous_cycle_repeated = false;
         }
         let gpu = owner.gpu.load(Ordering::Acquire);
         let vendor = owner.gpu_vendor.load(Ordering::Acquire);
@@ -428,7 +437,8 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
             else if now.duration_since(next) >= period { next = now; }
         }
         let deadline = next + period;
-        let captured = match capture_in_cycle(capture.as_mut(), deadline, &owner.stop) {
+        let retry_wait = duplicate_retry_interval(period, previous_cycle_repeated);
+        let captured = match capture_in_cycle(capture.as_mut(), deadline, retry_wait, &owner.stop) {
             Ok(Some(frame)) => frame,
             Ok(None) => break,
             Err(CaptureError::Suspended(error)) => {
@@ -438,10 +448,12 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
                 std::thread::sleep(Duration::from_millis(25));
                 next = Instant::now();
                 anchored_generation = None;
+                previous_cycle_repeated = false;
                 continue;
             }
             Err(error) => { fail(&owner, error.to_string()); break; }
         };
+        previous_cycle_repeated = captured.source.is_some_and(|info| info.duplicate);
         let following = source_phase_deadline(captured.source, &mut anchored_generation, Instant::now(), period, deadline);
         {
             let mut metadata = owner.metadata.lock().unwrap();
@@ -643,7 +655,7 @@ mod tests {
     fn cycle_retry_releases_old_pixels_and_returns_the_first_fresh_source() {
         let mut capture = CycleCapture::new([Some(source_info(7, true)), Some(source_info(8, false))]);
         let stop = capture.stop.clone();
-        let image = capture_in_cycle(&mut capture, Instant::now() + Duration::from_secs(1), &stop).unwrap().unwrap();
+        let image = capture_in_cycle(&mut capture, Instant::now() + Duration::from_secs(1), Duration::from_millis(1), &stop).unwrap().unwrap();
         assert_eq!(capture.calls, 2);
         assert_eq!(image.source.unwrap().frame_id, 8);
         assert!(!image.source.unwrap().duplicate);
@@ -657,7 +669,7 @@ mod tests {
         for (source, deadline) in [(None, Instant::now() + Duration::from_secs(1)), (Some(source_info(7, true)), Instant::now())] {
             let mut capture = CycleCapture::new([source]);
             let stop = capture.stop.clone();
-            let image = capture_in_cycle(&mut capture, deadline, &stop).unwrap().unwrap();
+            let image = capture_in_cycle(&mut capture, deadline, Duration::from_millis(1), &stop).unwrap().unwrap();
             assert_eq!(capture.calls, 1);
             assert_eq!(image.source, source);
         }
@@ -668,10 +680,52 @@ mod tests {
         let mut capture = CycleCapture::new([Some(source_info(7, true))]);
         let stop = capture.stop.clone();
         let deadline = Instant::now() + Duration::from_millis(3);
-        let image = capture_in_cycle(&mut capture, deadline, &stop).unwrap().unwrap();
+        let image = capture_in_cycle(&mut capture, deadline, Duration::from_millis(1), &stop).unwrap().unwrap();
         assert!(Instant::now() >= deadline);
         assert!(capture.calls <= 5, "the retry loop did not yield within the shared deadline");
         assert_eq!(image.source, Some(source_info(7, true)));
+    }
+
+    #[test]
+    fn a_complete_repeated_cycle_coarsens_only_until_the_next_fresh_image() {
+        let period = Duration::from_secs_f64(1.0 / 60.0);
+        let mut capture = CycleCapture::new([Some(source_info(7, true))]);
+        let stop = capture.stop.clone();
+        let repeat = capture_in_cycle(&mut capture, Instant::now(), duplicate_retry_interval(period, false), &stop).unwrap().unwrap();
+        let idle_wait = duplicate_retry_interval(period, repeat.source.unwrap().duplicate);
+        assert_eq!(idle_wait, Duration::from_millis(4));
+        drop(repeat);
+        capture.steps.extend([Some(source_info(7, true)), Some(source_info(8, false))]);
+        let fresh = capture_in_cycle(&mut capture, Instant::now() + Duration::from_secs(1), idle_wait, &stop).unwrap().unwrap();
+        assert_eq!(capture.calls, 3, "coarse waiting must still return the first fresh image");
+        assert_eq!(duplicate_retry_interval(period, fresh.source.unwrap().duplicate), Duration::from_millis(1));
+    }
+
+    #[test]
+    fn idle_retry_is_bounded_at_low_fps_and_scales_with_short_periods() {
+        for fps in [1, 2, 5, 10, 30, 60, 120, 240] {
+            let period = Duration::from_secs_f64(1.0 / f64::from(fps));
+            let idle = duplicate_retry_interval(period, true);
+            assert_eq!(idle, (period / 4).min(Duration::from_millis(4)));
+            assert!(idle <= Duration::from_millis(4));
+            assert!(idle <= period / 4);
+            assert_eq!(duplicate_retry_interval(period, false), Duration::from_millis(1), "initialization, recovery and rate-change reset use fine probes");
+        }
+        assert_eq!(duplicate_retry_interval(Duration::from_secs(1), true), Duration::from_millis(4));
+    }
+
+    #[test]
+    fn coarse_static_retry_keeps_the_existing_deadline_and_releases_each_lease() {
+        let mut capture = CycleCapture::new([Some(source_info(7, true))]);
+        let stop = capture.stop.clone();
+        let deadline = Instant::now() + Duration::from_millis(3);
+        let idle_wait = duplicate_retry_interval(Duration::from_secs(1), true);
+        let image = capture_in_cycle(&mut capture, deadline, idle_wait, &stop).unwrap().unwrap();
+        assert!(Instant::now() >= deadline);
+        assert!(capture.calls <= 2, "a short cycle cannot restart a full coarse wait");
+        assert_eq!(image.source, Some(source_info(7, true)));
+        drop(image);
+        assert_eq!(capture.live.load(Ordering::Acquire), 0);
     }
 
     #[test]
@@ -681,7 +735,7 @@ mod tests {
             capture.stop.store(cancel_before, Ordering::Release);
             capture.cancel_at = Some(1);
             let stop = capture.stop.clone();
-            assert!(capture_in_cycle(&mut capture, Instant::now() + Duration::from_secs(1), &stop).unwrap().is_none());
+            assert!(capture_in_cycle(&mut capture, Instant::now() + Duration::from_secs(1), Duration::from_millis(1), &stop).unwrap().is_none());
             assert_eq!(capture.calls, usize::from(!cancel_before));
             assert_eq!(capture.live.load(Ordering::Acquire), 0);
         }
@@ -721,10 +775,10 @@ mod tests {
         capture.suspend_at = Some(1);
         let stop = capture.stop.clone();
         let deadline = Instant::now() + Duration::from_secs(1);
-        assert!(matches!(capture_in_cycle(&mut capture, deadline, &stop), Err(CaptureError::Suspended(_))));
+        assert!(matches!(capture_in_cycle(&mut capture, deadline, Duration::from_millis(1), &stop), Err(CaptureError::Suspended(_))));
         assert_eq!(capture.live.load(Ordering::Acquire), 0);
         capture.suspend_at = None;
-        let image = capture_in_cycle(&mut capture, deadline, &stop).unwrap().unwrap();
+        let image = capture_in_cycle(&mut capture, deadline, Duration::from_millis(1), &stop).unwrap().unwrap();
         let now = Instant::now();
         let mut anchored = None; // Same reset performed by run_capture on Suspended.
         assert_eq!(source_phase_deadline(image.source, &mut anchored, now, Duration::from_millis(10), deadline), now + Duration::from_millis(8));
