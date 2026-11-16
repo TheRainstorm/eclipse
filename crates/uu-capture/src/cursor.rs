@@ -1,6 +1,6 @@
 //! Pointer metadata shares the capture desktop lifetime, never video pixels.
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 pub const MAX_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,21 +106,39 @@ pub struct Snapshot {
 }
 #[derive(Clone, Default)]
 pub struct Stream(Arc<Shared>);
+type Wake = dyn Fn() + Send + Sync;
 #[derive(Default)]
 struct Shared {
     state: Mutex<Snapshot>,
-    wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    subscribers: Mutex<Vec<Weak<Wake>>>,
+}
+/// Owns one callback without retaining the capture stream. A notification
+/// already collected before removal may finish; callbacks run outside locks.
+#[must_use = "Keep the subscription alive to receive cursor updates"]
+pub struct Subscription {
+    stream: Weak<Shared>,
+    wake: Arc<Wake>,
+}
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some(stream) = self.stream.upgrade() {
+            let own = Arc::downgrade(&self.wake);
+            stream.subscribers.lock().unwrap().retain(|wake| !Weak::ptr_eq(wake, &own));
+        }
+    }
 }
 impl Stream {
     pub fn snapshot(&self) -> Snapshot {
         self.0.state.lock().unwrap().clone()
     }
-    pub fn set_waker(&self, wake: Option<Arc<dyn Fn() + Send + Sync>>) {
-        *self.0.wake.lock().unwrap() = wake;
+    pub fn subscribe(&self, wake: impl Fn() + Send + Sync + 'static) -> Subscription {
+        let wake: Arc<Wake> = Arc::new(wake);
+        self.0.subscribers.lock().unwrap().push(Arc::downgrade(&wake));
+        Subscription { stream: Arc::downgrade(&self.0), wake }
     }
     fn notify(&self) {
-        let wake = self.0.wake.lock().unwrap().clone();
-        if let Some(wake) = wake {
+        let wakes: Vec<_> = self.0.subscribers.lock().unwrap().iter().filter_map(Weak::upgrade).collect();
+        for wake in wakes {
             wake();
         }
     }
@@ -159,6 +177,85 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn every_subscriber_wakes_and_dropping_one_preserves_the_other() {
+        let stream = Stream::default();
+        let first = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(AtomicUsize::new(0));
+        let count = first.clone();
+        let a = stream.subscribe(move || { count.fetch_add(1, Ordering::Relaxed); });
+        let count = second.clone();
+        let b = stream.subscribe(move || { count.fetch_add(1, Ordering::Relaxed); });
+        stream.update([100, 100], Some([10, 20]), None);
+        assert_eq!(first.load(Ordering::Relaxed), 1);
+        assert_eq!(second.load(Ordering::Relaxed), 1);
+        drop(a);
+        stream.update([100, 100], Some([20, 20]), None);
+        assert_eq!(first.load(Ordering::Relaxed), 1);
+        assert_eq!(second.load(Ordering::Relaxed), 2);
+        assert_eq!(stream.0.subscribers.lock().unwrap().len(), 1);
+        drop(b);
+        assert!(stream.0.subscribers.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn callback_can_unregister_itself_and_reenter_the_stream_without_holding_locks() {
+        let stream = Stream::default();
+        let own = Arc::new(Mutex::new(None::<Subscription>));
+        let remove = own.clone();
+        let weak = Arc::downgrade(&stream.0);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        *own.lock().unwrap() = Some(stream.subscribe(move || {
+            let stream = Stream(weak.upgrade().unwrap());
+            assert_eq!(stream.snapshot().position, Some([10, 20]));
+            count.fetch_add(1, Ordering::Relaxed);
+            let subscription = remove.lock().unwrap().take();
+            drop(subscription);
+            stream.update([100, 100], Some([20, 20]), None);
+        }));
+        let other = Arc::new(AtomicUsize::new(0));
+        let count = other.clone();
+        let _other = stream.subscribe(move || { count.fetch_add(1, Ordering::Relaxed); });
+        let target = stream.clone();
+        let (done, receive) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            target.update([100, 100], Some([10, 20]), None);
+            done.send(()).unwrap();
+        });
+        receive.recv_timeout(std::time::Duration::from_secs(1)).expect("reentrant notification deadlocked");
+        thread.join().unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(other.load(Ordering::Relaxed), 2, "both real updates must reach the remaining subscriber");
+        assert!(own.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_subscription_does_not_retain_the_stream_it_weakly_observes() {
+        let stream = Stream::default();
+        let weak = Arc::downgrade(&stream.0);
+        let observer = weak.clone();
+        let subscription = stream.subscribe(move || { let _ = observer.upgrade(); });
+        drop(stream);
+        assert!(weak.upgrade().is_none());
+        drop(subscription);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn dropping_a_callback_that_captures_the_stream_creates_no_registry_cycle() {
+        let stream = Stream::default();
+        let weak = Arc::downgrade(&stream.0);
+        let captured = stream.clone();
+        let subscription = stream.subscribe(move || { let _ = captured.snapshot(); });
+        drop(stream);
+        assert!(weak.upgrade().is_some(), "the caller's callback still owns its captured stream");
+        drop(subscription);
+        assert!(weak.upgrade().is_none(), "the weak callback registry must not keep its own stream alive");
+    }
+
     #[test]
     fn mono_and_xor_masks_padded_rows_and_hidden_lifecycle() {
         let shape = Shape {

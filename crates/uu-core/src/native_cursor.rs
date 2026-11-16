@@ -248,21 +248,14 @@ impl Encoded {
 pub(crate) fn host_channel(channel: Arc<RTCDataChannel>, source: Stream) {
     let weak = Arc::downgrade(&channel);
     let notify = Arc::new(tokio::sync::Notify::new());
-    let wake = notify.clone();
-    source.set_waker(Some(Arc::new(move || wake.notify_one())));
     channel.on_open(Box::new(move || {
         let weak = weak.clone();
         let source = source.clone();
         let notify = notify.clone();
         Box::pin(async move {
             tokio::spawn(async move {
-                struct ClearWake(Stream);
-                impl Drop for ClearWake {
-                    fn drop(&mut self) {
-                        self.0.set_waker(None);
-                    }
-                }
-                let _wake = ClearWake(source.clone());
+                let wake = notify.clone();
+                let _subscription = source.subscribe(move || wake.notify_one());
                 // Updates wake immediately; the timer only drains bounded SCTP
                 // backpressure and notices close, never paces cursor motion.
                 let mut timer = tokio::time::interval(Duration::from_millis(50));
