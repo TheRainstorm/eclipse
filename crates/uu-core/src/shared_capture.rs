@@ -335,6 +335,42 @@ fn run_owner(owner: Weak<Owner>) {
     run_capture(owner, capture, configured_fps);
 }
 
+/// One owner opportunity: a known duplicate may wait for a fresh source image
+/// within this absolute cycle. Never retain the discarded pool lease across a
+/// retry or hold the DXGI device lock while yielding to the encoder.
+fn capture_in_cycle(capture: &mut dyn Capture, deadline: Instant, stop: &AtomicBool) -> Result<Option<PublishedFrame>, CaptureError> {
+    loop {
+        if stop.load(Ordering::Acquire) { return Ok(None); }
+        let started = Instant::now();
+        let acquired = capture.next_frame();
+        if stop.load(Ordering::Acquire) { return Ok(None); }
+        let frame = acquired?;
+        let timing = capture.frame_timing().unwrap_or(FrameTiming { started, ready: Instant::now() });
+        let source = capture.frame_info();
+        if stop.load(Ordering::Acquire) { return Ok(None); }
+        let wait = deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(1));
+        if !source.is_some_and(|info| info.duplicate) || wait.is_zero() {
+            return Ok(Some(PublishedFrame { frame, source, timing }));
+        }
+        drop(frame);
+        std::thread::sleep(wait);
+    }
+}
+
+/// Establish source phase once per generation, or after the caller explicitly
+/// resets it on recovery/rate changes. Old static timestamps skip elapsed
+/// periods instead of creating catch-up opportunities in the past.
+fn source_phase_deadline(source: Option<uu_capture::frame_info::FrameInfo>, anchored: &mut Option<u64>, now: Instant, period: Duration, fallback: Instant) -> Instant {
+    let Some(info) = source else { return fallback; };
+    if *anchored == Some(info.generation) || info.present.is_none() || period.is_zero() { return fallback; }
+    let Some(age_us) = info.present_age_us else { return fallback; };
+    let age = Duration::from_micros(age_us);
+    // The owner's validated 1..240 FPS bounds the remainder to at most 1s.
+    let phase = Duration::from_nanos((age.as_nanos() % period.as_nanos()) as u64);
+    *anchored = Some(info.generation);
+    now + (period - phase)
+}
+
 fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps: u32) {
     let Some(initial) = owner.upgrade() else { return; };
     if let Err(error) = capture.set_frame_rate(configured_fps) {
@@ -367,6 +403,7 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
     let mut applied_gpu = GPU_UNSET;
     let mut applied_vendor = 0;
     let mut next = Instant::now();
+    let mut anchored_generation = None;
     loop {
         let Some(owner) = owner.upgrade() else { break; };
         if owner.stop.load(Ordering::Acquire) { break; }
@@ -375,6 +412,7 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
             if let Err(error) = capture.set_frame_rate(fps) { fail(&owner, error.to_string()); break; }
             configured_fps = fps;
             next = Instant::now();
+            anchored_generation = None;
         }
         let gpu = owner.gpu.load(Ordering::Acquire);
         let vendor = owner.gpu_vendor.load(Ordering::Acquire);
@@ -389,27 +427,29 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
             if next > now { std::thread::sleep(next - now); }
             else if now.duration_since(next) >= period { next = now; }
         }
-        let started = Instant::now();
-        let frame = match capture.next_frame() {
-            Ok(frame) => frame,
+        let deadline = next + period;
+        let captured = match capture_in_cycle(capture.as_mut(), deadline, &owner.stop) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
             Err(CaptureError::Suspended(error)) => {
                 // The source owns desktop recovery. Retain it across sign-in,
                 // UAC and hotplug waits, but retire every subscriber's old image.
                 owner.suspend(&error);
                 std::thread::sleep(Duration::from_millis(25));
                 next = Instant::now();
+                anchored_generation = None;
                 continue;
             }
             Err(error) => { fail(&owner, error.to_string()); break; }
         };
-        let timing = capture.frame_timing().unwrap_or(FrameTiming { started, ready: Instant::now() });
+        let following = source_phase_deadline(captured.source, &mut anchored_generation, Instant::now(), period, deadline);
         {
             let mut metadata = owner.metadata.lock().unwrap();
             metadata.resolution = capture.resolution();
             metadata.hdr = capture.hdr_metadata();
         }
-        owner.publish(&frame, capture.frame_info(), timing, configured_fps);
-        next += period;
+        owner.publish(&captured.frame, captured.source, captured.timing, configured_fps);
+        next = following;
     }
     if let Some(owner) = owner.upgrade() {
         owner.close(None);
@@ -561,6 +601,134 @@ mod tests {
             present: Some(uu_capture::frame_info::SourceTime { qpc_ticks: frame_id * 100, frequency_hz: 1_000_000 }),
             present_age_us: Some(50),
         }
+    }
+
+    struct RetryPixels {
+        bytes: [u8; 6],
+        live: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl AsRef<[u8]> for RetryPixels { fn as_ref(&self) -> &[u8] { &self.bytes } }
+    impl Drop for RetryPixels { fn drop(&mut self) { self.live.fetch_sub(1, Ordering::AcqRel); } }
+    struct CycleCapture {
+        steps: std::collections::VecDeque<Option<uu_capture::frame_info::FrameInfo>>,
+        source: Option<uu_capture::frame_info::FrameInfo>,
+        live: Arc<std::sync::atomic::AtomicUsize>,
+        stop: Arc<AtomicBool>,
+        calls: usize,
+        cancel_at: Option<usize>,
+        suspend_at: Option<usize>,
+    }
+    impl CycleCapture {
+        fn new(steps: impl IntoIterator<Item=Option<uu_capture::frame_info::FrameInfo>>) -> Self {
+            Self { steps: steps.into_iter().collect(), source: None, live: Arc::default(), stop: Arc::default(), calls: 0, cancel_at: None, suspend_at: None }
+        }
+    }
+    impl Capture for CycleCapture {
+        fn resolution(&self) -> (u32, u32) { (2, 2) }
+        fn frame_info(&self) -> Option<uu_capture::frame_info::FrameInfo> { self.source }
+        fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
+            assert_eq!(self.live.load(Ordering::Acquire), 0, "a retry retained the discarded frame lease");
+            self.calls += 1;
+            if self.suspend_at == Some(self.calls) { return Err(CaptureError::Suspended("owned desktop unavailable".into())); }
+            self.source = self.steps.pop_front().unwrap_or(self.source);
+            let mut frame = RawFrame::new_i420(2, 2, vec![0; 6], uu_media::Timestamp(self.calls as u64));
+            self.live.fetch_add(1, Ordering::AcqRel);
+            frame.data = bytes::Bytes::from_owner(RetryPixels { bytes: [0; 6], live: self.live.clone() });
+            if self.cancel_at == Some(self.calls) { self.stop.store(true, Ordering::Release); }
+            Ok(frame)
+        }
+    }
+
+    #[test]
+    fn cycle_retry_releases_old_pixels_and_returns_the_first_fresh_source() {
+        let mut capture = CycleCapture::new([Some(source_info(7, true)), Some(source_info(8, false))]);
+        let stop = capture.stop.clone();
+        let image = capture_in_cycle(&mut capture, Instant::now() + Duration::from_secs(1), &stop).unwrap().unwrap();
+        assert_eq!(capture.calls, 2);
+        assert_eq!(image.source.unwrap().frame_id, 8);
+        assert!(!image.source.unwrap().duplicate);
+        assert_eq!(capture.live.load(Ordering::Acquire), 1);
+        drop(image);
+        assert_eq!(capture.live.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn unknown_source_and_expired_deadline_return_one_image_without_retrying() {
+        for (source, deadline) in [(None, Instant::now() + Duration::from_secs(1)), (Some(source_info(7, true)), Instant::now())] {
+            let mut capture = CycleCapture::new([source]);
+            let stop = capture.stop.clone();
+            let image = capture_in_cycle(&mut capture, deadline, &stop).unwrap().unwrap();
+            assert_eq!(capture.calls, 1);
+            assert_eq!(image.source, source);
+        }
+    }
+
+    #[test]
+    fn static_cycle_returns_one_repeat_at_its_original_deadline() {
+        let mut capture = CycleCapture::new([Some(source_info(7, true))]);
+        let stop = capture.stop.clone();
+        let deadline = Instant::now() + Duration::from_millis(3);
+        let image = capture_in_cycle(&mut capture, deadline, &stop).unwrap().unwrap();
+        assert!(Instant::now() >= deadline);
+        assert!(capture.calls <= 5, "the retry loop did not yield within the shared deadline");
+        assert_eq!(image.source, Some(source_info(7, true)));
+    }
+
+    #[test]
+    fn cancellation_before_or_during_acquisition_never_publishes_a_frame() {
+        for cancel_before in [true, false] {
+            let mut capture = CycleCapture::new([Some(source_info(7, true))]);
+            capture.stop.store(cancel_before, Ordering::Release);
+            capture.cancel_at = Some(1);
+            let stop = capture.stop.clone();
+            assert!(capture_in_cycle(&mut capture, Instant::now() + Duration::from_secs(1), &stop).unwrap().is_none());
+            assert_eq!(capture.calls, usize::from(!cancel_before));
+            assert_eq!(capture.live.load(Ordering::Acquire), 0);
+        }
+    }
+
+    #[test]
+    fn source_phase_is_initialized_once_and_resets_only_for_explicit_transitions() {
+        let now = Instant::now();
+        let period = Duration::from_millis(10);
+        let original = now + period;
+        let mut anchored = None;
+        let mut info = source_info(7, false);
+        info.present_age_us = Some(3000);
+        assert_eq!(source_phase_deadline(Some(info), &mut anchored, now, period, original), now + Duration::from_millis(7));
+        info.present_age_us = Some(1000);
+        assert_eq!(source_phase_deadline(Some(info), &mut anchored, now, period, original), original, "ordinary images cannot restart the clock");
+        info.generation += 1;
+        assert_eq!(source_phase_deadline(Some(info), &mut anchored, now, period, original), now + Duration::from_millis(9));
+        anchored = None; // The owner explicitly resets this on a frame-rate change.
+        assert_eq!(source_phase_deadline(Some(info), &mut anchored, now, Duration::from_millis(20), original), now + Duration::from_millis(19));
+        anchored = None;
+        info.present_age_us = Some(25_000);
+        assert_eq!(source_phase_deadline(Some(info), &mut anchored, now, period, original), now + Duration::from_millis(5), "old static source time cannot create catch-up debt");
+        anchored = None;
+        info.present_age_us = None;
+        assert_eq!(source_phase_deadline(Some(info), &mut anchored, now, period, original), original);
+        assert_eq!(anchored, None);
+        assert_eq!(source_phase_deadline(None, &mut anchored, now, period, original), original);
+    }
+
+    #[test]
+    fn suspended_capture_discards_the_cycle_and_recovery_can_establish_a_new_phase() {
+        let mut info = source_info(7, false);
+        info.generation = 2;
+        info.present_age_us = Some(2000);
+        let mut capture = CycleCapture::new([Some(info)]);
+        capture.suspend_at = Some(1);
+        let stop = capture.stop.clone();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        assert!(matches!(capture_in_cycle(&mut capture, deadline, &stop), Err(CaptureError::Suspended(_))));
+        assert_eq!(capture.live.load(Ordering::Acquire), 0);
+        capture.suspend_at = None;
+        let image = capture_in_cycle(&mut capture, deadline, &stop).unwrap().unwrap();
+        let now = Instant::now();
+        let mut anchored = None; // Same reset performed by run_capture on Suspended.
+        assert_eq!(source_phase_deadline(image.source, &mut anchored, now, Duration::from_millis(10), deadline), now + Duration::from_millis(8));
+        assert_eq!(anchored, Some(2));
     }
 
     fn publish_tick(owner: &Owner, id: u64, source_fps: u32) {
