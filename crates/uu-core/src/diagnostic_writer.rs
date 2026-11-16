@@ -4,6 +4,20 @@ use std::{ffi::OsString,fs::{File,OpenOptions},io::{self,Write},path::PathBuf};
 const SEGMENT_BYTES:usize=256*1024;
 const TAIL_SEGMENTS:usize=7;
 const MAX_RECORD:usize=32*1024;
+const STDERR_BUFFER_BYTES:usize=64*1024;
+
+/// Large opt-in terminal reports must not turn every JSON punctuation fragment
+/// into an unbuffered OS stderr write. Diagnostic I/O never fails a session.
+pub(crate) fn stderr_json(value:&impl serde::Serialize) {
+    let _=write_json_line(io::stderr().lock(),value);
+}
+fn write_json_line(writer:impl Write,value:&impl serde::Serialize)->io::Result<()> {
+    let mut writer=io::BufWriter::with_capacity(STDERR_BUFFER_BYTES,writer);
+    serde_json::to_writer(&mut writer,value).map_err(io::Error::other)?;
+    writer.write_all(b"\n")?;
+    writer.flush()
+}
+
 pub(crate) struct Writer {
     file:File,
     initial:PathBuf,
@@ -45,6 +59,43 @@ impl Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Default)]
+    struct CountingWriter {bytes:Vec<u8>,writes:usize,flushes:usize}
+    impl Write for CountingWriter {
+        fn write(&mut self,bytes:&[u8])->io::Result<usize> {
+            self.writes+=1;self.bytes.extend_from_slice(bytes);Ok(bytes.len())
+        }
+        fn flush(&mut self)->io::Result<()> {self.flushes+=1;Ok(())}
+    }
+    #[test]
+    fn large_terminal_json_preserves_one_line_and_bounds_os_writes() {
+        let frames:Vec<_>=(0..4096).map(|n|serde_json::json!({
+            "frame_id":n,"pts_us":n*16667u64,"events_us":[n*17,n*17+1,n*17+9],
+            "source":{"generation":1,"duplicate":false},"label":"owned profiling fixture"})).collect();
+        let value=serde_json::json!({"event":"host_continuous_trace","report":{"frames":frames}});
+        // The direct serializer is an independent control for the original
+        // fragment-by-fragment sink, not an assumed number of JSON fields.
+        let mut direct=CountingWriter::default();
+        serde_json::to_writer(&mut direct,&value).unwrap();direct.write_all(b"\n").unwrap();
+        let mut buffered=CountingWriter::default();
+        write_json_line(&mut buffered,&value).unwrap();
+        assert_eq!(buffered.bytes,direct.bytes);
+        assert_eq!(buffered.bytes.iter().filter(|b|**b==b'\n').count(),1);
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&buffered.bytes).unwrap(),value);
+        assert!(buffered.bytes.len()>512*1024,"exercise a real large report");
+        assert!(buffered.writes<=32,"large report must use bounded chunk writes: {}",buffered.writes);
+        assert!(direct.writes>buffered.writes*100,"buffering must remove fragmented OS I/O");
+        assert_eq!(buffered.flushes,1);
+    }
+    #[test]
+    fn terminal_json_write_failure_is_a_returned_diagnostic_error() {
+        struct Failed;
+        impl Write for Failed {
+            fn write(&mut self,_:&[u8])->io::Result<usize> {Err(io::ErrorKind::BrokenPipe.into())}
+            fn flush(&mut self)->io::Result<()> {Ok(())}
+        }
+        assert!(write_json_line(Failed,&serde_json::json!({"event":"fixture"})).is_err());
+    }
     #[test]
     fn long_sessions_keep_initial_metadata_and_recent_events_with_bounded_private_storage() {
         let root=std::env::temp_dir().join(format!("eclipse-diagnostics-rotation-{}",uuid::Uuid::new_v4()));

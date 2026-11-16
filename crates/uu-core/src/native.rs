@@ -830,7 +830,7 @@ async fn send_video(
     eprintln!("{}",serde_json::json!({"event":"capture_overlap_delivery","retired_encoded_aus":producer.retired_outputs.load(Ordering::Relaxed)}));
     producer.trace.write_local_report()?;
     report.frame_trace=producer.trace.report();
-    if let Some(continuous)=producer.trace.continuous_report(){eprintln!("{}",serde_json::json!({"event":"host_continuous_trace","report":continuous}));}
+    if let Some(continuous)=producer.trace.continuous_report(){crate::diagnostic_writer::stderr_json(&serde_json::json!({"event":"host_continuous_trace","report":continuous}));}
     active?;
     stopped?;
     Ok(report)
