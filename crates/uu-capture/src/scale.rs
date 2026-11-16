@@ -18,6 +18,7 @@ impl Capture for Scaled {
     fn cursor(&self)->Option<crate::cursor::Stream>{self.inner.cursor()}
     fn frame_info(&self)->Option<crate::frame_info::FrameInfo>{self.inner.frame_info()}
     fn frame_timing(&self)->Option<crate::FrameTiming>{self.last_timing}
+    fn owns_frame_cadence(&self)->bool{self.inner.owns_frame_cadence()}
     fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{self.inner.hdr_metadata()}
     fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice>{self.inner.encoder_input_device()}
     fn set_frame_rate(&mut self,fps:u32)->Result<(),CaptureError>{self.inner.set_frame_rate(fps)}
@@ -106,6 +107,7 @@ mod tests {
         }
         impl Capture for Timed {
             fn resolution(&self)->(u32,u32){(4,4)}
+            fn owns_frame_cadence(&self)->bool{true}
             fn frame_timing(&self)->Option<crate::FrameTiming>{self.delivered.then_some(self.timing)}
             fn next_frame(&mut self)->Result<RawFrame,CaptureError>{
                 if self.delivered {
@@ -120,6 +122,7 @@ mod tests {
         let base=std::time::Instant::now()-std::time::Duration::from_millis(100);
         let timing=crate::FrameTiming{started:base,ready:base+std::time::Duration::from_micros(500)};
         let mut capture=bounded(Box::new(Timed{timing,delivered:false}),Some([2,2]));
+        assert!(capture.owns_frame_cadence());
         assert_eq!(capture.frame_timing(),None);
         let frame=capture.next_frame().unwrap();
         assert_eq!((frame.width,frame.height),(2,2));

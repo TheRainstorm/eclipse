@@ -414,9 +414,7 @@ fn produce<S: Source>(source: &mut S, shared: &Shared<S::Frame, S::Config>) {
             // configuration may enter this generation. Never retag an old slot.
             if let Some(frame) = confirmed {
                 state.have_image = true;
-                if cadence.is_some() {
-                    state.pulse = Some(Pulse::Fresh);
-                }
+                state.pulse = Some(Pulse::Fresh);
                 state.summary.produced += 1;
                 state.slot = Some(Packet {
                     frame,
@@ -468,9 +466,7 @@ fn produce<S: Source>(source: &mut S, shared: &Shared<S::Frame, S::Config>) {
                     state.summary.replaced += 1;
                 }
                 state.have_image = true;
-                if cadence.is_some() {
-                    state.pulse = Some(Pulse::Fresh);
-                }
+                state.pulse = Some(Pulse::Fresh);
                 state.summary.produced += 1;
                 state.slot = Some(Packet {
                     frame,
@@ -511,9 +507,7 @@ fn produce<S: Source>(source: &mut S, shared: &Shared<S::Frame, S::Config>) {
                 state.slot = None;
                 state.pulse = None;
                 state.have_image = false;
-                if cadence.is_some() {
-                    state.pulse = Some(Pulse::NoFrame);
-                }
+                state.pulse = Some(Pulse::NoFrame);
                 shared.current.store(0, Ordering::Release);
                 shared.changed.notify_all();
                 // Recovery APIs may return immediately while a desktop is
@@ -590,6 +584,28 @@ mod tests {
         tx.send(Input::Fence(reply)).unwrap();
         rx.recv_timeout(Duration::from_secs(1)).unwrap();
     }
+    #[test]
+    fn continuous_source_events_deliver_fresh_pause_and_resume_without_a_timer() {
+        let (mut owner,tx,configs)=setup();
+        assert_eq!(configs.recv().unwrap(),60);
+        tx.send(Input::Image(Arc::new(vec![7]))).unwrap();
+        let Some(Delivery::Fresh(frame))=owner.next_event(Duration::from_secs(1)).unwrap_or_else(|_|panic!("expected fresh image")) else{panic!("expected image")};
+        assert_eq!(*frame.frame,vec![7]);
+        assert!(owner.next_event(Duration::ZERO).unwrap_or_else(|_|panic!()).is_none());
+        owner.interrupt_handle()();
+        assert!(owner.next_event(Duration::ZERO).unwrap_or_else(|_|panic!()).is_none());
+        tx.send(Input::Pause).unwrap();
+        assert!(matches!(owner.next_event(Duration::from_secs(1)),Err(Failure::Paused(_))));
+        fence(&tx);
+        assert!(owner.next_event(Duration::ZERO).unwrap_or_else(|_|panic!()).is_none(),"a consumed pause cannot become a busy-loop event");
+        tx.send(Input::Image(Arc::new(vec![8]))).unwrap();
+        let Some(Delivery::Fresh(frame))=owner.next_event(Duration::from_secs(1)).unwrap_or_else(|_|panic!("expected resumed image")) else{panic!("expected image")};
+        assert_eq!(*frame.frame,vec![8]);
+        let summary=owner.stop().unwrap();
+        assert!(!summary.owner_pacing);
+        assert_eq!(summary.repeat_opportunities,0);
+    }
+
     #[test]
     fn blocked_encoder_keeps_only_latest_and_never_mutates_inflight_pixels() {
         let (mut owner, tx, configs) = setup();

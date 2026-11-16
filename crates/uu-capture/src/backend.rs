@@ -66,8 +66,13 @@ pub trait Capture: Send {
     fn frame_timing(&self) -> Option<FrameTiming> { None }
     /// Actual HDR source metadata, never inferred from bit depth alone.
     fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{None}
+    /// The source owns delivery cadence at `set_frame_rate` and each read
+    /// consumes one delivery. Callers must encode a returned image immediately
+    /// rather than adding another output timer. An idle source may deliver an
+    /// explicitly repeated image, retaining its source identity.
+    fn owns_frame_cadence(&self)->bool{false}
     /// Hint capture pacing without replacing the authorized desktop session.
-    /// Backends may retain the source cadence; the producer controls output FPS.
+    /// When the source does not own delivery cadence, the producer controls output FPS.
     fn set_frame_rate(&mut self,_fps:u32)->Result<(),CaptureError>{Ok(())}
     /// Opt in only when the selected encoder accepts native GPU surfaces.
     fn prefer_gpu(&mut self,_enabled:bool,_vendor:Option<u16>) {}

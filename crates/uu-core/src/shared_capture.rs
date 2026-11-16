@@ -55,10 +55,43 @@ struct PublishedFrame {
     source: Option<uu_capture::frame_info::FrameInfo>,
     timing: FrameTiming,
 }
+#[derive(Default)]
+struct DeliveryCadence {
+    source_fps: u32,
+    requested_fps: u32,
+    credit: u32,
+}
+impl DeliveryCadence {
+    fn accepts(&mut self, source_fps: u32, requested_fps: u32) -> bool {
+        if self.source_fps == 0 || self.requested_fps != requested_fps {
+            // A new subscription, explicit rate change, or resumed desktop
+            // delivers the first available image without an extra period.
+            self.source_fps = source_fps;
+            self.requested_fps = requested_fps;
+            self.credit = 0;
+            return true;
+        }
+        if self.source_fps != source_fps {
+            self.credit = self.credit * source_fps / self.source_fps;
+            self.source_fps = source_fps;
+        }
+        // Count owner opportunities rather than comparing independent wall
+        // clocks. Equal-rate readers receive every tick despite wake jitter;
+        // fractional rates distribute deliveries without catch-up bursts.
+        self.credit += requested_fps.min(source_fps);
+        if self.credit >= source_fps {
+            self.credit -= source_fps;
+            true
+        } else {
+            false
+        }
+    }
+}
 struct Slot {
     frame: Option<PublishedFrame>,
     error: Option<String>,
     closed: bool,
+    cadence: DeliveryCadence,
 }
 struct Subscriber {
     id: u64,
@@ -71,22 +104,34 @@ impl Subscriber {
         Arc::new(Self {
             id,
             fps: AtomicU32::new(fps.clamp(1, 240)),
-            slot: Mutex::new(Slot { frame: None, error: None, closed: false }),
+            slot: Mutex::new(Slot { frame: None, error: None, closed: false, cadence: DeliveryCadence::default() }),
             changed: Condvar::new(),
         })
     }
-    fn publish(&self, frame: &PublishedFrame) {
+    fn publish(&self, frame: &PublishedFrame, source_fps: u32) {
         let mut slot = self.slot.lock().unwrap();
         if slot.closed { return; }
+        if !slot.cadence.accepts(source_fps, self.fps.load(Ordering::Acquire)) { return; }
         slot.error = None;
         slot.frame = Some(frame.clone());
         self.changed.notify_one();
+    }
+    fn set_fps(&self, fps: u32) {
+        let mut slot = self.slot.lock().unwrap();
+        let fps = fps.clamp(1, 240);
+        if self.fps.swap(fps, Ordering::AcqRel) != fps {
+            // A quality change must not consume a delivery admitted under the
+            // previous rate; the next owner tick starts the new cadence.
+            slot.frame = None;
+            slot.cadence = DeliveryCadence::default();
+        }
     }
     fn suspend(&self, reason: &str) {
         let mut slot = self.slot.lock().unwrap();
         if slot.closed { return; }
         slot.frame = None;
         slot.error = Some(reason.into());
+        slot.cadence = DeliveryCadence::default();
         self.changed.notify_all();
     }
     fn close(&self, error: Option<String>) {
@@ -105,7 +150,10 @@ impl Subscriber {
                 let message = slot.error.clone().unwrap_or_else(|| uu_i18n::text("共享采集源已经关闭").into());
                 return Err(CaptureError::Backend(message));
             }
-            if let Some(error) = &slot.error { return Err(CaptureError::Suspended(error.clone())); }
+            // A suspension is a source notification, not a ready image that
+            // can be polled repeatedly. The owner retries and publishes another
+            // notification or fresh image; cadence-driven readers wait for it.
+            if let Some(error) = slot.error.take() { return Err(CaptureError::Suspended(error)); }
             if let Some(frame) = slot.frame.take() { return Ok(Some(frame)); }
             slot = match deadline {
                 None => self.changed.wait(slot).unwrap(),
@@ -175,7 +223,7 @@ impl Owner {
     }
     fn set_fps(&self, id: u64, fps: u32) {
         if let Some(subscriber) = self.subscribers.lock().unwrap().get(&id) {
-            subscriber.fps.store(fps.clamp(1, 240), Ordering::Release);
+            subscriber.set_fps(fps);
         }
     }
     fn set_gpu(&self, enabled: bool, vendor: Option<u16>) {
@@ -204,10 +252,10 @@ impl Owner {
             ready = self.ready_changed.wait(ready).unwrap();
         }
     }
-    fn publish(&self, frame: &RawFrame, source: Option<uu_capture::frame_info::FrameInfo>, timing: FrameTiming) {
+    fn publish(&self, frame: &RawFrame, source: Option<uu_capture::frame_info::FrameInfo>, timing: FrameTiming, source_fps: u32) {
         let frame = PublishedFrame { frame: frame.clone(), source, timing };
         let subscribers: Vec<_> = self.subscribers.lock().unwrap().values().cloned().collect();
-        for subscriber in subscribers { subscriber.publish(&frame); }
+        for subscriber in subscribers { subscriber.publish(&frame, source_fps); }
     }
     fn suspend(&self, reason: &str) {
         let subscribers: Vec<_> = self.subscribers.lock().unwrap().values().cloned().collect();
@@ -360,7 +408,7 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
             metadata.resolution = capture.resolution();
             metadata.hdr = capture.hdr_metadata();
         }
-        owner.publish(&frame, capture.frame_info(), timing);
+        owner.publish(&frame, capture.frame_info(), timing, configured_fps);
         next += period;
     }
     if let Some(owner) = owner.upgrade() {
@@ -435,6 +483,7 @@ impl SharedCapture {
 }
 impl Capture for SharedCapture {
     fn cursor(&self) -> Option<uu_capture::cursor::Stream> { self.metadata().cursor.clone() }
+    fn owns_frame_cadence(&self) -> bool { true }
     fn enable_overlap(&mut self) -> Result<(), CaptureError> { Ok(()) }
     fn wait_updated_frame(&mut self, wait: Duration) -> Result<Option<RawFrame>, CaptureError> {
         self.owner.default_input_format();
@@ -514,6 +563,116 @@ mod tests {
         }
     }
 
+    fn publish_tick(owner: &Owner, id: u64, source_fps: u32) {
+        let started = Instant::now();
+        let frame = RawFrame::new_i420(2, 2, vec![0; 6], uu_media::Timestamp(id));
+        owner.publish(&frame, Some(source_info(id, false)), FrameTiming { started, ready: Instant::now() }, source_fps);
+    }
+
+    #[test]
+    fn subscriber_rates_follow_owner_ticks_without_accumulating_catch_up_work() {
+        for (source_fps, requested_fps) in [(60, 60), (60, 30), (60, 50), (120, 24), (165, 60)] {
+            let mut cadence = DeliveryCadence::default();
+            let mut delivered = 0;
+            for tick in 0..source_fps * 10 {
+                delivered += u32::from(cadence.accepts(source_fps, requested_fps));
+                let error = i64::from(delivered * source_fps) - i64::from((tick + 1) * requested_fps);
+                assert!(error.unsigned_abs() < u64::from(source_fps), "rate drifted by a full delivery");
+            }
+            assert_eq!(delivered, requested_fps * 10);
+        }
+    }
+
+    #[test]
+    fn mixed_subscriber_rates_survive_quality_changes_and_removal_of_the_fastest() {
+        let (owner, mut first, mut second) = delivery_fixture();
+        assert!(first.owns_frame_cadence());
+        second.set_frame_rate(30).unwrap();
+        assert_eq!(owner.target_fps(), 60);
+        let mut slow = 0;
+        for id in 1..=60 {
+            publish_tick(&owner, id, 60);
+            assert_eq!(first.wait_updated_frame(Duration::ZERO).unwrap().unwrap().pts.0, id);
+            slow += u32::from(second.wait_updated_frame(Duration::ZERO).unwrap().is_some());
+        }
+        assert_eq!(slow, 30);
+
+        first.set_frame_rate(30).unwrap();
+        assert_eq!(owner.target_fps(), 30);
+        for id in 61..=90 {
+            publish_tick(&owner, id, 30);
+            for capture in [&mut first, &mut second] {
+                assert_eq!(capture.wait_updated_frame(Duration::ZERO).unwrap().unwrap().pts.0, id);
+            }
+        }
+
+        second.set_frame_rate(60).unwrap();
+        let mut slow = 0;
+        for id in 91..=150 {
+            publish_tick(&owner, id, 60);
+            slow += u32::from(first.wait_updated_frame(Duration::ZERO).unwrap().is_some());
+            assert_eq!(second.wait_updated_frame(Duration::ZERO).unwrap().unwrap().pts.0, id);
+        }
+        assert_eq!(slow, 30);
+        drop(second);
+        assert_eq!(owner.target_fps(), 30);
+        publish_tick(&owner, 151, 30);
+        assert_eq!(first.next_frame().unwrap().pts.0, 151);
+    }
+
+    #[test]
+    fn slow_consumer_receives_only_the_latest_eligible_delivery_once() {
+        let (owner, mut first, mut second) = delivery_fixture();
+        second.set_frame_rate(30).unwrap();
+        for id in 1..=7 {
+            publish_tick(&owner, id, 60);
+            assert_eq!(first.next_frame().unwrap().pts.0, id);
+        }
+        assert_eq!(second.next_frame().unwrap().pts.0, 7);
+        assert_eq!(second.frame_info().unwrap().frame_id, 7);
+        assert!(second.wait_updated_frame(Duration::ZERO).unwrap().is_none(), "no stale queue may be replayed");
+        publish_tick(&owner, 8, 60);
+        assert!(second.wait_updated_frame(Duration::ZERO).unwrap().is_none());
+        publish_tick(&owner, 9, 60);
+        assert_eq!(second.next_frame().unwrap().pts.0, 9);
+    }
+
+    #[test]
+    fn rate_change_discards_pending_old_rate_and_resume_delivers_the_first_image() {
+        let (owner, mut first, mut second) = delivery_fixture();
+        publish_tick(&owner, 1, 60);
+        second.set_frame_rate(30).unwrap();
+        assert!(second.wait_updated_frame(Duration::ZERO).unwrap().is_none());
+        publish_tick(&owner, 2, 60);
+        assert_eq!(second.next_frame().unwrap().pts.0, 2);
+        publish_tick(&owner, 3, 60);
+        assert!(second.wait_updated_frame(Duration::ZERO).unwrap().is_none());
+        owner.suspend("owned desktop transition");
+        for capture in [&mut first, &mut second] {
+            assert!(matches!(capture.next_frame(), Err(CaptureError::Suspended(_))));
+            assert_eq!(capture.frame_timing(), None);
+            assert!(capture.wait_updated_frame(Duration::ZERO).unwrap().is_none(), "a consumed suspension cannot become a busy-loop delivery");
+        }
+        publish_tick(&owner, 4, 60);
+        for capture in [&mut first, &mut second] {
+            assert_eq!(capture.wait_updated_frame(Duration::ZERO).unwrap().unwrap().pts.0, 4);
+            assert_eq!(capture.frame_info().unwrap().frame_id, 4);
+        }
+    }
+
+    #[test]
+    fn closing_a_rate_limited_subscriber_wakes_its_waiter_without_another_tick() {
+        let (owner, _first, _second) = delivery_fixture();
+        let waiting = owner.subscribe(30);
+        let (send, receive) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || { let _ = send.send(waiting.take(None)); });
+        owner.close(Some("owned source shutdown".into()));
+        assert!(matches!(receive.recv_timeout(Duration::from_secs(1)).unwrap(), Err(CaptureError::Backend(_))));
+        thread.join().unwrap();
+        publish_tick(&owner, 1, 60);
+        assert!(_first.subscriber.take(Some(Duration::ZERO)).is_err(), "publishing cannot reopen a closed slot");
+    }
+
     #[test]
     fn each_subscriber_keeps_the_source_identity_of_its_delivered_image() {
         let (owner, mut first, mut second) = delivery_fixture();
@@ -523,14 +682,14 @@ mod tests {
         let base = Instant::now() - Duration::from_millis(100);
         let old_timing = FrameTiming { started: base, ready: base + Duration::from_millis(1) };
         let new_timing = FrameTiming { started: base + Duration::from_millis(16), ready: base + Duration::from_millis(17) };
-        owner.publish(&picture(1000), Some(old), old_timing);
+        owner.publish(&picture(1000), Some(old), old_timing, 60);
         assert_eq!(first.next_frame().unwrap().pts.0, 1000);
         assert_eq!(first.frame_info(), Some(old));
         assert_eq!(first.frame_timing(), Some(old_timing));
 
         // A fast owner replaces the slow subscriber's pending image without
         // changing the identity already delivered to the other subscriber.
-        owner.publish(&picture(2000), Some(new), new_timing);
+        owner.publish(&picture(2000), Some(new), new_timing, 60);
         assert_eq!(first.frame_info(), Some(old));
         assert_eq!(first.frame_timing(), Some(old_timing));
         assert_eq!(second.next_frame().unwrap().pts.0, 2000);
@@ -541,7 +700,7 @@ mod tests {
         assert_eq!(first.frame_info(), Some(new));
         assert_eq!(first.frame_timing(), Some(new_timing));
 
-        owner.publish(&picture(3000), None, new_timing);
+        owner.publish(&picture(3000), None, new_timing, 60);
         assert_eq!(first.next_frame().unwrap().pts.0, 3000);
         assert_eq!(first.frame_info(), None, "unknown source metadata cannot reuse an earlier image's identity");
     }
@@ -553,10 +712,10 @@ mod tests {
         let original = source_info(11, false);
         let base = Instant::now() - Duration::from_millis(100);
         let timing = FrameTiming { started: base, ready: base + Duration::from_millis(1) };
-        owner.publish(&picture(1000), Some(original), timing);
+        owner.publish(&picture(1000), Some(original), timing, 60);
         first.next_frame().unwrap();
         let repeated = source_info(11, true);
-        owner.publish(&picture(2000), Some(repeated), timing);
+        owner.publish(&picture(2000), Some(repeated), timing, 60);
         assert_eq!(first.frame_info(), Some(original));
         assert_eq!(first.next_frame().unwrap().pts.0, 2000);
         assert_eq!(first.frame_info(), Some(repeated));
@@ -568,7 +727,7 @@ mod tests {
         let frame = RawFrame::new_i420(2, 2, vec![0; 6], uu_media::Timestamp(1000));
         let base = Instant::now() - Duration::from_millis(100);
         let timing = FrameTiming { started: base, ready: base + Duration::from_millis(1) };
-        owner.publish(&frame, Some(source_info(11, false)), timing);
+        owner.publish(&frame, Some(source_info(11, false)), timing, 60);
         first.next_frame().unwrap();
         assert_eq!(first.frame_timing(), Some(timing));
         owner.suspend("owned desktop transition");
@@ -576,7 +735,7 @@ mod tests {
         assert_eq!(first.frame_info(), None);
         assert_eq!(first.frame_timing(), None);
 
-        owner.publish(&frame, Some(source_info(12, false)), timing);
+        owner.publish(&frame, Some(source_info(12, false)), timing, 60);
         first.next_frame().unwrap();
         assert_eq!(first.frame_info(), Some(source_info(12, false)));
         assert_eq!(first.frame_timing(), Some(timing));
@@ -584,7 +743,7 @@ mod tests {
         assert_eq!(first.frame_info(), None);
         assert_eq!(first.frame_timing(), None);
 
-        owner.publish(&frame, Some(source_info(13, false)), timing);
+        owner.publish(&frame, Some(source_info(13, false)), timing, 60);
         first.next_frame().unwrap();
         owner.close(Some("owned device removed".into()));
         assert!(matches!(first.next_frame(), Err(CaptureError::Backend(_))));
@@ -666,7 +825,7 @@ mod tests {
             loop {
                 match subscriber.take(Some(Duration::from_millis(20))) {
                     Ok(Some(frame)) => { assert_eq!(frame.frame.pts.0, 2); break; }
-                    Err(CaptureError::Suspended(_)) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
+                    Err(CaptureError::Suspended(_)) | Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
                     other => panic!("source did not recover: {other:?}"),
                 }
             }

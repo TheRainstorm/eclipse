@@ -43,6 +43,7 @@ struct Config {
     gpu: bool,
     vendor: Option<u16>,
     owner_pacing: bool,
+    source_paced: bool,
 }
 #[derive(Clone)]
 struct Image {
@@ -59,7 +60,7 @@ impl latest_capture::Source for Desktop {
     type Frame = Image;
     type Config = Config;
     fn cadence(c:&Config)->Option<Duration> {
-        c.owner_pacing.then(||Duration::from_secs_f64(1.0/f64::from(c.fps)))
+        (c.owner_pacing && !c.source_paced).then(||Duration::from_secs_f64(1.0/f64::from(c.fps)))
     }
     fn configure(&mut self, c: Config) -> std::result::Result<Option<Image>, String> {
         self.capture.prefer_gpu(c.gpu, c.vendor);
@@ -171,7 +172,7 @@ impl Input {
         let owner_pacing=pacing_from_env()?;
         validate_owner_pacing(owner_pacing,enabled,separate_from_env()?)?;
         anyhow::ensure!((1..=240).contains(&fps),"invalid capture frame rate");
-        let config = Config { fps, gpu, vendor, owner_pacing };
+        let config = Config { fps, gpu, vendor, owner_pacing, source_paced: capture.owns_frame_cadence() };
         let mode = if enabled {
             let device = capture.encoder_input_device();
             let owner = Owner::start(
@@ -184,7 +185,7 @@ impl Input {
             .map_err(anyhow::Error::msg)?;
             eprintln!(
                 "{}",
-                serde_json::json!({"event":"capture_overlap","action":"start","requested":true,"actual":true,"pending_limit":1,"capture_pool_limit":3,"owner_thread":owner.summary().owner_thread,"owner_native_thread":owner.summary().owner_native_thread,"generation":owner.summary().generation,"owner_pacing":owner_pacing,"target_fps":fps})
+                serde_json::json!({"event":"capture_overlap","action":"start","requested":true,"actual":true,"pending_limit":1,"capture_pool_limit":3,"owner_thread":owner.summary().owner_thread,"owner_native_thread":owner.summary().owner_native_thread,"generation":owner.summary().generation,"owner_pacing":owner_pacing,"source_paced":config.source_paced,"target_fps":fps})
             );
             Mode::Overlap {
                 owner,
@@ -209,9 +210,11 @@ impl Input {
             finished: false,
         })
     }
-    pub fn owner_pacing(&self)->bool { self.config.owner_pacing }
+    pub fn owner_pacing(&self)->bool {
+        self.config.owner_pacing || self.config.source_paced
+    }
     pub fn interrupt_handle(&self)->Option<std::sync::Arc<dyn Fn()+Send+Sync>> {
-        match &self.mode { Mode::Overlap{owner,..} if self.config.owner_pacing=>Some(owner.interrupt_handle()),_=>None }
+        match &self.mode { Mode::Overlap{owner,..} if self.owner_pacing()=>Some(owner.interrupt_handle()),_=>None }
     }
     pub fn encoder_input_device(&self) -> Option<InputDevice> {
         match &self.mode {
@@ -234,8 +237,8 @@ impl Input {
             }
         }
         self.config.fps = fps;
-        if self.config.owner_pacing {
-            eprintln!("{}",serde_json::json!({"event":"capture_owner_pacing","action":"configure","actual":true,"target_fps":fps}));
+        if self.owner_pacing() {
+            eprintln!("{}",serde_json::json!({"event":"capture_owner_pacing","action":"configure","actual":true,"target_fps":fps,"source_paced":self.config.source_paced}));
         }
         Ok(())
     }
@@ -262,6 +265,7 @@ impl Input {
         Ok(())
     }
     pub fn next(&mut self, metadata: bool) -> std::result::Result<Observed, CaptureError> {
+        let paced = self.owner_pacing();
         match &mut self.mode {
             Mode::Serial(capture) => {
                 let started = Instant::now();
@@ -286,12 +290,12 @@ impl Input {
                 } else {
                     Duration::from_millis(250)
                 };
-                let delivery = if self.config.owner_pacing { owner.next_event(Duration::from_millis(250)) }
+                let delivery = if paced { owner.next_event(Duration::from_millis(250)) }
                     else { owner.latest(wait).map(|v|v.map(latest_capture::Delivery::Fresh)) };
                 let (fresh, repeat_allowed) = match delivery {
                     Ok(Some(latest_capture::Delivery::Fresh(packet)))=>(Some(packet),false),
                     Ok(Some(latest_capture::Delivery::Repeat))=>(None,true),
-                    Ok(Some(latest_capture::Delivery::NoFrame))|Ok(None) if self.config.owner_pacing=>{
+                    Ok(Some(latest_capture::Delivery::NoFrame))|Ok(None) if paced=>{
                         return Err(CaptureError::Suspended(uu_i18n::text("等待采集周期的新图像").into()));
                     },
                     Ok(None)|Ok(Some(latest_capture::Delivery::NoFrame))=>(None,true),
@@ -320,7 +324,7 @@ impl Input {
                 let mut source = image.source;
                 if let Some(info) = source {
                     let id = (info.generation, info.frame_id);
-                    repeated = self.last_source == Some(id) || (self.config.owner_pacing && (info.duplicate || repeat_allowed));
+                    repeated = self.last_source == Some(id) || (paced && (info.duplicate || repeat_allowed));
                     self.last_source = Some(id);
                 }
                 // Repeating at output cadence is explicit, never a capture-owner
@@ -364,7 +368,7 @@ impl Input {
             let s = owner.summary();
             eprintln!(
                 "{}",
-                serde_json::json!({"event":"capture_overlap","action":"stop","actual":true,"pending_limit":1,"capture_pool_limit":3,"produced":s.produced,"replaced":s.replaced,"pauses":s.pauses,"configurations":s.configurations,"owner_thread":s.owner_thread,"owner_native_thread":s.owner_native_thread,"generation":s.generation,"phase":s.phase,"joined":s.joined,"repeated_outputs":self.repeats,"retired_outputs":self.retired_outputs,"error":stopped.as_ref().err(),"owner_pacing":s.owner_pacing,"target_fps":self.config.fps,"ticks":s.ticks,"repeat_opportunities":s.repeat_opportunities,"no_frame_opportunities":s.no_frame_opportunities,"skipped_periods":s.skipped_periods})
+                serde_json::json!({"event":"capture_overlap","action":"stop","actual":true,"pending_limit":1,"capture_pool_limit":3,"produced":s.produced,"replaced":s.replaced,"pauses":s.pauses,"configurations":s.configurations,"owner_thread":s.owner_thread,"owner_native_thread":s.owner_native_thread,"generation":s.generation,"phase":s.phase,"joined":s.joined,"repeated_outputs":self.repeats,"retired_outputs":self.retired_outputs,"error":stopped.as_ref().err(),"owner_pacing":s.owner_pacing,"source_paced":self.config.source_paced,"target_fps":self.config.fps,"ticks":s.ticks,"repeat_opportunities":s.repeat_opportunities,"no_frame_opportunities":s.no_frame_opportunities,"skipped_periods":s.skipped_periods})
             );
             stopped.map_err(anyhow::Error::msg)?;
         }
@@ -390,14 +394,16 @@ mod tests {
         base: Instant,
         delivered: u64,
         timing: Option<FrameTiming>,
+        owns_cadence: bool,
     }
     impl BufferedCapture {
-        fn new(base: Instant) -> Self { Self { base, delivered: 0, timing: None } }
+        fn new(base: Instant) -> Self { Self { base, delivered: 0, timing: None, owns_cadence: false } }
     }
     impl Capture for BufferedCapture {
         fn resolution(&self) -> (u32, u32) { (2, 2) }
         fn enable_overlap(&mut self) -> std::result::Result<(), CaptureError> { Ok(()) }
         fn frame_timing(&self) -> Option<FrameTiming> { self.timing }
+        fn owns_frame_cadence(&self) -> bool { self.owns_cadence }
         fn frame_info(&self) -> Option<FrameInfo> {
             self.timing.map(|_| FrameInfo {
                 generation: 1, frame_id: 9, duplicate: self.delivered > 1,
@@ -412,6 +418,19 @@ mod tests {
         }
         fn wait_updated_frame(&mut self, _: Duration) -> std::result::Result<Option<RawFrame>, CaptureError> {
             self.next_frame().map(Some)
+        }
+    }
+
+    #[test]
+    fn serial_input_uses_the_capture_delivery_cadence_without_changing_unpaced_sources() {
+        for owns_cadence in [false, true] {
+            let mut capture = BufferedCapture::new(Instant::now());
+            capture.owns_cadence = owns_cadence;
+            let mut input = Input::new(Box::new(capture), false, 60, false, None).unwrap();
+            assert_eq!(input.owner_pacing(), owns_cadence);
+            input.set_frame_rate(30).unwrap();
+            assert_eq!(input.owner_pacing(), owns_cadence);
+            assert_eq!(input.next(true).unwrap().frame.pts.0, 1000);
         }
     }
 
@@ -431,7 +450,7 @@ mod tests {
         use crate::latest_capture::Source;
         let base = Instant::now() - Duration::from_millis(100);
         let mut desktop = Desktop { capture: Box::new(BufferedCapture::new(base)), last: None };
-        let config = Config { fps: 60, gpu: false, vendor: None, owner_pacing: false };
+        let config = Config { fps: 60, gpu: false, vendor: None, owner_pacing: false, source_paced: false };
         let first = desktop.configure(config).unwrap().unwrap();
         assert_eq!((first.started, first.ready), (base, base + Duration::from_micros(500)));
         // Even a repeated source image has the explicitly supplied acquisition
@@ -442,6 +461,60 @@ mod tests {
         let update = desktop.next(Duration::ZERO).unwrap_or_else(|_| panic!("owned buffered capture failed")).unwrap();
         assert_eq!(update.started, base + Duration::from_millis(2));
         assert_eq!(update.ready, base + Duration::from_micros(2500));
+    }
+
+    #[test]
+    fn source_cadence_remains_unique_with_overlap_reconfiguration_and_interrupts() {
+        use std::sync::{atomic::{AtomicU32, Ordering}, Arc, mpsc};
+        struct CadencedCapture {
+            frames: mpsc::Receiver<u64>,
+            current: RawFrame,
+            fps: Arc<AtomicU32>,
+        }
+        impl Capture for CadencedCapture {
+            fn resolution(&self)->(u32,u32){(2,2)}
+            fn enable_overlap(&mut self)->std::result::Result<(),CaptureError>{Ok(())}
+            fn owns_frame_cadence(&self)->bool{true}
+            fn set_frame_rate(&mut self,fps:u32)->std::result::Result<(),CaptureError>{self.fps.store(fps,Ordering::Release);Ok(())}
+            fn next_frame(&mut self)->std::result::Result<RawFrame,CaptureError>{Ok(self.current.clone())}
+            fn wait_updated_frame(&mut self,wait:Duration)->std::result::Result<Option<RawFrame>,CaptureError>{
+                match self.frames.recv_timeout(wait) {
+                    Ok(pts)=>{self.current.pts=uu_media::Timestamp(pts);Ok(Some(self.current.clone()))},
+                    Err(mpsc::RecvTimeoutError::Timeout)=>Ok(None),
+                    Err(_)=>Err(CaptureError::Backend("owned frame publisher closed".into())),
+                }
+            }
+        }
+        let (send,receive)=mpsc::channel();
+        let fps=Arc::new(AtomicU32::new(0));
+        let capture=CadencedCapture{frames:receive,current:RawFrame::new_i420(2,2,vec![0;6],uu_media::Timestamp(1000)),fps:fps.clone()};
+        let mut input=Input::new(Box::new(capture),true,60,false,None).unwrap();
+        assert!(input.owner_pacing());
+        assert_eq!(input.next(false).unwrap().frame.pts.0,1000);
+        assert_eq!(fps.load(Ordering::Acquire),60);
+        let config=input.config;
+        assert_eq!(<Desktop as latest_capture::Source>::cadence(&config),None);
+        assert_eq!(<Desktop as latest_capture::Source>::cadence(&Config{owner_pacing:true,..config}),None,"legacy opt-in cannot add a timer to a paced source");
+        assert!(<Desktop as latest_capture::Source>::cadence(&Config{source_paced:false,owner_pacing:true,..config}).is_some());
+        let wake=input.interrupt_handle().expect("overlap wait must remain interruptible");
+        wake();
+        assert!(matches!(input.next(false),Err(CaptureError::Suspended(_))),"an interrupt cannot replay the previous image");
+        send.send(2000).unwrap();
+        assert_eq!(input.next(false).unwrap().frame.pts.0,2000);
+        input.set_frame_rate(30).unwrap();
+        assert_eq!(fps.load(Ordering::Acquire),30);
+        assert!(input.owner_pacing());
+        input.next(false).unwrap();
+        input.prefer_gpu(true,None).unwrap();
+        assert!(input.owner_pacing());
+        input.next(false).unwrap();
+        let Mode::Overlap{owner,..}=&input.mode else{panic!("expected overlap")};
+        assert!(!owner.summary().owner_pacing,"overlap must wait for actual source deliveries without a second timer");
+        wake();
+        assert!(matches!(input.next(false),Err(CaptureError::Suspended(_))));
+        send.send(3000).unwrap();
+        assert_eq!(input.next(false).unwrap().frame.pts.0,3000);
+        input.finish().unwrap();
     }
 
     #[test]
