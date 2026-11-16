@@ -1,6 +1,6 @@
 //! One process-wide profile selection, with legacy XDG paths as the default.
 
-use std::{ffi::OsStr, path::{Path, PathBuf}, sync::OnceLock};
+use std::{ffi::OsStr, path::{Path, PathBuf}, sync::{Mutex, OnceLock}};
 
 use crate::error::CoreError;
 
@@ -21,12 +21,41 @@ pub struct Config {
     pub signaling_host: String,
 }
 
+/// Publish only a successful configuration. The lock serializes cold callers;
+/// subsequent reads do not repeat environment queries or migration filesystem IO.
+struct ConfigCache {
+    value: OnceLock<Config>,
+    initialize: Mutex<()>,
+}
+
+impl ConfigCache {
+    const fn new() -> Self {
+        Self { value: OnceLock::new(), initialize: Mutex::new(()) }
+    }
+
+    fn get_or_try_init(&self, factory: impl FnOnce() -> Result<Config, CoreError>) -> Result<Config, CoreError> {
+        if let Some(config) = self.value.get() { return Ok(config.clone()); }
+        // No partially initialized state is published if the factory panics.
+        let _guard = self.initialize.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(config) = self.value.get() { return Ok(config.clone()); }
+        let config = factory()?;
+        Ok(self.value.get_or_init(|| config).clone())
+    }
+}
+
 impl Config {
     /// An existing `eclipse-data` directory beside the executable selects a
     /// portable profile. ECLIPSE_PROFILE_DIR explicitly selects a profile root.
     /// Select once: adding/removing the directory while running must not split
     /// settings, device identities and child windows across different stores.
+    /// After successful resolution, reuse the whole configuration. Recoverable
+    /// default-storage migration errors leave the cache empty so callers can retry.
     pub fn from_env() -> Result<Self, CoreError> {
+        static CONFIG: ConfigCache = ConfigCache::new();
+        CONFIG.get_or_try_init(Self::resolve_from_env)
+    }
+
+    fn resolve_from_env() -> Result<Self, CoreError> {
         static PROFILE: OnceLock<Result<Option<PathBuf>, String>> = OnceLock::new();
         let profile = PROFILE.get_or_init(|| {
             let selected = std::env::var_os("ECLIPSE_PROFILE_DIR");
@@ -151,6 +180,7 @@ fn profile_directory(explicit: Option<&OsStr>, executable: &Path) -> Result<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{atomic::{AtomicUsize, Ordering}, Barrier};
     struct Directory(PathBuf);
     impl Directory {
         fn new() -> Self {
@@ -160,6 +190,64 @@ mod tests {
         }
     }
     impl Drop for Directory { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+
+    #[test]
+    fn successful_config_resolution_runs_once_for_concurrent_callers() {
+        let cache = ConfigCache::new();
+        let calls = AtomicUsize::new(0);
+        let start = Barrier::new(9);
+        let root = Path::new("selected-profile");
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8).map(|_| scope.spawn(|| {
+                start.wait();
+                cache.get_or_try_init(|| {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    Ok(Config::in_profile(root))
+                }).unwrap()
+            })).collect();
+            start.wait();
+            for worker in workers {
+                assert_eq!(worker.join().unwrap().profile_dir(), Some(root));
+            }
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn failed_migration_can_retry_before_the_configuration_is_cached() {
+        let directory = Directory::new();
+        let legacy = directory.0.join("legacy");
+        let destination = directory.0.join("current");
+        let cache = ConfigCache::new();
+        let resolve = || {
+            crate::profile_storage::migrate(&legacy, &destination)?;
+            Ok(Config::in_profile(&destination))
+        };
+        std::fs::write(&legacy, b"not a directory").unwrap();
+        assert!(matches!(cache.get_or_try_init(resolve), Err(CoreError::Io(_))));
+        std::fs::remove_file(&legacy).unwrap();
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::write(legacy.join("settings.json"), b"preserved").unwrap();
+        let config = cache.get_or_try_init(resolve).unwrap();
+        assert_eq!(std::fs::read(destination.join("settings.json")).unwrap(), b"preserved");
+        assert_eq!(config.profile_dir(), Some(destination.as_path()));
+        let cached = cache.get_or_try_init(|| panic!("successful migration must not run again")).unwrap();
+        assert_eq!(cached.data_dir, config.data_dir);
+    }
+
+    #[test]
+    fn changing_a_returned_config_does_not_change_the_cached_selection() {
+        let cache = ConfigCache::new();
+        let root = Path::new("selected-profile");
+        let mut caller = cache.get_or_try_init(|| Ok(Config::in_profile(root))).unwrap();
+        caller.data_dir = "another-data-directory".into();
+        caller.state_dir = "another-state-directory".into();
+        caller.signaling_host = "caller override".into();
+        let cached = cache.get_or_try_init(|| panic!("configuration already resolved")).unwrap();
+        assert_eq!(cached.profile_dir(), Some(root));
+        assert!(cached.signaling_host.is_empty());
+    }
 
     #[test]
     fn portable_selection_is_relative_to_executable_and_explicit_profile_wins() {
