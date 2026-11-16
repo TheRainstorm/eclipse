@@ -88,6 +88,21 @@ Windows 共享采集由一个源所有者安排采集机会，每个订阅者只
 
 正式 GUI 的可选管线追踪使用解码时冻结的完整图像身份记录邮箱出队与绘制边界。原生路径只在确认 GPU 读取已经排队后记录对应的合成调用边界；这些仍是 CPU/API 观察。AU 完成后冻结其读取跨度，迟到的重复或修复包继续计数，但不延长已经完成的组帧时间。
 
+## 可选的 Windows 呈现队列实验
+
+Windows 原生 D3D 呈现默认保持 `SetMaximumFrameLatency(3)`。定位窗口与全屏显示延迟差异时，可在单独的客户端进程启动前设置 `ECLIPSE_PRESENT_QUEUE_LIMIT`，严格只接受 `1`、`2`、`3`；未设置仍为 `3`，非法显式值会使原生呈现初始化报错，避免实验静默回落。配置在首次构造呈现器时按进程冻结，所有窗口使用同一值，运行中的进程不随环境变量变化调参。
+
+```powershell
+$env:ECLIPSE_PRESENT_QUEUE_LIMIT = '1'
+.\eclipse.exe
+```
+
+恢复默认时，退出本次实验客户端进程，在启动新进程前执行 `Remove-Item Env:ECLIPSE_PRESENT_QUEUE_LIMIT -ErrorAction SilentlyContinue`。保留已有的最佳全屏配置作为参照，不覆盖正在体验的串流。呈现器第一次成功设置 DXGI 队列上限后，启动诊断输出一条 `native_present_queue_policy`，其中 `limit` 为实际接受的值；工作区复用既有进程时不会重新读取该开关。
+
+此开关仅改变 waitable swapchain 的队列上限，五个交换链缓冲、SyncInterval 0、`DO_NOT_WAIT`、tearing 规则、GPU busy-batch 与非阻塞 readiness 检查均保持原样。它不是降低显示延迟的默认建议，也不等同于设备级 `IDXGIDevice1::SetMaximumFrameLatency`。缓冲数或上限不能直接解释成固定积压了多少视频帧。
+
+对照实验只改变此上限，固定画质、刷新率、图案负载和窗口状态，分别验证窗口与全屏。共同检查真实新图帧率、重复/丢帧、CPU 与等待、`admitted_deferred`、Present 的结果和耗时，以及同帧系统显示终点与实际 PresentMode。较短 Present API 调用、较少排队或单次低均值都不能代替显示改善；不能把窗口化的 Composed Flip 与全屏的 Independent Flip 当作同条件样本。未证明尾延迟、帧率及原有全屏体验不退化前，默认值保持 `3`。
+
 ## 可选的 Windows 输入路径观测
 
 排查间歇性鼠标拖后时，可在客户端启动前设置 `ECLIPSE_INPUT_TRACE=1`。退出该配置的客户端窗口后，从 PowerShell 启动新进程；已运行的进程不会因环境变量变化自动启用：

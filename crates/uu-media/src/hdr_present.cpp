@@ -42,6 +42,17 @@ std::atomic<uint64_t> next_present_identity{1};
 uint64_t present_identity(){auto value=next_present_identity.fetch_add(1,std::memory_order_relaxed);return value?value:next_present_identity.fetch_add(1,std::memory_order_relaxed);}
 int64_t present_qpc(){LARGE_INTEGER value{};return QueryPerformanceCounter(&value)?value.QuadPart:0;}
 void check(HRESULT hr,const char* operation){if(FAILED(hr))throw std::runtime_error(std::string(operation)+": HRESULT="+std::to_string((unsigned long)hr));}
+UINT presentation_queue_limit() {
+    // One process-wide policy, frozen when its first presenter is constructed.
+    // Experiments must start a new client process, never retune a live chain.
+    static const UINT limit=[] {
+        const char* value=std::getenv("ECLIPSE_PRESENT_QUEUE_LIMIT");
+        if(!value)return UINT(3);
+        if(value[0]>='1'&&value[0]<='3'&&value[1]=='\0')return UINT(value[0]-'0');
+        throw std::runtime_error("ECLIPSE_PRESENT_QUEUE_LIMIT must be 1, 2, or 3");
+    }();
+    return limit;
+}
 struct Apartment {
     HRESULT result=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     Apartment(){if(FAILED(result)&&result!=RPC_E_CHANGED_MODE)check(result,"initialize composition apartment");}
@@ -90,6 +101,7 @@ struct CompositionWindow {
     void visible(bool show){if(value)ShowWindow(value,show?SW_SHOWNOACTIVATE:SW_HIDE);}
 };
 struct Presentation {
+    const UINT configured_frame_queue_limit=presentation_queue_limit();
     Apartment apartment;
     CompositionWindow content_window;
     HWND window;
@@ -242,13 +254,20 @@ struct Presentation {
         return DXGI_PRESENT_DO_NOT_WAIT|(!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0);
     }
     bool admit_frame(bool /*vsync*/) {
-        // Leave room for DWM and the driver in the existing five-buffer chain.
+        // The default leaves room for DWM and the driver in the five-buffer chain.
         // Interval 0 replaces pending flips instead of displaying a FIFO of
-        // old frames. Readiness and busy-batch gates still bound submissions.
-        const UINT limit=3;
+        // old frames. The opt-in experiment changes only this admission limit.
+        // Readiness and busy-batch gates still bound submissions.
+        const UINT limit=configured_frame_queue_limit;
         if(frame_queue_limit!=limit) {
             check(chain->SetMaximumFrameLatency(limit),"set presentation frame queue");
             frame_queue_limit=limit;
+            // Record the selected policy once, after DXGI actually accepted it.
+            static const bool reported=[limit] {
+                std::fprintf(stderr,"{\"event\":\"native_present_queue_policy\",\"limit\":%u,\"default_limit\":3,\"scope\":\"process_frozen\"}\n",limit);
+                return true;
+            }();
+            (void)reported;
             // A readiness credit belongs to the old queue policy. In
             // particular, an unsynchronised busy Present cannot create one.
             frame_admitted=false;
