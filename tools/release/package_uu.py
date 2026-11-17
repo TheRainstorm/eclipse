@@ -56,6 +56,11 @@ def prepare_workspace(engine, source, target):
     spec = importlib.util.spec_from_file_location('pinned_uu_sdk_workspace', source/'tools/sdk_workspace.py')
     helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
     workspace, environment = helper.prepare(engine, source, target)
+    # Ask Cargo in the real engine context before applying the mirror's env.
+    # This respects both CARGO_TARGET_DIR and .cargo target-dir configuration.
+    metadata = json.loads(subprocess.check_output(
+        ['cargo','metadata','--no-deps','--format-version','1','--locked'], cwd=engine, text=True))
+    environment['CARGO_TARGET_DIR'] = metadata['target_directory']
     # The independent helper can predate new engine members, such as extensions.
     for member in tomllib.loads((engine/'Cargo.toml').read_text())['workspace']['members']:
         for path in engine.glob(member):

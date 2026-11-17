@@ -1,6 +1,7 @@
 """Pinned source and shared-SDK packaging checks using owned local fixtures."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -36,6 +37,31 @@ class UuPackageTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'Pinned UU commit .* unavailable'):
                 package_uu.checkout(dict(repository='https://github.com/TheRainstorm/uu-client-plugins.git',revision='a'*40),self.root/'cache')
         self.assertFalse((self.root/'cache'/('a'*40)).exists())
+
+    def test_workspace_reuses_main_cargo_output_for_config_and_environment(self):
+        engine = self.root/'engine'; (engine/'member/src').mkdir(parents=True)
+        (engine/'Cargo.toml').write_text('[workspace]\nresolver="2"\nmembers=["member"]\n')
+        (engine/'member/Cargo.toml').write_text('[package]\nname="owned-cache-fixture"\nversion="0.1.0"\nedition="2021"\n')
+        (engine/'member/src/lib.rs').write_text('pub fn owned() {}\n')
+        (engine/'.cargo').mkdir(); (engine/'.cargo/config.toml').write_text('[build]\ntarget-dir="configured-target"\n')
+        subprocess.run(['cargo','generate-lockfile','--offline'],cwd=engine,check=True,capture_output=True)
+        source = self.root/'source'; (source/'tools').mkdir(parents=True)
+        (source/'tools/sdk_workspace.py').write_text(
+            'import os,shutil\n'
+            'def prepare(engine,source,target):\n'
+            '    workspace=source/"mirror";workspace.mkdir(exist_ok=True)\n'
+            '    for name in ("Cargo.toml","Cargo.lock"):shutil.copy2(engine/name,workspace/name)\n'
+            '    env=os.environ.copy();env["CARGO_TARGET_DIR"]=str(source/"cold-target")\n'
+            '    env["CARGO_ENCODED_RUSTFLAGS"]="-C\\x1fprefer-dynamic"\n'
+            '    return workspace,env\n')
+        for override in (None,self.root/'custom-output'):
+            with self.subTest(override=override),patch.dict(os.environ):
+                os.environ.pop('CARGO_TARGET_DIR',None)
+                if override:os.environ['CARGO_TARGET_DIR']=str(override)
+                workspace,environment=package_uu.prepare_workspace(engine,source,'x86_64-unknown-linux-gnu')
+            self.assertEqual(Path(environment['CARGO_TARGET_DIR']),override or engine/'configured-target')
+            self.assertEqual(environment['CARGO_ENCODED_RUSTFLAGS'],'-C\x1fprefer-dynamic')
+            self.assertTrue((workspace/'member/src/lib.rs').is_file())
 
     def build_fixture(self, sdk='f'*64):
         application = self.root/'application'; application.mkdir()
