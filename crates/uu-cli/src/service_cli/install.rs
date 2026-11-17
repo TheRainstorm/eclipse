@@ -368,6 +368,74 @@ fn install_from_profile(source: PathBuf, package: PathBuf, require_interactive: 
     let _lock = installation_lock()?;
     install_from_profile_locked(source, package, require_interactive, independent, defer_if_busy).map(|_| ())
 }
+
+/// Relocate user storage without changing the protected runtime directory. In
+/// particular its virtual-display journal/scope and live persistent devices stay
+/// in place. All user-path IO uses the original owner's restricted token.
+pub(super) fn relocate_profile(request: uu_core::config::ProfileRelocation, application: PathBuf) -> Result<()> {
+    require_administrator()?;
+    let _installation = installation_lock()?;
+    let paths = Paths::discover()?;
+    let installed = paths.manifest()?;
+    let original = paths.active_profile()?.context("当前后台未绑定可迁移的配置")?;
+    ensure!(original.info.id == uu_core::service_profile::directory_key(&request.source.data_dir)?,
+        "当前后台属于另一份配置，未移动或停止其服务");
+    let mut session = 0;
+    winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) })?;
+    ensure!(interactive_owner(session)? == installed.owner_sid, "后台服务属于另一位 Windows 用户");
+    let package = application.parent().context("application directory unavailable")?;
+    uu_core::service_admin::package::verify(package, &installed.revision)?;
+    let manifest: serde_json::Value = serde_json::from_slice(&regular(&package.join("version.json"), 64*1024)?)?;
+    ensure!(hex::encode(Sha256::digest(serde_json::to_vec(&manifest["sha256"])?)) == installed.build,
+        "请先更新后台服务，再迁移配置目录");
+    let _lease = as_source_user(&installed.owner_sid, || {
+        request.validate()?;
+        request.exclusive_lease()
+    })?;
+    let before = service_state()?.context("后台服务未注册")?;
+    ensure!(matches!(before, SERVICE_RUNNING | SERVICE_STOPPED), "后台服务正在切换状态，请稍后再迁移");
+    let moved = original.relocated(request.destination.join("data"))?;
+    ensure!(moved.config(&paths.root).data_dir == original.config(&paths.root).data_dir,
+        "迁移不能改变后台运行目录");
+    let mut idle = if before == SERVICE_RUNNING { Some(IdleReservation::acquire(Some(&original))?) } else { None };
+    if let Some(idle) = &idle { idle.renew()?; }
+    if before == SERVICE_RUNNING {
+        super::stop()?;
+        if let Some(idle) = &mut idle { idle.armed = false; }
+    }
+    let result = (|| -> Result<()> {
+        // Stopping normally joins the mirror, but make the final export explicit
+        // so a previously unavailable console token cannot leave stale host data.
+        let latest = uu_core::service_profile::DataSnapshot::capture(&original.config(&paths.root).data_dir)?;
+        as_source_user(&installed.owner_sid, || {
+            latest.publish(&original.source())?;
+            request.copy()?;
+            Ok(())
+        })?;
+        paths.save_profile(Some(&moved))?;
+        protect(&paths.root.join("active-profile.json"))?;
+        protect(&paths.root.join("profiles").join(moved.storage_id()).join("profile-binding.json"))?;
+        let _ = registration(&paths, &installed)?;
+        if before == SERVICE_RUNNING { super::start_registered()?; }
+        as_source_user(&installed.owner_sid, || Config::save_profile_selection(&application, &request.destination))?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let rollback = (|| -> Result<()> {
+            if service_state()? == Some(SERVICE_RUNNING) { super::stop()?; }
+            paths.save_profile(Some(&original))?;
+            protect(&paths.root.join("active-profile.json"))?;
+            let _ = registration(&paths, &installed)?;
+            if before == SERVICE_RUNNING { super::start_registered()?; }
+            Ok(())
+        })();
+        return match rollback {
+            Ok(()) => Err(error.context("配置迁移未完成，原服务与原目录已保留")),
+            Err(rollback) => Err(error.context(format!("配置迁移未完成，原目录已保留；恢复原服务失败：{rollback:#}"))),
+        };
+    }
+    Ok(())
+}
 fn install_from_profile_locked(source: PathBuf, package: PathBuf, require_interactive: bool, independent: bool, defer_if_busy: bool) -> Result<bool> {
     let mut session = 0;
     winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) })?;
@@ -416,7 +484,9 @@ fn install_from_profile_locked(source: PathBuf, package: PathBuf, require_intera
     };
     installed.validate()?;
     let profile = if manifest["service_profiles"].as_u64() == Some(1) {
-        Some(uu_core::service_profile::Binding::new(source.clone(), installed.revision.clone(), installed.build.clone())?)
+        let mut profile=uu_core::service_profile::Binding::new(source.clone(), installed.revision.clone(), installed.build.clone())?;
+        paths.restore_profile_storage(&mut profile)?;
+        Some(profile)
     } else { None };
     if defer_if_busy {
         // Re-read only after acquiring installation ownership: another GUI
@@ -495,7 +565,7 @@ fn install_from_profile_locked(source: PathBuf, package: PathBuf, require_intera
     directory(&paths.root.join("state"))?;
     let config = profile.as_ref().map_or_else(|| paths.config(), |p| p.config(&paths.root));
     if let Some(profile) = &profile {
-        let profile_root = paths.root.join("profiles").join(&profile.info.id);
+        let profile_root = paths.root.join("profiles").join(profile.storage_id());
         for dir in [paths.root.join("profiles"), profile_root.clone(), profile_root.join("data"), profile_root.join("state"), config.state_dir.clone()] { directory(&dir)?; }
         if !config.data_dir.try_exists()? {
             let legacy_seed = !independent && existing && previous_profile.is_none();

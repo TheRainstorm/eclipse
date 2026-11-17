@@ -63,6 +63,9 @@ pub struct Binding {
     pub user_data: PathBuf,
     pub revision: String,
     pub build: String,
+    /// Protected runtime identity survives an explicit user-storage relocation.
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub storage_id: Option<String>,
 }
 impl Binding {
     pub fn new(user_data: PathBuf, revision: String, build: String) -> Result<Self> {
@@ -90,6 +93,7 @@ impl Binding {
             user_data,
             revision,
             build,
+            storage_id: None,
         };
         value.validate()?;
         Ok(value)
@@ -99,6 +103,7 @@ impl Binding {
             self.version == 1 && valid_id(&self.info.id) && self.user_data.is_absolute(),
             "Invalid Eclipse host profile"
         );
+        ensure!(self.storage_id.as_deref().is_none_or(valid_id), "Invalid host runtime storage identity");
         ensure!(
             self.revision.len() == 40
                 && self.revision.bytes().all(|c| c.is_ascii_hexdigit())
@@ -120,14 +125,67 @@ impl Binding {
     pub fn source(&self) -> PathBuf {
         self.user_data.join("server")
     }
+    pub fn storage_id(&self) -> &str { self.storage_id.as_deref().unwrap_or(&self.info.id) }
+
+    pub fn relocated(&self, user_data: PathBuf) -> Result<Self> {
+        let mut moved = Self::new(user_data, self.revision.clone(), self.build.clone())?;
+        moved.storage_id = Some(self.storage_id().to_owned());
+        Ok(moved)
+    }
+
+    /// Reopening a migrated profile or updating its binaries must keep the
+    /// same protected runtime directory and virtual-display ownership scope.
+    pub fn restore_storage(&mut self, root: &Path) -> Result<()> {
+        let profiles = root.join("profiles");
+        if !profiles.try_exists()? { return Ok(()); }
+        let mut found = None;
+        for (count, entry) in std::fs::read_dir(&profiles)?.enumerate() {
+            ensure!(count < 1024, "Too many protected host profiles");
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(id) = name.to_str().filter(|id| valid_id(id)) else { continue; };
+            let file = entry.path().join("profile-binding.json");
+            if !file.try_exists()? { continue; }
+            let bytes = crate::device_trust::read_private(&file)?;
+            ensure!(bytes.len() <= 64 * 1024, "Host profile binding is too large");
+            let stored: Binding = serde_json::from_slice(&bytes)?;
+            stored.validate()?;
+            ensure!(stored.storage_id() == id, "Protected host profile location differs");
+            if stored.info.id == self.info.id {
+                ensure!(found.is_none(), "Duplicate host profile storage mapping");
+                found = Some(stored.storage_id().to_owned());
+            } else if id == self.storage_id() {
+                // A retained source-directory backup becomes a distinct profile
+                // if explicitly activated after its storage was moved elsewhere.
+                self.storage_id = Some(hex::encode(sha2::Sha256::digest(uuid::Uuid::new_v4().as_bytes())));
+            }
+        }
+        if let Some(id) = found { self.storage_id = Some(id); }
+        Ok(())
+    }
     pub fn config(&self, root: &Path) -> crate::Config {
-        let root = root.join("profiles").join(&self.info.id);
+        let root = root.join("profiles").join(self.storage_id());
         crate::Config {
             data_dir: root.join("data/eclipse"),
             state_dir: root.join("state/eclipse"),
             signaling_host: String::new(),
         }
     }
+}
+
+/// Copying a profile must rebase credentials owned by that profile, including
+/// the separate host subtree. External files remain external by design.
+pub(crate) fn rebase_copied_connections(source: &Path, staging: &Path, destination: &Path) -> Result<()> {
+    let file = staging.join("device-trust/connections.json");
+    if !file.try_exists()? { return Ok(()); }
+    let mut book: crate::device_book::Book = serde_json::from_slice(&fs::read(&file)?)?;
+    for service in &mut book.services {
+        for path in std::iter::once(&mut service.token_file).chain(service.certificate.iter_mut()) {
+            if let Ok(relative) = path.strip_prefix(source) { *path = destination.join(relative); }
+        }
+    }
+    crate::private_file::write_atomic(&file, &serde_json::to_vec_pretty(&book)?)?;
+    Ok(())
 }
 pub fn valid_id(value: &str) -> bool {
     value.len() == 64
@@ -325,6 +383,29 @@ pub fn copy_data(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn moved_profile_keeps_runtime_and_survives_switching_profiles_and_package_updates() {
+        let root=std::env::temp_dir().join(format!("eclipse-profile-binding-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let original=Binding::new(root.join("old/data"),"a".repeat(40),"b".repeat(64)).unwrap();
+        let moved=original.relocated(root.join("new/data")).unwrap();
+        assert_ne!(original.info.id,moved.info.id);
+        assert_eq!(original.config(&root).data_dir,moved.config(&root).data_dir);
+        let record=root.join("profiles").join(moved.storage_id()).join("profile-binding.json");
+        crate::private_file::write_atomic(&record,&serde_json::to_vec(&moved).unwrap()).unwrap();
+        let another=Binding::new(root.join("other/data"),"a".repeat(40),"b".repeat(64)).unwrap();
+        crate::private_file::write_atomic(&root.join("profiles").join(another.storage_id()).join("profile-binding.json"),&serde_json::to_vec(&another).unwrap()).unwrap();
+        let mut updated=Binding::new(moved.user_data.clone(),"c".repeat(40),"d".repeat(64)).unwrap();
+        updated.restore_storage(&root).unwrap();
+        assert_eq!(updated.config(&root).data_dir,moved.config(&root).data_dir);
+        assert_eq!(updated.revision,"c".repeat(40));
+        let mut retained_backup=Binding::new(original.user_data.clone(),"c".repeat(40),"d".repeat(64)).unwrap();
+        retained_backup.restore_storage(&root).unwrap();
+        assert_ne!(retained_backup.storage_id(),moved.storage_id(),"activating the retained old copy cannot take the moved runtime");
+        let legacy:Binding=serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
+        assert_eq!(legacy.storage_id(),original.info.id);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn host_profiles_separate_client_identity_and_preserve_copied_server_state() {
         let root =

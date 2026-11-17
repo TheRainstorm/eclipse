@@ -1,6 +1,7 @@
-//! One process-wide profile selection, with legacy XDG paths as the default.
+//! One process-wide profile selection: Windows portable storage and Linux XDG.
 
-use std::{ffi::OsStr, path::{Path, PathBuf}, sync::{Mutex, OnceLock}};
+use std::{ffi::OsStr, io::Read, path::{Path, PathBuf}, sync::{Mutex, OnceLock}};
+use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
 
@@ -13,7 +14,8 @@ pub fn local_device_name() -> String {
 }
 
 /// Where we keep installer caches, the Wine-less client state, and logs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub data_dir: PathBuf,
     pub state_dir: PathBuf,
@@ -44,8 +46,8 @@ impl ConfigCache {
 }
 
 impl Config {
-    /// An existing `eclipse-data` directory beside the executable selects a
-    /// portable profile. ECLIPSE_PROFILE_DIR explicitly selects a profile root.
+    /// Windows uses `eclipse-data` beside the executable by default; Linux keeps
+    /// XDG storage unless a portable directory or saved selection exists.
     /// Select once: adding/removing the directory while running must not split
     /// settings, device identities and child windows across different stores.
     /// After successful resolution, reuse the whole configuration. Recoverable
@@ -56,17 +58,33 @@ impl Config {
     }
 
     fn resolve_from_env() -> Result<Self, CoreError> {
+        // A relocation helper uses this one-shot override only when reopening
+        // the original process after a failed move. It carries paths, no secrets.
+        if std::env::var_os("ECLIPSE_PROFILE_DIR").is_none() {
+            if let Some(source) = std::env::var_os("ECLIPSE_CONFIG_SOURCE") {
+                let config: Self = serde_json::from_str(&source.to_string_lossy())
+                    .map_err(|e| CoreError::Config(format!("invalid profile restart source: {e}")))?;
+                if !config.data_dir.is_absolute() || !config.state_dir.is_absolute() {
+                    return Err(CoreError::Config("profile restart paths must be absolute".into()));
+                }
+                return config.with_process_lease();
+            }
+        }
         static PROFILE: OnceLock<Result<Option<PathBuf>, String>> = OnceLock::new();
         let profile = PROFILE.get_or_init(|| {
             let selected = std::env::var_os("ECLIPSE_PROFILE_DIR");
             let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-            profile_directory(selected.as_deref(), &executable).map_err(|e| match e {
+            let root = if selected.is_none() {
+                read_profile_selection(&Self::profile_selection_file(&executable).map_err(|e|e.to_string())?)
+                    .map_err(|e|e.to_string())?
+            } else { None };
+            profile_directory(selected.as_deref().or_else(||root.as_deref().map(Path::as_os_str)), &executable).map_err(|e| match e {
                 CoreError::Config(message) => message,
                 other => other.to_string(),
             })
         });
         match profile {
-            Ok(Some(root)) => return Ok(Self::in_profile(root)),
+            Ok(Some(root)) => return Self::in_profile(root).with_process_lease(),
             Err(error) => return Err(CoreError::Config(error.clone())),
             Ok(None) => {},
         }
@@ -102,20 +120,66 @@ impl Config {
         let state_dir = state_home.join("eclipse");
         crate::profile_storage::migrate(&data_home.join("uu-remote"), &data_dir)?;
         crate::profile_storage::migrate(&state_home.join("uu-remote"), &state_dir)?;
-        Ok(Self {
+        Self {
             data_dir,
             state_dir,
             signaling_host: String::new(),
-        })
+        }.with_process_lease()
     }
 
     /// Both persistent settings and runtime state travel with this root.
-    fn in_profile(root: &Path) -> Self {
+    pub fn in_profile(root: &Path) -> Self {
         Self {
             data_dir: root.join("data"),
             state_dir: root.join("state"),
             signaling_host: String::new(),
         }
+    }
+
+    fn with_process_lease(self) -> Result<Self, CoreError> {
+        static LEASE: OnceLock<std::fs::File> = OnceLock::new();
+        static PROCESS: OnceLock<std::fs::File> = OnceLock::new();
+        if LEASE.get().is_none() {
+            let file = crate::profile_storage::profile_lease(&self.data_dir, false)?;
+            let process = crate::profile_storage::process_lease(&self.data_dir)?;
+            let _ = LEASE.set(file);
+            let _ = PROCESS.set(process);
+        }
+        Ok(self)
+    }
+
+    /// The portable default is a Windows product choice. Linux keeps XDG data
+    /// and state directories and therefore has no single default profile root.
+    #[cfg(windows)]
+    pub fn default_profile_directory(executable: &Path) -> anyhow::Result<PathBuf> {
+        Ok(executable.parent().ok_or_else(||anyhow::anyhow!("application directory unavailable"))?.join("eclipse-data"))
+    }
+
+    pub fn profile_selection_file(executable: &Path) -> anyhow::Result<PathBuf> {
+        #[cfg(windows)]
+        { Ok(executable.parent().ok_or_else(||anyhow::anyhow!("application directory unavailable"))?.join("eclipse-profile.json")) }
+        #[cfg(not(windows))]
+        {
+            let _ = executable;
+            let root = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
+                .or_else(||std::env::var_os("HOME").map(|h|PathBuf::from(h).join(".config")))
+                .ok_or_else(||anyhow::anyhow!("user configuration directory unavailable"))?;
+            anyhow::ensure!(root.is_absolute(), "configuration directory must be absolute");
+            Ok(root.join("eclipse/profile.json"))
+        }
+    }
+
+    /// Reopen this exact source after a failed relocation, including old XDG
+    /// layouts which do not have a common data/state root.
+    pub fn apply_to_command(&self, command: &mut std::process::Command) {
+        command.env_remove("ECLIPSE_PROFILE_DIR").env("ECLIPSE_CONFIG_SOURCE", serde_json::to_string(self).expect("Config contains only serializable paths"));
+    }
+
+    pub fn save_profile_selection(executable: &Path, root: &Path) -> anyhow::Result<()> {
+        anyhow::ensure!(root.is_absolute(), "profile directory must be absolute");
+        let bytes = serde_json::to_vec_pretty(&ProfileSelection { version: 1, directory: root.to_path_buf() })?;
+        crate::private_file::write_atomic(&Self::profile_selection_file(executable)?, &bytes)?;
+        Ok(())
     }
 
     /// None for legacy user storage and the protected Windows service store.
@@ -166,7 +230,7 @@ fn profile_directory(explicit: Option<&OsStr>, executable: &Path) -> Result<Opti
         let root = executable.parent()
             .ok_or_else(|| CoreError::Config("application directory unavailable".into()))?
             .join("eclipse-data");
-        if !root.try_exists()? { return Ok(None); }
+        if !cfg!(windows) && !root.try_exists()? { return Ok(None); }
         root
     };
     match std::fs::metadata(&root) {
@@ -175,6 +239,71 @@ fn profile_directory(explicit: Option<&OsStr>, executable: &Path) -> Result<Opti
         _ => {},
     }
     Ok(Some(root))
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileSelection { version: u32, directory: PathBuf }
+
+fn read_profile_selection(path: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let mut bytes = Vec::new();
+    file.take(16 * 1024 + 1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 16 * 1024, "profile selection file is too large");
+    let selected: ProfileSelection = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(selected.version == 1 && selected.directory.is_absolute(), "invalid profile selection");
+    Ok(Some(selected.directory))
+}
+
+/// A relocation request is prepared while the GUI is alive and performed only
+/// after it exits. The process-wide Config cache is deliberately never changed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileRelocation {
+    pub source: Config,
+    pub destination: PathBuf,
+}
+
+impl ProfileRelocation {
+    pub fn prepare(source: &Config, destination: &Path) -> anyhow::Result<Self> {
+        let value = Self { source: source.clone(), destination: destination.to_path_buf() };
+        value.validate()?;
+        crate::profile_storage::no_other_processes(&source.data_dir)?;
+        Ok(value)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        crate::profile_storage::validate_relocation(&self.source, &self.destination)
+    }
+
+    /// Call only after the original GUI exits. Other live processes keep a
+    /// shared profile lease, so the helper refuses to copy under active writers.
+    pub fn execute(&self, executable: &Path) -> anyhow::Result<Config> {
+        self.validate()?;
+        #[cfg(windows)]
+        if crate::service_admin::windows::relocate_selected_profile(self, executable)? {
+            return Ok(Config::in_profile(&self.destination));
+        }
+        let _lease = self.exclusive_lease()?;
+        let config = self.copy()?;
+        Config::save_profile_selection(executable, &self.destination)?;
+        Ok(config)
+    }
+
+    /// Shared by the ordinary helper and the privileged service relocation.
+    /// The caller keeps this guard through copying and pointer publication.
+    pub fn exclusive_lease(&self) -> anyhow::Result<std::fs::File> {
+        Ok(crate::profile_storage::profile_lease(&self.source.data_dir, true)?)
+    }
+
+    pub fn copy(&self) -> anyhow::Result<Config> {
+        crate::profile_storage::relocate(&self.source, &self.destination)?;
+        Ok(Config::in_profile(&self.destination))
+    }
 }
 
 #[cfg(test)]
@@ -254,7 +383,7 @@ mod tests {
         let directory = Directory::new();
         let exe = directory.0.join("app").join("eclipse");
         let portable = exe.parent().unwrap().join("eclipse-data");
-        assert_eq!(profile_directory(None, &exe).unwrap(), None);
+        assert_eq!(profile_directory(None, &exe).unwrap(), cfg!(windows).then_some(portable.clone()));
         assert!(!exe.parent().unwrap().exists(), "reading the default must not create portable storage");
         std::fs::create_dir_all(&portable).unwrap();
         assert_eq!(profile_directory(None, &exe).unwrap(), Some(portable.clone()));
@@ -266,6 +395,20 @@ mod tests {
         std::fs::remove_dir(&portable).unwrap();
         std::fs::write(&portable, b"not a directory").unwrap();
         assert!(profile_directory(None, &exe).is_err(), "invalid portable storage must not fall back to user data");
+    }
+
+    #[test]
+    fn saved_profile_selection_is_explicit_bounded_and_does_not_switch_a_cache() {
+        let directory = Directory::new();
+        let selection = directory.0.join("selection.json");
+        let selected = directory.0.join("my profile");
+        assert_eq!(read_profile_selection(&selection).unwrap(), None);
+        std::fs::write(&selection, serde_json::to_vec(&ProfileSelection { version:1, directory:selected.clone() }).unwrap()).unwrap();
+        assert_eq!(read_profile_selection(&selection).unwrap(), Some(selected));
+        std::fs::write(&selection, br#"{"version":1,"directory":"relative"}"#).unwrap();
+        assert!(read_profile_selection(&selection).is_err());
+        std::fs::write(&selection, vec![b' ';16*1024+1]).unwrap();
+        assert!(read_profile_selection(&selection).is_err());
     }
 
     #[tokio::test]

@@ -107,6 +107,14 @@ pub enum Command {
         #[arg(long)]
         source_data: Option<PathBuf>,
     },
+    /// Move this profile while preserving its protected host and virtual screens.
+    #[command(hide = true)]
+    RelocateProfile {
+        #[arg(long)] source_data: PathBuf,
+        #[arg(long)] source_state: PathBuf,
+        #[arg(long)] destination: PathBuf,
+        #[arg(long)] application: PathBuf,
+    },
     /// Inspect or repair rules for the actual protected service executable.
     Firewall { #[arg(long)] repair:bool },
     Start,
@@ -135,6 +143,7 @@ pub enum Command {
 }
 pub async fn run(command: Command, config: Config) -> Result<()> {
     match command {
+        Command::RelocateProfile { .. } => anyhow::bail!("profile relocation must run before ordinary profile initialization"),
         Command::Install {
             source_data,
             open_manager,
@@ -222,6 +231,18 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
             result
         }
     }
+}
+
+/// This path must precede Config::from_env: the relocation process must not
+/// take the ordinary shared source lease which it is about to acquire alone.
+pub async fn relocate(command: Command) -> Result<()> {
+    let Command::RelocateProfile { source_data, source_state, destination, application } = command else {
+        anyhow::bail!("not a profile relocation command");
+    };
+    let request = uu_core::config::ProfileRelocation {
+        source: Config { data_dir:source_data, state_dir:source_state, signaling_host:String::new() }, destination,
+    };
+    tokio::task::spawn_blocking(move || install::relocate_profile(request, application)).await?
 }
 pub fn start() -> Result<()> {
     require_administrator()?;

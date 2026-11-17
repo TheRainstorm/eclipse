@@ -262,6 +262,11 @@ async fn main() -> Result<()> {
 
     uu_core::install_crypto_provider();
     #[cfg(windows)]
+    if matches!(&cli.command, Command::Service { command:service_cli::Command::RelocateProfile { .. } }) {
+        let Command::Service { command } = cli.command else { unreachable!() };
+        return service_cli::relocate(command).await;
+    }
+    #[cfg(windows)]
     let config = if background {uu_core::service_admin::windows::Paths::discover()?.runtime_config()?}else{Config::from_env()?};
     #[cfg(not(windows))]
     let config = Config::from_env()?;

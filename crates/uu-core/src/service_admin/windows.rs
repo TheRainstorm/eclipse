@@ -148,9 +148,15 @@ impl Paths {
         let path = self.root.join("active-profile.json");
         if let Some(profile) = profile {
             profile.validate()?;
+            let stored = self.root.join("profiles").join(profile.storage_id()).join("profile-binding.json");
+            crate::private_file::write_atomic(&stored, &serde_json::to_vec(profile)?)?;
             crate::private_file::write_atomic(&path, &serde_json::to_vec(profile)?)?;
         } else if path.try_exists()? { std::fs::remove_file(path)?; }
         Ok(())
+    }
+
+    pub fn restore_profile_storage(&self, profile: &mut crate::service_profile::Binding) -> Result<()> {
+        profile.restore_storage(&self.root)
     }
     pub fn manifest(&self) -> Result<Installed> {
         let bytes = std::fs::read(self.root.join("service.json"))?;
@@ -686,9 +692,44 @@ pub fn elevated(exe: &Path, arguments: &str) -> Result<()> {
     ensure!(code == 0, "{}", uu_i18n::format!("后台服务管理未成功（退出码 {code}）"));
     Ok(())
 }
+
+/// Delegate a bound host relocation to the existing privileged CLI boundary.
+/// An unrelated or absent host is left alone; its configuration is not adopted.
+pub fn relocate_selected_profile(request: &crate::config::ProfileRelocation, executable: &Path) -> Result<bool> {
+    let status = match build_status() {
+        Ok(status) => status,
+        Err(error) if error.downcast_ref::<std::io::Error>().and_then(|e|e.raw_os_error()) == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let source = crate::service_profile::directory_key(&request.source.data_dir)?;
+    if status.profile.as_deref() != Some(source.as_str()) { return Ok(false); }
+    let directory = executable.parent().context("application directory unavailable")?;
+    let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(directory.join("version.json"))?)?;
+    // Protected package metadata can be unreadable to the ordinary GUI. The
+    // elevated helper always repeats the exact build check before stopping.
+    if let Some(installed) = status.installed.as_ref() {
+        ensure!(manifest["source_commit"].as_str() == Some(installed.revision.as_str()),
+            "请先在服务管理中更新后台服务，再迁移这份配置目录");
+    }
+    fn quoted(path: &Path) -> Result<String> {
+        let text = path.to_str().context("profile path must be valid Unicode")?;
+        ensure!(!text.contains(['\"', '\n', '\r']) && !text.ends_with('\\'), "profile path cannot be represented as a helper argument");
+        Ok(format!("\"{text}\""))
+    }
+    let arguments = format!("service relocate-profile --source-data {} --source-state {} --destination {} --application {}",
+        quoted(&request.source.data_dir)?, quoted(&request.source.state_dir)?, quoted(&request.destination)?, quoted(executable)?);
+    // Relocation has a single final result. Do not reopen the old profile while
+    // an accepted helper is still copying or changing the protected binding.
+    let code = elevated_exit_code_wait(&directory.join("eclipse-cli.exe"), &arguments, u32::MAX)?;
+    ensure!(code == 0, "配置迁移助手未成功（退出码 {code}），请确认后台已更新并处于空闲状态");
+    Ok(true)
+}
 /// Some fixed local helpers return a small status in their exit code. They
 /// still use the same UAC/process-handle boundary, never a writable result path.
 pub fn elevated_exit_code(exe:&Path,arguments:&str)->Result<u32> {
+    elevated_exit_code_wait(exe, arguments, 180_000)
+}
+fn elevated_exit_code_wait(exe:&Path,arguments:&str,wait:u32)->Result<u32> {
     let verb = wide("runas");
     let file = wide(exe.as_os_str());
     let arguments = wide(arguments);
@@ -702,8 +743,11 @@ pub fn elevated_exit_code(exe:&Path,arguments:&str)->Result<u32> {
     winok(unsafe { ShellExecuteExW(&mut info) })?;
     let process = Handle(info.hProcess);
     ensure!(!process.0.is_null(), "{}", uu_i18n::format!("后台服务管理程序未启动"));
-    if unsafe { WaitForSingleObject(process.0, 180_000) } != WAIT_OBJECT_0 {
-        return Err(super::SubmittedUnknown(uu_i18n::text("后台服务管理程序仍在执行").into()).into());
+    match unsafe { WaitForSingleObject(process.0, wait) } {
+        WAIT_OBJECT_0 => {},
+        WAIT_TIMEOUT => return Err(super::SubmittedUnknown(uu_i18n::text("后台服务管理程序仍在执行").into()).into()),
+        WAIT_FAILED => return Err(std::io::Error::last_os_error()).context("无法等待后台服务管理程序退出"),
+        result => anyhow::bail!("Unexpected background helper wait result: {result}"),
     }
     let mut code = 0;
     winok(unsafe { GetExitCodeProcess(process.0, &mut code) })?;
