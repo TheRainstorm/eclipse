@@ -2341,7 +2341,10 @@ unsafe fn public_window_callback_inner(
                 }
             }
 
-            let new_outer_rect: RECT;
+            // Upstream #4341: the legacy monitor correction can move a Windows
+            // 11 window back across a DPI boundary and trigger another change.
+            let new_outer_rect: RECT = if util::WIN10_BUILD_VERSION
+                .is_some_and(|version| version < 22000)
             {
                 let suggested_ul =
                     (suggested_rect.left + margin_left, suggested_rect.top + margin_top);
@@ -2385,7 +2388,7 @@ unsafe fn public_window_callback_inner(
                 let new_dpi_monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONULL) };
                 let conservative_rect_monitor =
                     unsafe { MonitorFromRect(&conservative_rect, MONITOR_DEFAULTTONULL) };
-                new_outer_rect = if conservative_rect_monitor == new_dpi_monitor {
+                if conservative_rect_monitor == new_dpi_monitor {
                     conservative_rect
                 } else {
                     let get_monitor_rect = |monitor| {
@@ -2438,8 +2441,11 @@ unsafe fn public_window_callback_inner(
                     }
 
                     conservative_rect
-                };
-            }
+                }
+            } else {
+                // Windows 11 already supplies the destination geometry.
+                suggested_rect
+            };
 
             unsafe {
                 SetWindowPos(
