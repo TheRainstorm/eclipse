@@ -28,6 +28,7 @@ mod app_startup;
 mod tray;
 mod tray_displays;
 mod settings_page;
+mod video_settings;
 mod plugin_ui;
 mod theme;
 mod sessions;

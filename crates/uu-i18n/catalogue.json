@@ -515,6 +515,7 @@
   "分辨率": "Resolution",
   "{fps} 帧": "{fps} FPS",
   "其它帧数": "Other frame rate",
+  "其它分辨率": "Other resolution",
   "垂直同步": "Vertical sync",
   "自动协商": "Auto negotiate",
   "PyroWave（实验性 / SDR）": "PyroWave (experimental / SDR)",

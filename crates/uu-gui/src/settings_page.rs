@@ -117,45 +117,11 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
             .spacing([24.0, 14.0])
             .show(ui, |ui| {
                 ui.label(uu_i18n::text("目标帧率"));
-                crate::theme::Select::from_id_salt("settings-frame-rate").selected_text(if s.follow_local_fps {uu_i18n::text("保持本地帧率").to_owned()}else if s.follow_remote_fps {uu_i18n::text("保持远端帧率").to_owned()}else{format!("{} FPS",s.fps)}).show_ui(ui,|ui| {
-                    if crate::theme::selectable_label(ui,s.follow_remote_fps&&!s.follow_local_fps,uu_i18n::text("保持远端帧率")).clicked(){s.follow_remote_fps=true;s.follow_local_fps=false;}
-                    if crate::theme::selectable_label(ui,s.follow_local_fps,uu_i18n::text("保持本地帧率")).clicked(){s.follow_remote_fps=false;s.follow_local_fps=true;}
-                    for fps in uu_core::client_settings::COMMON_FRAME_RATES.into_iter().filter(|fps|*fps<=state.max_fps) {
-                        if crate::theme::selectable_label(ui,!s.follow_remote_fps&&!s.follow_local_fps&&s.fps==fps,format!("{fps} FPS")).clicked(){s.fps=fps;s.follow_remote_fps=false;s.follow_local_fps=false;}
-                    }
-                    ui.menu_button(uu_i18n::text("其它帧数"),|ui| {
-                        for fps in uu_core::client_settings::OTHER_FRAME_RATES.into_iter().filter(|fps|*fps<=state.max_fps) {
-                            if crate::theme::selectable_label(ui,!s.follow_remote_fps&&!s.follow_local_fps&&s.fps==fps,format!("{fps} FPS")).clicked(){s.fps=fps;s.follow_remote_fps=false;s.follow_local_fps=false;}
-                        }
-                        ui.separator();ui.label(uu_i18n::text("自定义帧数"));
-                        if crate::theme::number_input(ui,egui::DragValue::new(&mut s.fps).range(5..=state.max_fps.clamp(5,240)).suffix(" FPS")).changed(){s.follow_remote_fps=false;s.follow_local_fps=false;}
-                    });
-                });
+                crate::video_settings::frame_rate(ui, &mut s.client, state.max_fps);
                 ui.end_row();
                 ui.label(uu_i18n::text("输出分辨率"));
-                let labels = [
-                    uu_i18n::text("保持远端分辨率"),
-                    "1920 × 1080",
-                    "2560 × 1440",
-                    "3840 × 2160",
-                    uu_i18n::text("保持本地分辨率"),
-                    uu_i18n::text("自定义分辨率"),
-                ];
-                combo(ui, "settings-resolution", labels[s.resolution], |ui| {
-                    for i in [0,4,1,2,3,5] {
-                        crate::theme::selectable_value(ui,&mut s.resolution, i, labels[i]);
-                    }
-                });
+                crate::video_settings::resolution(ui, &mut s.client);
                 ui.end_row();
-                if s.resolution==uu_core::client_settings::CUSTOM_RESOLUTION {
-                    ui.label(uu_i18n::text("自定义分辨率"));
-                    ui.horizontal(|ui| {
-                        crate::theme::number_input(ui,egui::DragValue::new(&mut s.custom_resolution[0]).range(2..=8192).speed(2.).max_decimals(0));
-                        ui.label("×");
-                        crate::theme::number_input(ui,egui::DragValue::new(&mut s.custom_resolution[1]).range(2..=8192).speed(2.).max_decimals(0));
-                    });
-                    ui.end_row();
-                }
 
             });
         ui.add_space(8.0);

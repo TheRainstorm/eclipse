@@ -128,6 +128,10 @@ impl Select {
         self.combo = self.combo.width(width);
         self
     }
+    pub fn height(mut self, height: f32) -> Self {
+        self.combo = self.combo.height(height);
+        self
+    }
     pub fn compact(mut self, on: bool) -> Self {
         self.compact = on;
         self

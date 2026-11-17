@@ -6,7 +6,39 @@ use serde::{Deserialize, Serialize};
 pub const LOCAL_RESOLUTION:usize=4;
 pub const CUSTOM_RESOLUTION:usize=5;
 pub const COMMON_FRAME_RATES:[u32;3]=[30,60,120];
-pub const OTHER_FRAME_RATES:[u32;4]=[24,90,144,165];
+pub const OTHER_FRAME_RATES:[u32;21]=[5,10,15,20,24,25,40,45,48,50,72,75,90,100,144,160,165,170,180,200,240];
+/// Additional output bounds; choosing one uses CUSTOM_RESOLUTION plus its size.
+/// The existing resolution indices 0..=5 keep their serialized meanings.
+pub const RESOLUTION_PRESETS:&[([u32;2],&str)]=&[
+    ([640,360],"360p · 640 × 360"),
+    ([854,480],"480p · 854 × 480"),
+    ([960,540],"540p · 960 × 540"),
+    ([1024,576],"576p · 1024 × 576"),
+    ([1280,720],"720p · 1280 × 720"),
+    ([1600,900],"900p · 1600 × 900"),
+    ([640,480],"640 × 480"),
+    ([800,600],"800 × 600"),
+    ([1024,768],"1024 × 768"),
+    ([1280,1024],"1280 × 1024"),
+    ([1366,768],"1366 × 768"),
+    ([1280,800],"1280 × 800"),
+    ([1440,900],"1440 × 900"),
+    ([1680,1050],"1680 × 1050"),
+    ([1920,1200],"1920 × 1200"),
+    ([2560,1600],"2560 × 1600"),
+    ([2880,1800],"2880 × 1800"),
+    ([3072,1920],"3072 × 1920"),
+    ([3840,2400],"3840 × 2400"),
+    ([2048,1080],"2048 × 1080"),
+    ([4096,2160],"4096 × 2160"),
+    ([5120,2880],"5K · 5120 × 2880"),
+    ([7680,4320],"8K · 7680 × 4320"),
+    ([2560,1080],"2560 × 1080"),
+    ([3440,1440],"3440 × 1440"),
+    ([3840,1600],"3840 × 1600"),
+    ([5120,1440],"5120 × 1440"),
+    ([5120,2160],"5120 × 2160"),
+];
 
 /// Observed viewer monitor, in physical pixels and millihertz. Missing values
 /// stay unknown; neither DPI scaling nor a window's client size is a mode.
@@ -294,6 +326,22 @@ mod clipboard_tests {
 #[cfg(test)]
 mod bitrate_tests {
     use super::*;
+    #[test]
+    fn additional_resolution_presets_preserve_legacy_indices_and_roundtrip_as_custom_bounds() {
+        for (index,bounds) in [(0,None),(1,Some([1920,1080])),(2,Some([2560,1440])),(3,Some([3840,2160])),(4,None)] {
+            let settings:ClientSettings=serde_json::from_value(serde_json::json!({"resolution":index})).unwrap();
+            assert_eq!(settings.resolved_bounds(LocalDisplay::default()),bounds);
+        }
+        let mut sizes=std::collections::HashSet::new();
+        for &(size,label) in RESOLUTION_PRESETS {
+            assert!(sizes.insert(size),"duplicate resolution preset: {label}");
+            let settings=ClientSettings{resolution:CUSTOM_RESOLUTION,custom_resolution:size,..Default::default()};
+            settings.validate().unwrap();settings.native_request().validate().unwrap();
+            let restored:ClientSettings=serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+            assert_eq!(restored.resolution,5);
+            assert_eq!(restored.resolved_bounds(LocalDisplay::default()),Some(size));
+        }
+    }
     #[test]
     fn local_monitor_modes_and_caps_preserve_manual_intent_and_handle_unknown_or_fractional_refresh() {
         let mut settings:ClientSettings=serde_json::from_str(r#"{"fps":165,"follow_remote_fps":false}"#).unwrap();

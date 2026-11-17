@@ -312,11 +312,12 @@ fn hud_toggle(ui:&mut egui::Ui,enabled:&mut bool,bindings:&uu_core::hotkeys::Bin
     let hint=bindings.label(uu_core::hotkeys::Action::Stats);
     if menu_toggle(ui,uu_i18n::text("启用 HUD"),*enabled,&hint).on_hover_text(uu_i18n::text("开关精简HUD；悬停查看诊断和历史曲线。")).clicked(){*enabled=!*enabled;true}else{false}
 }
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum QualityDetail {
     Bitrate,
     Resolution,
     FrameRate,
+    CustomFrameRate,
     RateMode,
 }
 
@@ -577,7 +578,7 @@ impl super::App {
         }
         if managed {ui.label(uu_i18n::text("画质由被控端服务面板控制"));}
         else {
-        if self.stream_menu.quality_detail.is_some_and(|(kind,_)|!matches!(kind,QualityDetail::Resolution|QualityDetail::FrameRate)) {self.stream_menu.quality_detail=None;}
+        if self.stream_menu.quality_detail.is_some_and(|(kind,_)|!matches!(kind,QualityDetail::Resolution|QualityDetail::FrameRate|QualityDetail::CustomFrameRate)) {self.stream_menu.quality_detail=None;}
         let response=menu_row(ui,uu_i18n::text("分辨率"),None,false,true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::Resolution,response.rect));}
         separator(ui);
@@ -594,7 +595,13 @@ impl super::App {
             if response.hovered(){self.stream_menu.quality_detail=None;}
             if response.clicked(){self.select_frame_rate(fps);self.confirm_quality(ui);}
         }
-        let response=menu_row(ui,uu_i18n::text("其它帧数"),None,manual&&!uu_core::client_settings::COMMON_FRAME_RATES.contains(&self.preferences.fps),true,"",false);
+        let custom=manual&&!uu_core::client_settings::COMMON_FRAME_RATES.contains(&self.preferences.fps)&&!uu_core::client_settings::OTHER_FRAME_RATES.contains(&self.preferences.fps);
+        let response=menu_row(ui,uu_i18n::text("自定义帧数"),None,custom,true,"",false);
+        if response.hovered()||response.clicked(){
+            if !self.stream_menu.quality_detail.is_some_and(|(kind,_)|kind==QualityDetail::CustomFrameRate){self.fps_draft=self.preferences.fps;}
+            self.stream_menu.quality_detail=Some((QualityDetail::CustomFrameRate,response.rect));
+        }
+        let response=menu_row(ui,uu_i18n::text("其它帧数"),None,manual&&uu_core::client_settings::OTHER_FRAME_RATES.contains(&self.preferences.fps),true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::FrameRate,response.rect));}
         separator(ui);
         }
@@ -708,7 +715,9 @@ impl super::App {
         {
             position.x = row.left() - MENU_WIDTH-13.;
         }
-        let response = egui::Area::new("quality-detail".into())
+        // Each panel owns its measured geometry; a short custom editor must
+        // not constrain a later, scrollable list to the editor's old height.
+        let response = egui::Area::new(egui::Id::new(("quality-detail",kind)))
             .order(egui::Order::Foreground)
             .fixed_pos(position)
             .constrain_to(screen)
@@ -716,6 +725,8 @@ impl super::App {
                 popup_frame(ui).show(ui, |ui| {
                     ui.set_width(MENU_WIDTH);
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                    egui::ScrollArea::vertical().id_salt(("quality-detail-scroll",kind))
+                        .max_height((screen.height()-24.).max(64.)).show(ui,|ui| {
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                         match kind {
                             QualityDetail::RateMode => self.rate_mode_choices(ui),
@@ -743,7 +754,8 @@ impl super::App {
                                         self.select_frame_rate(fps);self.confirm_quality(ui);
                                     }
                                 }
-                                separator(ui);
+                            }
+                            QualityDetail::CustomFrameRate => {
                                 ui.label(uu_i18n::text("自定义帧数"));
                                 ui.add_space(5.0);
                                 ui.horizontal(|ui| {
@@ -787,10 +799,17 @@ impl super::App {
                                     }
                                 }
                                 let custom=uu_core::client_settings::CUSTOM_RESOLUTION;
-                                if menu_row(ui,uu_i18n::text("自定义分辨率"),None,self.resolution_idx==custom,false,"",false).clicked() {
-                                    self.stream_menu.custom_resolution_draft=Some(self.preferences.custom_resolution);
-                                }
-                                if self.resolution_idx==custom||self.stream_menu.custom_resolution_draft.is_some() {
+                                let preset=uu_core::client_settings::RESOLUTION_PRESETS.iter().find(|(size,_)|*size==self.preferences.custom_resolution);
+                                let preset_selected=self.resolution_idx==custom&&preset.is_some();
+                                nested_submenu(ui,blocked,uu_i18n::text("其它分辨率"),if preset_selected {"✓"}else{""},|ui| {
+                                    for &(size,label) in uu_core::client_settings::RESOLUTION_PRESETS {
+                                        if menu_row(ui,label,None,self.resolution_idx==custom&&self.preferences.custom_resolution==size,false,"",false).clicked() {
+                                            self.preferences.custom_resolution=size;self.resolution_idx=custom;
+                                            self.stream_menu.custom_resolution_draft=None;self.confirm_quality(ui);
+                                        }
+                                    }
+                                });
+                                nested_submenu(ui,blocked,uu_i18n::text("自定义分辨率"),if self.resolution_idx==custom&&!preset_selected {"✓"}else{""},|ui| {
                                     let draft=self.stream_menu.custom_resolution_draft.get_or_insert(self.preferences.custom_resolution);
                                     ui.horizontal(|ui| {
                                         crate::theme::number_input(ui,egui::DragValue::new(&mut draft[0]).range(2..=8192).speed(2.).max_decimals(0));
@@ -803,12 +822,13 @@ impl super::App {
                                         self.resolution_idx=custom;self.confirm_quality(ui);
                                     }
                                     if !valid {ui.weak(uu_i18n::text("自定义分辨率的宽高须为 2–8192 之间的偶数"));}
-                                }
+                                });
                                 separator(ui);
                                 ui.response().on_hover_text(uu_i18n::text("输出尺寸保持宽高比；更改会重新准备媒体，不改变远端桌面显示模式。"));
                             }
 
                         }
+                    });
                     });
                 });
             });
@@ -1125,7 +1145,13 @@ mod tests {
             super::super::theme::apply_appearance(&cc.egui_ctx,mode,color);
             cc.egui_ctx.style_mut(|style|style.interaction.tooltip_delay=60.);
             let mut profile=uu_core::device_book::Profile::new("生成工作站",uu_core::device_book::Destination::Ip{address:"preview.example.invalid:48998".into(),legacy_device:None});
-            let config=uu_core::client_settings::NamedClientSettings::new("桌面 4K",uu_core::client_settings::ClientSettings{fps:120,resolution:3,bitrate:4,custom_mbps:79,..Default::default()});
+            let mut preview_settings=uu_core::client_settings::ClientSettings{fps:120,resolution:3,bitrate:4,custom_mbps:79,..Default::default()};
+            match std::env::var("ECLIPSE_UI_PREVIEW_VIDEO_CHOICE").as_deref() {
+                Ok("other") => {preview_settings.follow_remote_fps=false;preview_settings.fps=144;preview_settings.resolution=uu_core::client_settings::CUSTOM_RESOLUTION;preview_settings.custom_resolution=[1280,720];}
+                Ok("custom") => {preview_settings.follow_remote_fps=false;preview_settings.fps=177;preview_settings.resolution=uu_core::client_settings::CUSTOM_RESOLUTION;preview_settings.custom_resolution=[3458,1450];}
+                _ => {},
+            }
+            let config=uu_core::client_settings::NamedClientSettings::new("桌面 4K",preview_settings);
             profile.selected_client=Some(config.id.clone());profile.client_configs.push(config);
             app.workspace.book.devices=vec![profile.clone()];
             if matches!(surface.as_str(),"connections"|"add-server"|"add-device") {app.workspace.open_generated_connection_preview(&surface);}
@@ -1249,9 +1275,66 @@ mod tests {
         assert!(!app.preferences.follow_local_fps&&!app.preferences.follow_remote_fps);
         assert_eq!(app.preferences.fps,120);assert_eq!(app.target_fps,60);
         quality_frame(&mut app,&ctx,Some(QualityDetail::FrameRate),vec![]);
-        let labels=quality_frame(&mut app,&ctx,Some(QualityDetail::FrameRate),vec![]);
-        for fps in [24,90,144,165] {assert!(labels.contains_key(&uu_i18n::format!("{fps} 帧")));}
+        let mut labels=quality_frame(&mut app,&ctx,Some(QualityDetail::FrameRate),vec![]);
+        for fps in [24,90] {assert!(labels.contains_key(&uu_i18n::format!("{fps} 帧")));}
+        let area=ctx.memory(|m|m.area_rect(egui::Id::new(("quality-detail",QualityDetail::FrameRate)))).unwrap();
+        quality_frame(&mut app,&ctx,Some(QualityDetail::FrameRate),vec![
+            egui::Event::PointerMoved(area.center()),
+            egui::Event::MouseWheel {unit:egui::MouseWheelUnit::Point,delta:egui::vec2(0.,-400.),modifiers:Default::default()},
+        ]);
+        // Egui smooth scrolling advances over several frames. Observe the
+        // lower choices through the real wheel path instead of bypassing it.
+        for _ in 0..12 {labels.extend(quality_frame(&mut app,&ctx,Some(QualityDetail::FrameRate),vec![]));}
+        for fps in [144,165,240] {assert!(labels.contains_key(&uu_i18n::format!("{fps} 帧")));}
         let fps=120;assert!(!labels.contains_key(&uu_i18n::format!("{fps} 帧")));
+        assert!(!labels.contains_key(uu_i18n::text("自定义帧数")));
+        assert!(!labels.contains_key(uu_i18n::text("确认")));
+        let fps=165;quality_click(&mut app,&ctx,Some(QualityDetail::FrameRate),&uu_i18n::format!("{fps} 帧"));
+        assert_eq!(app.preferences.fps,165);
+        assert_eq!(app.target_fps,60);
+    }
+    #[test]
+    fn custom_frame_rate_has_its_own_panel_and_only_confirmation_applies_the_draft() {
+        let ctx=egui::Context::default();let mut app=quality_app(&ctx);
+        let before=app.preferences.client.clone();
+        quality_click(&mut app,&ctx,None,uu_i18n::text("自定义帧数"));
+        assert_eq!(app.preferences.client,before,"opening a custom editor must not change active quality");
+        app.fps_draft=177;
+        // A newly created Area first performs an invisible sizing pass.
+        quality_frame(&mut app,&ctx,Some(QualityDetail::CustomFrameRate),vec![]);
+        let labels=quality_frame(&mut app,&ctx,Some(QualityDetail::CustomFrameRate),vec![]);
+        let fps=24;assert!(!labels.contains_key(&uu_i18n::format!("{fps} 帧")));
+        assert!(labels.contains_key(uu_i18n::text("确认")));
+        quality_click(&mut app,&ctx,Some(QualityDetail::CustomFrameRate),uu_i18n::text("确认"));
+        assert_eq!(app.preferences.fps,177);
+        assert!(!app.preferences.follow_local_fps&&!app.preferences.follow_remote_fps);
+        assert_eq!(app.target_fps,60,"the selected rate remains intact when the local monitor caps output");
+    }
+    #[test]
+    fn detail_lists_do_not_inherit_the_short_custom_editors_height() {
+        let ctx=egui::Context::default();let mut app=quality_app(&ctx);
+        for _ in 0..2 {quality_frame(&mut app,&ctx,Some(QualityDetail::CustomFrameRate),vec![]);}
+        let custom=ctx.memory(|m|m.area_rect(egui::Id::new(("quality-detail",QualityDetail::CustomFrameRate)))).unwrap();
+        for _ in 0..2 {quality_frame(&mut app,&ctx,Some(QualityDetail::FrameRate),vec![]);}
+        let list=ctx.memory(|m|m.area_rect(egui::Id::new(("quality-detail",QualityDetail::FrameRate)))).unwrap();
+        assert!(list.height()>custom.height()*2.,"the list must keep its own usable scrolling viewport");
+        assert!(list.height()<=900.,"the long list remains constrained to the screen");
+    }
+    #[test]
+    fn other_resolution_choices_use_custom_storage_without_opening_the_custom_editor() {
+        let ctx=egui::Context::default();let mut app=quality_app(&ctx);
+        let before=app.preferences.client.clone();
+        quality_click(&mut app,&ctx,Some(QualityDetail::Resolution),uu_i18n::text("其它分辨率"));
+        assert_eq!(app.preferences.client,before);
+        let labels=quality_frame(&mut app,&ctx,Some(QualityDetail::Resolution),vec![]);
+        assert!(!labels.contains_key(uu_i18n::text("确认")));
+        let (size,label)=uu_core::client_settings::RESOLUTION_PRESETS[0];
+        quality_click(&mut app,&ctx,Some(QualityDetail::Resolution),label);
+        assert_eq!(app.preferences.resolution,uu_core::client_settings::CUSTOM_RESOLUTION);
+        assert_eq!(app.preferences.custom_resolution,size);
+        assert_eq!(app.native_quality_request().bounds,Some(size));
+        let labels=quality_frame(&mut app,&ctx,Some(QualityDetail::Resolution),vec![]);
+        assert!(!labels.contains_key(uu_i18n::text("确认")),"a preset stored as index 5 must remain a preset in the menu");
     }
     #[test]
     fn resolution_menu_applies_local_size_and_waits_for_valid_custom_confirmation() {
