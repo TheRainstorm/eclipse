@@ -34,6 +34,7 @@ mod theme;
 mod sessions;
 mod single_instance;
 mod storage_ui;
+mod storage_relocation;
 mod platform;
 mod boss_key;
 mod shortcuts;
@@ -248,6 +249,7 @@ struct App {
     context: window_context::Context,
     status: String,
     config: Option<uu_core::Config>,
+    storage: storage_ui::Storage,
     controller: connection::Controller,
     textures: std::collections::HashMap<u32, video_texture::VideoTexture>,
     video_gl: Option<std::sync::Arc<eframe::glow::Context>>,
@@ -542,6 +544,7 @@ impl App {
             status: String::new(),
             preview_writer:Default::default(),recorded_connection:false,
             background:background::Background::new(config.as_ref().map(|c|c.at("appearance/wallpaper.jpg"))).archive_to(wallpaper_cache::directory()),
+            storage: storage_ui::Storage::new(config.as_ref()),
             config,
             controller: Default::default(),
             textures: std::collections::HashMap::new(),
@@ -617,7 +620,15 @@ impl App {
             } else {
                 app.connect();
             }
-        }else{app.status=uu_i18n::text("选择连接方式").into();}
+        }else{
+            app.status=uu_i18n::text("选择连接方式").into();
+            if let Some(error)=storage_relocation::take_restart_error() {
+                app.settings_storage_error=true;
+                app.set_settings_notice(error);
+                app.workspace.route.page=workspace_ui::Page::Settings;
+                app.workspace.route.settings=workspace_ui::SettingsView::Software(settings_page::SoftwareSection::General);
+            }
+        }
 
         app
     }
@@ -1410,6 +1421,13 @@ impl App {
         hide_requested
     }
     fn update_frame(&mut self,ctx:&egui::Context,cpu_usage:Option<f32>) {
+        if self.stream_target.is_none() && self.workspace_tabs.is_none() && self.storage.poll(ctx) {
+            // Only the prepared helper may turn this into a real exit rather
+            // than close-to-tray. It waits for this process before writing.
+            self.exit_requested=true;
+            self.disconnect();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         let mut input_trace = if self.stream_target.is_some() { input_trace::Update::begin(self.platform.window_id(),ctx) } else { None };
         if self.boss_hidden!=boss_key::hidden(){self.boss_hidden=boss_key::hidden();if self.boss_hidden{self.release_session_input();}}
         if self.stream_target.is_none(){boss_key::normal_visibility(ctx.viewport_id(),!self.launcher_hidden);}
@@ -1463,10 +1481,10 @@ impl App {
         #[cfg(windows)]
         {
             let startup=self.stream_target.is_none() && self.workspace_tabs.is_none()
-                && self.preferences.start_service_on_open.unwrap_or(true);
+                && self.preferences.start_service_on_open.unwrap_or(true) && !self.storage.busy();
             self.workspace.background_service.set_startup(startup);
             self.workspace.background_service.set_loaded_plugins(self.plugins.loaded_manifests(),self.plugins.service_preferences(),
-                startup && self.config.as_ref().is_some_and(|config| config.profile_dir().is_none()));
+                startup);
         }
         // A hidden/minimized viewport can buffer both focus loss and recovery
         // before its next UI pass. Preserve that boundary even if focused=true.
@@ -1697,6 +1715,8 @@ impl App {
 }
 
 fn main() -> eframe::Result {
+    if storage_relocation::dispatch() {return Ok(());}
+    storage_relocation::capture_restart_error();
     uu_core::install_crypto_provider();
     if let Some(settings)=settings::Settings::path().and_then(|p|settings::Settings::load(&p).ok()) {uu_i18n::set_language(settings.language);}
     #[cfg(windows)]

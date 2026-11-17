@@ -452,6 +452,7 @@ impl super::App {
     pub(super) fn prepare_home_settings(&mut self) {
         self.snapshot_preferences();
         self.settings_draft = self.preferences.clone();
+        self.storage.discard();
         self.about_open = false;
         self.native_ui.open = false;
         self.native_host.open = false;
@@ -464,13 +465,14 @@ impl super::App {
 
     pub(super) fn discard_home_settings(&mut self) {
         self.settings_draft = self.preferences.clone();
+        self.storage.discard();
         self.settings_notice.clear();
         self.settings_notice_at = None;
     }
 
     pub(super) fn settings_home(&mut self, ctx: &egui::Context) {
         self.expire_settings_notice(ctx);
-        let dirty = self.settings_draft != self.preferences;
+        let dirty = self.settings_draft != self.preferences || self.storage.dirty();
         let mut actions = super::settings_page::Actions::default();
         egui::SidePanel::left("home-settings-navigation")
             .exact_width(if ctx.screen_rect().width() < 720.0 { 156.0 } else { 190.0 })
@@ -512,7 +514,7 @@ impl super::App {
                 )
                 .show(ctx, |ui| {
                     ui.horizontal_centered(|ui| {
-                        if ui.add(super::theme::secondary_button(uu_i18n::text("恢复默认"))).clicked() {
+                        if ui.add_enabled(!self.storage.busy(),super::theme::secondary_button(uu_i18n::text("恢复默认"))).clicked() {
                             actions.reset = true;
                         }
                         if dirty {
@@ -520,14 +522,14 @@ impl super::App {
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
-                                .add(
-                                    super::theme::primary_button(uu_i18n::text("保存并应用")),
+                                .add_enabled(!self.storage.busy(),
+                                    super::theme::primary_button(self.storage.saving_label()),
                                 )
                                 .clicked()
                             {
                                 actions.apply = true;
                             }
-                            if ui.add(super::theme::ghost_button(uu_i18n::text("取消"))).clicked() {
+                            if ui.add_enabled(!self.storage.busy(),super::theme::ghost_button(uu_i18n::text("取消"))).clicked() {
                                 actions.back = true;
                             }
                         });
@@ -570,6 +572,10 @@ impl super::App {
                                     section,
                                     &self.plugins.wallpapers(),
                                 );
+                                if section == super::settings_page::SoftwareSection::General
+                                    && self.stream_target.is_none() && self.workspace_tabs.is_none() {
+                                    self.storage.show(ui);
+                                }
                                 if section == super::settings_page::SoftwareSection::Appearance {
                                     if self.background.favorites_editor(ui,&mut self.settings_draft) {
                                         // Clicking an image is an explicit wallpaper selection;
@@ -599,7 +605,9 @@ impl super::App {
             self.leave_settings();
         }
         if actions.reset {
-            if let super::workspace_ui::SettingsView::Software(section)=view {section.reset(&mut self.settings_draft);}
+            if let super::workspace_ui::SettingsView::Software(section)=view {
+                section.reset(&mut self.settings_draft);
+            }
         }
         if actions.previous_wallpaper && self.settings_draft.wallpaper_enabled{self.background.sync(&self.settings_draft,ctx);self.background.previous(ctx);}
         if actions.today_wallpaper && self.settings_draft.wallpaper_enabled{self.background.sync(&self.settings_draft,ctx);self.background.today(ctx);}
@@ -608,6 +616,10 @@ impl super::App {
             self.background.next(ctx);
         }
         if actions.apply {
+            let destination=match self.storage.destination() {
+                Ok(value)=>value,
+                Err(error)=>{self.settings_storage_error=true;self.set_settings_notice(error);return;},
+            };
             if let Err(error) = self.settings_draft.validate() {
                 self.settings_storage_error = true;
                 self.set_settings_notice(uu_i18n::format!("无法应用：{error:#}"));
@@ -625,6 +637,9 @@ impl super::App {
             self.preferences.use_application_hotkeys();
             self.persist_preferences();
             if !self.settings_storage_error {super::theme::apply_appearance(ctx,self.preferences.theme_preference,self.preferences.color_theme);uu_i18n::set_language(self.preferences.language);self.hud_cache.invalidate();self.set_settings_notice(uu_i18n::text("已保存应用设置"));ctx.request_repaint();}
+            if !self.settings_storage_error {
+                if let Some(destination)=destination {self.storage.begin(destination,ctx);}
+            }
             if wallpaper_changed {
                 self.background.sync(&self.preferences, ctx);
             }
