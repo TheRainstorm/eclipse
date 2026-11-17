@@ -1,6 +1,6 @@
 # Windows 编译与打包
 
-主程序可直接检出构建，无需下载 UU 插件源码。完整包同时构建并附带匹配 SDK 的壁纸合集，默认关闭；UU 插件仍独立分发，见[插件说明](plugins.md)。
+主程序可直接检出构建；完整打包时按源码锁定文件获取 UU 插件，并同时附带匹配 SDK 的 UU 与壁纸合集，两者默认关闭。UU 源码仍在独立仓库维护，无需手工复制到主工作区。[插件说明](plugins.md)
 
 在仓库根目录执行，支持 Linux 交叉编译及 Windows 本机 GNU 编译。脚本使用 Python 3.11+ 标准库，无需安装 pip 依赖。
 Windows x64 包包括 GUI、CLI、MinGW 运行库、Intel VPL dispatcher、安装器、使用说明、双许可与第三方通知、版本校验清单。
@@ -39,7 +39,7 @@ artifacts/packages/windows-latest.json
 ```
 
 ZIP 解压后直接是 `eclipse.exe`、`eclipse-cli.exe`、两个 MinGW 运行 DLL、`libvpl.dll`、`libpyrowave-shared-1.dll`、`uu_plugin_sdk.dll`、`std-<编译器哈希>.dll`、`README.txt`、`install.ps1`、`LICENSE`、`LICENSE-MIT`、`LICENSE-APACHE`、`THIRD-PARTY-NOTICES.txt`、`version.json`。
-壁纸合集位于 `plugins/wallpaper-collects/`，其清单及动态库一起纳入完整包校验。用户无需额外下载安装，在设置中启用即可。
+UU 与壁纸合集分别位于 `plugins/uu/`、`plugins/wallpaper-collects/`，清单、动态库和许可一起纳入完整包校验。用户无需额外下载安装，在设置中启用即可。
 `version.json` 包含包格式版本、完整源提交号、dispatcher 源提交、UTC 打包时间和各文件 SHA256。新版为格式 5，包含共享 SDK 身份和运行库清单；安装器与同步脚本仍接受格式 1–4 的旧包。
 `windows-latest.json` 指向最近一次成功完成的 Windows 包，并记录 ZIP 的 SHA256。
 源码或 `tools/windows` 有未提交改动时拒绝打包，避免版本号与实际源码不一致；提交后再运行即可。

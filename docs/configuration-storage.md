@@ -17,6 +17,7 @@ Eclipse/
 ├── eclipse.exe             # Linux 为 eclipse
 ├── eclipse-cli.exe
 ├── plugins/
+│   ├── uu/                 # 完整包自带，默认关闭
 │   └── wallpaper-collects/  # 完整包自带，默认关闭
 └── eclipse-data/            # Windows 首次运行自动创建
     ├── data/
