@@ -29,9 +29,12 @@ _source_spec.loader.exec_module(release_source)
 _sdk_spec=importlib.util.spec_from_file_location('eclipse_plugin_sdk',ROOT/'tools/release/plugin_sdk.py')
 plugin_sdk=importlib.util.module_from_spec(_sdk_spec)
 _sdk_spec.loader.exec_module(plugin_sdk)
+_bundled_spec=importlib.util.spec_from_file_location('eclipse_bundled_plugins',ROOT/'tools/release/bundled_plugins.py')
+bundled_plugins=importlib.util.module_from_spec(_bundled_spec)
+_bundled_spec.loader.exec_module(bundled_plugins)
 LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt']
 
-SOURCE_PATHS = ['crates', 'tools/release/source.py', 'tools/release/plugin_sdk.py', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+SOURCE_PATHS = ['crates', 'extensions/wallpaper-collects', 'tools/release', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/linux','tools/pyrowave', 'tools/licenses', 'licenses', *LICENSES]
 FEATURES = ['vaapi', 'intel-vpl', 'pyrowave','opus', 'wayland-portal', 'wayland-screencopy', 'x11', 'gamepad']
 
@@ -52,16 +55,18 @@ def reuse_archive(archive, destination, revision):
             expected = {destination.name + '/' + name for name in [*payload, 'version.json']}
             actual = set()
             for member in members:
-                if member.name.rstrip('/') == destination.name and member.isdir():
+                if member.isdir() and (member.name.rstrip('/') == destination.name or
+                        any(name.startswith(member.name.rstrip('/') + '/') for name in expected)):
                     continue
                 limit = 1024 * 1024 if Path(member.name).name == 'version.json' else 512 * 1024 * 1024
                 if member.name not in expected or not member.isfile() or member.size > limit:
                     raise ValueError('缓存包含无效的文件类型、路径或大小')
                 actual.add(member.name)
-                target = staging / Path(member.name).name
+                target = staging / Path(member.name).relative_to(destination.name)
+                target.parent.mkdir(parents=True, exist_ok=True)
                 with bundle.extractfile(member) as source, target.open('wb') as output:
                     shutil.copyfileobj(source, output)
-                target.chmod(0o755 if target.name in ('eclipse-cli', 'eclipse') else 0o644)
+                target.chmod(0o755 if target.name in ('eclipse-cli', 'eclipse', 'uninstall.py') else 0o644)
             if actual != expected:
                 raise ValueError('缓存包文件清单不完整')
         manifest = verify_package(staging)
@@ -83,6 +88,7 @@ def reuse_archive(archive, destination, revision):
             raise ValueError('解包目录不能是符号链接')
         destination.mkdir(parents=True, exist_ok=True)
         for name in [*payload, 'version.json']:
+            (destination / name).parent.mkdir(parents=True, exist_ok=True)
             os.replace(staging / name, destination / name)
         return {'source_commit': revision, 'directory': str(destination), 'archive': str(archive), 'cached': True}
 
@@ -117,15 +123,22 @@ def main(argv=None):
     shutil.copy2(pyrowave,dest/'libpyrowave-shared.so.1')
     for runtime in (sdk,standard):shutil.copy2(runtime,dest/runtime.name)
     shutil.copy2(ROOT / 'tools/linux/install.py', dest / 'install.py')
+    shutil.copy2(ROOT / 'tools/linux/uninstall.py', dest / 'uninstall.py')
     shutil.copy2(ROOT / 'assets/branding/eclipse-512.png', dest / 'eclipse.png')
     for name in LICENSES: shutil.copy2(ROOT / name, dest / name)
     shutil.copy2(ROOT / 'tools/linux/README.txt', dest / 'README.txt')
-    files = {name: hashlib.sha256((dest / name).read_bytes()).hexdigest() for name in [*PAYLOAD,sdk.name,standard.name]}
-    manifest = {'format_version':4,'plugin_sdk_id':sdk_metadata['sdk_id'],'plugin_runtime':[sdk.name,standard.name],'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'platform': f'linux-{platform.machine()}', 'features': FEATURES, 'build_glibc': platform.libc_ver(),'runtime_sources':{'pyrowave':pyrowave_runtime.LOCK}, 'sha256': files}
+    files = {name: hashlib.sha256((dest / name).read_bytes()).hexdigest() for name in [*PAYLOAD,'uninstall.py',sdk.name,standard.name]}
+    manifest = {'format_version':4,'uninstaller':'uninstall.py','target':target,'plugin_sdk_id':sdk_metadata['sdk_id'],'plugin_runtime':[sdk.name,standard.name],'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'platform': f'linux-{platform.machine()}', 'features': FEATURES, 'build_glibc': platform.libc_ver(),'runtime_sources':{'pyrowave':pyrowave_runtime.LOCK}, 'sha256': files}
     (dest / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
+    bundled_plugins.stage(dest, manifest, target, ['vaapi'], dest.parent.parent / 'plugins')
+    (dest / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
+    verify_package(dest)
     archive = str(dest) + '.tar.gz'
     with tempfile.TemporaryDirectory(prefix='.linux-package-', dir=dest.parent) as temp:
-        pending = shutil.make_archive(str(Path(temp) / dest.name), 'gztar', root_dir=dest.parent, base_dir=dest.name)
+        pending = str(Path(temp) / (dest.name + '.tar.gz'))
+        with tarfile.open(pending, 'w:gz') as bundle:
+            for name in [*required_files(manifest), 'version.json']:
+                bundle.add(dest / name, arcname=dest.name + '/' + name, recursive=False)
         if source_revision() != revision: raise RuntimeError('Source changed while packaging; archive was not published')
         os.replace(pending, archive)
     print(json.dumps({'source_commit': revision, 'directory': str(dest), 'archive': archive}))

@@ -22,10 +22,20 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
-    def make_bundle(self, transform=None):
+    def make_bundle(self, transform=None, with_plugin=False):
         files = {name: ('test ' + name).encode() for name in (*package.REQUIRED,"uu_plugin_sdk.dll","std-0123456789abcdef.dll")}
         manifest = {'format_version': 5,'plugin_sdk_id':'f'*64,'plugin_runtime':['uu_plugin_sdk.dll','std-0123456789abcdef.dll'], 'target':package.TARGET, 'source_commit': 'a' * 40,
                     'sha256': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
+        if with_plugin:
+            library = 'eclipse_wallpaper_collects.dll'
+            prefix = 'plugins/wallpaper-collects/'
+            manifest['bundled_plugins'] = {'wallpaper-collects': library}
+            for name in (library, *package.bundled_plugins.NOTICES): files[prefix + name] = ('fixture ' + name).encode()
+            files[prefix + 'plugin.json'] = json.dumps(dict(id='wallpaper-collects', api_version=1, sdk_id='f'*64,
+                library=library, library_sha256=hashlib.sha256(files[prefix + library]).hexdigest())).encode()
+            files[prefix + 'build.json'] = json.dumps(dict(source_commit='a'*40, application_source_commit='a'*40,
+                sdk_id='f'*64, target=package.TARGET)).encode()
+            manifest['sha256'].update({name: hashlib.sha256(data).hexdigest() for name, data in files.items() if name.startswith(prefix)})
         files['version.json'] = json.dumps(manifest).encode()
         if transform:
             transform(files)
@@ -53,11 +63,53 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(sync.verify_package(self.make_bundle())['source_commit'], 'a' * 40)
 
     def test_same_revision_package_is_verified_and_reused_without_a_compiler(self):
-        archive=self.make_bundle().rename(self.root/(package.archive_name('a'*40)))
+        archive=self.make_bundle(with_plugin=True).rename(self.root/(package.archive_name('a'*40)))
         with patch.object(package,'clean_revision',return_value='a'*40), patch.object(package,'check_tools',side_effect=AssertionError('compiler must not run')), contextlib.redirect_stdout(io.StringIO()):
             result=package.build_package(self.root)
         self.assertEqual(result['sha256'],package.sha256(archive))
         self.assertEqual(json.loads((self.root/'windows-latest.json').read_text())['source_commit'],'a'*40)
+
+    def test_complete_package_checks_bundled_plugin_hashes_and_sdk(self):
+        self.assertIn('wallpaper-collects', sync.verify_package(self.make_bundle(with_plugin=True))['bundled_plugins'])
+        def damage(files): files['plugins/wallpaper-collects/eclipse_wallpaper_collects.dll'] = b'changed plugin'
+        with self.assertRaisesRegex(ValueError, 'wallpaper-collects'):
+            sync.verify_package(self.make_bundle(damage, with_plugin=True))
+        def mismatch(files):
+            name = 'plugins/wallpaper-collects/plugin.json'
+            plugin = json.loads(files[name]); plugin['sdk_id'] = 'e'*64
+            files[name] = json.dumps(plugin).encode()
+            manifest = json.loads(files['version.json']); manifest['sha256'][name] = hashlib.sha256(files[name]).hexdigest()
+            files['version.json'] = json.dumps(manifest).encode()
+        with self.assertRaisesRegex(ValueError, 'SDK'):
+            sync.verify_package(self.make_bundle(mismatch, with_plugin=True))
+
+    def test_standalone_plugin_is_recovered_from_complete_cache_without_building(self):
+        archive = self.make_bundle(with_plugin=True)
+        manifest = sync.verify_package(archive)
+        output = self.root/'plugins'
+        with zipfile.ZipFile(archive) as bundle, patch.object(package.bundled_plugins.subprocess,'run',side_effect=AssertionError('no build')):
+            package.bundled_plugins.export(manifest,bundle.read,output)
+        assets = list(output.glob('*.zip')); self.assertEqual(len(assets),1)
+        with zipfile.ZipFile(assets[0]) as plugin:
+            self.assertEqual(set(plugin.namelist()),set(package.bundled_plugins.files(manifest)))
+            self.assertEqual(json.loads(plugin.read('plugins/wallpaper-collects/plugin.json'))['sdk_id'],manifest['plugin_sdk_id'])
+            self.assertFalse(any('settings.json' in name for name in plugin.namelist()))
+
+    def test_full_packager_reuses_verified_standalone_plugin_contract(self):
+        source = self.make_bundle(with_plugin=True)
+        manifest = sync.verify_package(source)
+        application = self.root/'application'; application.mkdir()
+        output = self.root/'plugin-assets'; output.mkdir()
+        asset = output/'eclipse-plugin-wallpaper-collects-x86_64-pc-windows-gnu-aaaaaaaaaaaa.zip'
+        with zipfile.ZipFile(source) as original, zipfile.ZipFile(asset,'w') as archive:
+            for name in package.bundled_plugins.files(manifest): archive.writestr(name, original.read(name))
+        manifest.pop('bundled_plugins')
+        manifest['sha256'] = {name:digest for name,digest in manifest['sha256'].items() if not name.startswith('plugins/')}
+        with patch.object(package.bundled_plugins.subprocess,'run') as run:
+            package.bundled_plugins.stage(application,manifest,package.TARGET,[],output)
+        self.assertIn('--application',run.call_args.args[0])
+        package.bundled_plugins.verify(manifest,lambda name:(application/name).read_bytes())
+        self.assertEqual(set(manifest['bundled_plugins']),{'wallpaper-collects'})
 
     def test_corrupt_stale_and_wrong_target_caches_require_building(self):
         for kind in ['corrupt','stale','target','force']:

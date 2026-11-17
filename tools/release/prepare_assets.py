@@ -73,7 +73,7 @@ def prepare(input_dir, output_dir, tag, revision):
                         if member.isdir():
                             continue
                         renamed = copy.copy(member)
-                        renamed.name = name + '/' + PurePosixPath(member.name).name
+                        renamed.name = name + '/' + '/'.join(PurePosixPath(member.name).parts[1:])
                         renamed.pax_headers = {k: v for k, v in member.pax_headers.items() if k != 'path'}
                         archive.addfile(renamed, original.extractfile(member))
                 download.linux_manifest(destination)

@@ -27,6 +27,9 @@ _source_spec.loader.exec_module(release_source)
 _sdk_spec=importlib.util.spec_from_file_location('eclipse_plugin_sdk',ROOT/'tools/release/plugin_sdk.py')
 plugin_sdk=importlib.util.module_from_spec(_sdk_spec)
 _sdk_spec.loader.exec_module(plugin_sdk)
+_bundled_spec=importlib.util.spec_from_file_location('eclipse_bundled_plugins',ROOT/'tools/release/bundled_plugins.py')
+bundled_plugins=importlib.util.module_from_spec(_bundled_spec)
+_bundled_spec.loader.exec_module(bundled_plugins)
 OUTPUT = ROOT / 'artifacts/packages'
 TARGET = 'x86_64-pc-windows-gnu'
 LICENSES = ('LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt')
@@ -48,9 +51,9 @@ def required_files(manifest):
                 or not re.fullmatch(r'std-[0-9a-f]+\.dll', runtime[1])
                 or not re.fullmatch(r'[0-9a-f]{64}', manifest.get('plugin_sdk_id', ''))):
             raise ValueError('无效的插件 SDK 运行库清单')
-        return (*(REQUIRED if version == 5 else V3_REQUIRED), *runtime)
+        return (*(REQUIRED if version == 5 else V3_REQUIRED), *runtime, *bundled_plugins.files(manifest))
     return V3_REQUIRED if version == 3 else VPL_REQUIRED if version==2 else LEGACY_REQUIRED
-SOURCE_PATHS = ('crates', 'tools/release/source.py', 'tools/release/plugin_sdk.py', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+SOURCE_PATHS = ('crates', 'extensions/wallpaper-collects', 'tools/release', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/windows', 'tools/pyrowave','tools/licenses', 'licenses', *LICENSES)
 
 
@@ -82,6 +85,7 @@ def verify_package(path):
                 actual = hashlib.file_digest(stream, 'sha256').hexdigest()
             if actual != manifest['sha256'][name]:
                 raise ValueError(f'文件校验失败：{name}')
+        bundled_plugins.verify(manifest, bundle.read)
     return manifest
 
 
@@ -118,7 +122,7 @@ def runtime_dll(compiler, name):
 
 def verify_imports(directory):
     # MinGW POSIX variants can also require libwinpthread. Never ship an incomplete bundle.
-    for path in directory.iterdir():
+    for path in directory.rglob('*'):
         if path.suffix.lower() not in ('.exe', '.dll'):
             continue
         imports = subprocess.check_output([compiler_tool('objdump'), '-p', str(path)], text=True)
@@ -140,7 +144,8 @@ def build_package(output, vpl_archive=None, rebuild=False):
     if not rebuild and vpl_archive is None and archive.is_file():
         try:
             manifest = verify_package(archive)
-            if manifest['source_commit'] == revision and manifest.get('target') == TARGET and manifest.get('format_version') == 5:
+            if (manifest['source_commit'] == revision and manifest.get('target') == TARGET
+                    and manifest.get('format_version') == 5 and 'wallpaper-collects' in manifest.get('bundled_plugins', {})):
                 if clean_revision() != revision:
                     raise RuntimeError('核验缓存期间源码版本发生变化')
                 result = {'source_commit': revision, 'archive': archive.name, 'sha256': sha256(archive)}
@@ -184,17 +189,21 @@ def build_package(output, vpl_archive=None, rebuild=False):
             shutil.copy2(ROOT / filename, staging / filename)
         for binary in staging.iterdir():
             if binary.suffix.lower() in ('.exe', '.dll'): plugin_sdk.strip_windows_binary(binary)
-        verify_imports(staging)
         manifest = {'format_version': 5, 'service_profiles': 1, 'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
                     'target': TARGET,
                     'plugin_sdk_id': sdk_metadata['sdk_id'], 'plugin_runtime': [sdk.name, standard.name],
                     'runtime_sources': {'intel_vpl': vpl_runtime.COMMIT,'pyrowave':pyrowave_runtime.LOCK},
                     'sha256': {filename: sha256(staging / filename) for filename in (*REQUIRED, sdk.name, standard.name)}}
         (staging / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        bundled_plugins.stage(staging, manifest, TARGET, [], output.parent / 'plugins')
+        verify_imports(staging)
+        (staging / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         zip_path = Path(temp) / archive.name
         with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as bundle:
-            for path in sorted(staging.iterdir()):
-                bundle.write(path, path.name)
+            for path in sorted(staging.rglob('*')):
+                if path.is_file():
+                    bundle.write(path, path.relative_to(staging).as_posix())
+        verify_package(zip_path)
         if clean_revision() != revision:
             raise RuntimeError('打包期间源码或提交发生变化，未发布产物')
         os.replace(zip_path, archive)

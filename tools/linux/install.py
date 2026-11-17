@@ -15,6 +15,36 @@ LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt
 LEGACY_PAYLOAD = ['uu-gui', 'uu', 'README.txt', 'install.py', 'eclipse.png', *LICENSES]
 V2_PAYLOAD = [*LEGACY_PAYLOAD,'libpyrowave-shared.so.1']
 PAYLOAD = ['eclipse','eclipse-cli',*V2_PAYLOAD[2:]]
+
+
+def bundled_plugin_files(manifest):
+    plugins = manifest.get('bundled_plugins', {})
+    if not isinstance(plugins, dict) or len(plugins) > 16:
+        raise ValueError('Invalid bundled plugin inventory')
+    files = []
+    for identifier, library in plugins.items():
+        if (not isinstance(identifier, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', identifier)
+                or not isinstance(library, str) or not re.fullmatch(r'[A-Za-z0-9_-]+\.so', library)):
+            raise ValueError('Invalid bundled plugin path')
+        files.extend('plugins/' + identifier + '/' + name for name in
+                     ('plugin.json', 'build.json', library, 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt'))
+    return files
+
+
+def verify_bundled_plugins(manifest, read):
+    for identifier, library in manifest.get('bundled_plugins', {}).items():
+        prefix = 'plugins/' + identifier + '/'
+        plugin, build = (json.loads(read(prefix + name)) for name in ('plugin.json', 'build.json'))
+        if (plugin.get('id') != identifier or plugin.get('api_version') != 1
+                or plugin.get('sdk_id') != manifest.get('plugin_sdk_id') or plugin.get('library') != library
+                or plugin.get('library_sha256') != manifest['sha256'][prefix + library]
+                or build.get('sdk_id') != manifest.get('plugin_sdk_id')
+                or build.get('source_commit') != manifest['source_commit']
+                or build.get('application_source_commit') != manifest['source_commit']
+                or build.get('target') != manifest.get('target')):
+            raise ValueError('Bundled plugin source or SDK differs from application')
+
+
 def executables(manifest):
     return ('eclipse','eclipse-cli') if manifest.get('format_version',1)>=4 else ('uu-gui','uu')
 def required_files(manifest):
@@ -27,7 +57,12 @@ def required_files(manifest):
             or not isinstance(runtime[1],str) or not re.fullmatch(r'libstd-[0-9a-f]+\.so',runtime[1])
             or not re.fullmatch(r'[0-9a-f]{64}',manifest.get('plugin_sdk_id',''))):
             raise ValueError('Invalid plugin SDK runtime manifest')
-        return [*(PAYLOAD if version==4 else V2_PAYLOAD),*runtime]
+        extra = []
+        if 'uninstaller' in manifest:
+            if version != 4 or manifest['uninstaller'] != 'uninstall.py':
+                raise ValueError('Invalid Linux uninstaller entry')
+            extra.append('uninstall.py')
+        return [*(PAYLOAD if version==4 else V2_PAYLOAD),*runtime,*extra,*bundled_plugin_files(manifest)]
     return V2_PAYLOAD if version==2 else LEGACY_PAYLOAD
 
 
@@ -49,6 +84,9 @@ def verify_package(package):
         path = package / name
         if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != hashes[name]:
             raise ValueError(f'Integrity check failed: {name}')
+        if name.startswith('plugins/') and ((package/'plugins').is_symlink() or path.parent.is_symlink()):
+            raise ValueError(f'Integrity check failed: {name}')
+    verify_bundled_plugins(manifest, lambda name: (package / name).read_bytes())
     return manifest
 
 
@@ -154,8 +192,7 @@ def main():
     revision = manifest['source_commit']
     gui,cli=executables(manifest)
     libraries = [gui,cli,*(['libpyrowave-shared.so.1'] if manifest.get('format_version',1)>=2 else []),*manifest.get('plugin_runtime',[])]
-    if development:
-        libraries.extend(name for name in payload if name.startswith('plugins/') and name.endswith('.so'))
+    libraries.extend(name for name in payload if name.startswith('plugins/') and name.endswith('.so'))
     environment = dict(os.environ, LD_LIBRARY_PATH=str(package) + (':' + os.environ['LD_LIBRARY_PATH'] if os.environ.get('LD_LIBRARY_PATH') else ''))
     for name in libraries:
         deps = subprocess.check_output(['ldd', str(package / name)], text=True, env=environment)
@@ -166,6 +203,10 @@ def main():
     base = prefix / 'opt' / 'eclipse'
     desktop_contents = [(False, desktop_entry(base,gui=gui)), (True, desktop_entry(base, legacy=True,gui=gui))]
     releases = base / 'releases'
+    uninstall_entry = prefix / 'bin/eclipse-uninstall'
+    if manifest.get('uninstaller') and (uninstall_entry.exists() or uninstall_entry.is_symlink()):
+        if not uninstall_entry.is_symlink() or not uninstall_entry.resolve().is_relative_to(base):
+            raise ValueError('Uninstall command already belongs to another installation')
     releases.mkdir(parents=True, exist_ok=True)
     dest = releases / release_name(manifest, development)
     if dest.is_symlink():
@@ -177,6 +218,7 @@ def main():
                 (staging / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(package / name, staging / name)
             for name in [gui,cli]: (staging / name).chmod(0o755)
+            if manifest.get('uninstaller'): (staging / 'uninstall.py').chmod(0o755)
             staging.rename(dest)
         finally:
             if staging.exists(): shutil.rmtree(staging)
@@ -198,6 +240,7 @@ def main():
     link(dest, base / 'current')
     for name in ['eclipse','uu-client','uu-remote-rust']:link(base/'current'/gui,prefix/'bin'/name)
     for name in ['eclipse-cli','uu-rust']:link(base/'current'/cli,prefix/'bin'/name)
+    if manifest.get('uninstaller'): link(base/'current'/'uninstall.py',uninstall_entry)
     # The filename matches the window's Wayland app_id (brand::NAME).
     desktop = prefix / 'share' / 'applications' / 'Eclipse.desktop'
     desktop.parent.mkdir(parents=True, exist_ok=True)

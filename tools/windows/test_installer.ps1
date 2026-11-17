@@ -31,6 +31,26 @@ function New-TestPackage([string]$Name, [int]$Format = 5) {
 function Assert-Test([bool]$Condition, [string]$Message) {
     if (!$Condition) { throw $Message }
 }
+function Add-TestPlugin([string]$Directory, [string]$Content) {
+    $prefix = 'plugins/wallpaper-collects/'
+    $library = 'collects.dll'
+    $folder = Join-Path $Directory $prefix
+    New-Item -ItemType Directory -Force $folder | Out-Null
+    $manifest = Get-Content -LiteralPath (Join-Path $Directory 'version.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $manifest | Add-Member NoteProperty target 'x86_64-pc-windows-gnu'
+    $manifest | Add-Member NoteProperty bundled_plugins @{'wallpaper-collects'=$library}
+    foreach ($name in @($library,'README.md','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt')) {
+        [IO.File]::WriteAllText((Join-Path $folder $name), "$Content/$name", $utf8)
+    }
+    $plugin = @{id='wallpaper-collects';name='壁纸合集';api_version=1;sdk_id=$manifest.plugin_sdk_id;library=$library;library_sha256=(Get-FileHash -LiteralPath (Join-Path $folder $library)).Hash.ToLowerInvariant()}
+    $build = @{target=$manifest.target;sdk_id=$manifest.plugin_sdk_id;source_commit=$manifest.source_commit;application_source_commit=$manifest.source_commit}
+    [IO.File]::WriteAllText((Join-Path $folder 'plugin.json'), ($plugin | ConvertTo-Json), $utf8)
+    [IO.File]::WriteAllText((Join-Path $folder 'build.json'), ($build | ConvertTo-Json), $utf8)
+    foreach ($file in Get-ChildItem -LiteralPath $folder -File) {
+        $manifest.sha256 | Add-Member NoteProperty ($prefix+$file.Name) (Get-FileHash -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+    }
+    [IO.File]::WriteAllText((Join-Path $Directory 'version.json'), ($manifest | ConvertTo-Json -Depth 8), $utf8)
+}
 function Get-TestHashes {
     $hashes = @{}
     foreach ($file in Get-ChildItem -LiteralPath $target -File) { $hashes[$file.Name] = (Get-FileHash -LiteralPath $file.FullName).Hash }
@@ -131,6 +151,23 @@ try {
     Assert-Test (!(Test-Path -LiteralPath (Join-Path $renamedTarget 'uu.exe'))) 'Legacy CLI left in active installation'
     Assert-Test (Test-Path -LiteralPath (Join-Path $renamed.Archive 'previous/uu-gui.exe')) 'Legacy GUI was not archived'
     Assert-Test ([IO.File]::ReadAllText((Join-Path $renamedTarget 'user-config.json')) -eq 'keep configuration') 'Renaming changed user configuration'
+    $pluginOld = New-TestPackage 'plugin-old'; Add-TestPlugin $pluginOld 'old plugin'
+    $pluginNew = New-TestPackage 'plugin-new'; Add-TestPlugin $pluginNew 'new plugin'
+    $pluginTarget = Join-Path $root 'plugin-installed'
+    & $Installer -SourceDir $pluginOld -InstallDir $pluginTarget -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null
+    $pluginFile = Join-Path $pluginTarget 'plugins/wallpaper-collects/collects.dll'
+    $oldPluginHash = (Get-FileHash -LiteralPath $pluginFile).Hash
+    $lockedPlugin = [IO.File]::Open($pluginFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $failed = $false
+        try { & $Installer -SourceDir $pluginNew -InstallDir $pluginTarget -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null }
+        catch { $failed = $true }
+        Assert-Test $failed 'A locked bundled plugin must prevent an incomplete upgrade'
+        Assert-Test ((Get-FileHash -LiteralPath $pluginFile).Hash -eq $oldPluginHash) 'Failed upgrade changed the previous plugin'
+    } finally { $lockedPlugin.Dispose() }
+    & $Installer -SourceDir $pluginNew -InstallDir $pluginTarget -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null
+    Assert-Test ((Get-FileHash -LiteralPath $pluginFile).Hash -eq (Get-FileHash -LiteralPath (Join-Path $pluginNew 'plugins/wallpaper-collects/collects.dll')).Hash) 'Bundled plugin was omitted during upgrade'
+    Assert-Test (!(Test-Path -LiteralPath (Join-Path $pluginTarget 'eclipse-data/data/plugins/settings.json'))) 'Bundled plugin was enabled implicitly'
     $before = Get-TestHashes
     $unknown = New-TestPackage 'unsupported' 6
     $failed = $false

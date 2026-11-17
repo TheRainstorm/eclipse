@@ -53,7 +53,7 @@ if ($InstallDir -eq [IO.Path]::GetPathRoot($InstallDir)) { throw 'InstallDir mus
 # InstallDir guarantees a rename rather than a cross-volume copy/delete.
 if ([string]::IsNullOrWhiteSpace($ArchiveRoot)) { $ArchiveRoot = Join-Path $InstallDir '.upgrade-archive' }
 $ArchiveRoot = Resolve-PackagePath $ArchiveRoot
-$manifest = Get-Content -LiteralPath (Join-Path $SourceDir 'version.json') -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath (Join-Path $SourceDir 'version.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $format = 1
 if ($null -ne $manifest.format_version) {
     if ($manifest.format_version -isnot [int] -and $manifest.format_version -isnot [long]) {
@@ -75,6 +75,24 @@ if ($format -ge 4) {
         $runtime[1] -isnot [string] -or $runtime[1] -cnotmatch '^std-[0-9a-f]+\.dll$' -or
         $manifest.plugin_sdk_id -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid plugin SDK runtime manifest' }
     $required += $runtime
+}
+if ($null -ne $manifest.bundled_plugins) {
+    if ($format -ne 5 -or $manifest.bundled_plugins -isnot [pscustomobject] -or
+        @($manifest.bundled_plugins.PSObject.Properties).Count -gt 16) { throw 'Invalid bundled plugin inventory' }
+    foreach ($entry in $manifest.bundled_plugins.PSObject.Properties) {
+        if ($entry.Name -cnotmatch '^[a-z0-9][a-z0-9-]{0,63}$' -or
+            $entry.Value -isnot [string] -or $entry.Value -cnotmatch '^[A-Za-z0-9_-]+\.dll$') { throw 'Invalid bundled plugin path' }
+        $prefix = 'plugins/' + $entry.Name + '/'
+        $required += @('plugin.json','build.json',$entry.Value,'README.md','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt') | ForEach-Object { $prefix + $_ }
+        $plugin = Get-Content -LiteralPath (Join-Path $SourceDir ($prefix + 'plugin.json')) -Raw -Encoding UTF8 | ConvertFrom-Json
+        $build = Get-Content -LiteralPath (Join-Path $SourceDir ($prefix + 'build.json')) -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($plugin.id -cne $entry.Name -or $plugin.api_version -ne 1 -or $plugin.library -cne $entry.Value -or
+            $plugin.sdk_id -cne $manifest.plugin_sdk_id -or $build.sdk_id -cne $manifest.plugin_sdk_id -or
+            $build.source_commit -cne $manifest.source_commit -or $build.application_source_commit -cne $manifest.source_commit -or
+            $build.target -cne $manifest.target -or $plugin.library_sha256 -cne $manifest.sha256.($prefix + $entry.Value)) {
+            throw 'Bundled plugin source or SDK differs from application'
+        }
+    }
 }
 $hashNames = @($manifest.sha256.PSObject.Properties.Name)
 if ($hashNames.Count -ne $required.Count -or @($hashNames | Where-Object { $_ -cnotin $required }).Count) {
@@ -103,7 +121,9 @@ if (!$SourceDir.Equals($InstallDir, [StringComparison]::OrdinalIgnoreCase)) {
         $target = Join-Path $InstallDir $name
         if (Test-Path -LiteralPath $target) {
             if (!(Test-Path -LiteralPath $target -PathType Leaf)) { throw "Installed path is not a file: $name" }
-            Copy-Item -LiteralPath $target -Destination (Join-Path $previous $name) -Force
+            $backup = Join-Path $previous $name
+            New-Item -ItemType Directory -Force (Split-Path -Parent $backup) | Out-Null
+            Copy-Item -LiteralPath $target -Destination $backup -Force
             $oldHashes[$name] = (Get-FileHash -LiteralPath $target).Hash
         }
     }
@@ -112,7 +132,9 @@ if (!$SourceDir.Equals($InstallDir, [StringComparison]::OrdinalIgnoreCase)) {
         foreach ($name in $retired) {
             $target = Join-Path $InstallDir $name
             if (Test-Path -LiteralPath $target) {
-                Move-Item -LiteralPath $target -Destination (Join-Path $previous "running-$name") -Force
+                $running = Join-Path (Join-Path $previous '.running') $name
+                New-Item -ItemType Directory -Force (Split-Path -Parent $running) | Out-Null
+                Move-Item -LiteralPath $target -Destination $running -Force
                 $changed.Add($name)
             }
         }
@@ -124,9 +146,12 @@ if (!$SourceDir.Equals($InstallDir, [StringComparison]::OrdinalIgnoreCase)) {
             if ([IO.Path]::GetExtension($name) -in @('.exe', '.dll') -and (Test-Path -LiteralPath $target)) {
                 # Loaded images can be renamed while their processes keep running. A sharing violation
                 # leaves this file untouched and rolls back the earlier payload changes.
-                Move-Item -LiteralPath $target -Destination (Join-Path $previous "running-$name") -Force
+                $running = Join-Path (Join-Path $previous '.running') $name
+                New-Item -ItemType Directory -Force (Split-Path -Parent $running) | Out-Null
+                Move-Item -LiteralPath $target -Destination $running -Force
             }
             $changed.Add($name)
+            New-Item -ItemType Directory -Force (Split-Path -Parent $target) | Out-Null
             Copy-Item -LiteralPath $source -Destination $target -Force
             if ((Get-FileHash -LiteralPath $target).Hash -ne $digest) { throw "Installed hash mismatch: $name" }
         }
@@ -141,8 +166,9 @@ if (!$SourceDir.Equals($InstallDir, [StringComparison]::OrdinalIgnoreCase)) {
                     (Get-FileHash -LiteralPath $target).Hash -eq $oldHashes[$name]) { continue }
                 if (Test-Path -LiteralPath $target) {
                     $failed = Join-Path $archive 'failed'
-                    New-Item -ItemType Directory -Force $failed | Out-Null
-                    Move-Item -LiteralPath $target -Destination (Join-Path $failed $name) -Force
+                    $failedFile = Join-Path $failed $name
+                    New-Item -ItemType Directory -Force (Split-Path -Parent $failedFile) | Out-Null
+                    Move-Item -LiteralPath $target -Destination $failedFile -Force
                 }
                 if ($oldHashes.ContainsKey($name)) {
                     Copy-Item -LiteralPath (Join-Path $previous $name) -Destination $target -Force

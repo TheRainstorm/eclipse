@@ -1,6 +1,7 @@
 """Publishing labels change filenames, never the verified product source."""
 from pathlib import PurePosixPath
 import hashlib
+import io
 import json
 import tarfile
 import unittest
@@ -43,6 +44,36 @@ class PrepareTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Windows and one verified Linux'):
             self.prepare()
         self.assertFalse(self.output.exists())
+
+    def test_complete_linux_package_keeps_nested_plugin_and_uninstaller(self):
+        self.fixture.make_linux(sdk=True)
+        path = self.fixture.assets/self.fixture.linux
+        with tarfile.open(path) as archive:
+            files = {PurePosixPath(member.name).name: archive.extractfile(member).read()
+                     for member in archive.getmembers() if member.isfile()}
+        manifest = json.loads(files.pop('version.json'))
+        for old,new in [('uu','eclipse-cli'),('uu-gui','eclipse')]: files[new] = files.pop(old)
+        manifest.update(format_version=4, uninstaller='uninstall.py', target='x86_64-unknown-linux-gnu',
+                        bundled_plugins={'wallpaper-collects':'libcollects.so'})
+        prefix = 'plugins/wallpaper-collects/'
+        for name in ('libcollects.so','README.md','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt'):
+            files[prefix+name] = ('fixture '+name).encode()
+        files['uninstall.py'] = b'owned uninstaller fixture'
+        files[prefix+'plugin.json'] = json.dumps(dict(id='wallpaper-collects', api_version=1, sdk_id='f'*64,
+            library='libcollects.so', library_sha256=hashlib.sha256(files[prefix+'libcollects.so']).hexdigest())).encode()
+        files[prefix+'build.json'] = json.dumps(dict(sdk_id='f'*64, target=manifest['target'],
+            source_commit=manifest['source_commit'], application_source_commit=manifest['source_commit'])).encode()
+        manifest['sha256'] = {name:hashlib.sha256(data).hexdigest() for name,data in files.items()}
+        files['version.json'] = json.dumps(manifest).encode()
+        with tarfile.open(path,'w:gz') as archive:
+            for name,data in files.items():
+                info = tarfile.TarInfo('package/'+name); info.size = len(data)
+                archive.addfile(info,io.BytesIO(data))
+        self.prepare()
+        delivered = self.output/'eclipse-linux-x86_64-v1.2.3.tar.gz'
+        self.assertEqual(download.linux_manifest(delivered), manifest)
+        with tarfile.open(delivered) as archive:
+            self.assertEqual(archive.extractfile('eclipse-linux-x86_64-v1.2.3/plugins/wallpaper-collects/libcollects.so').read(), files[prefix+'libcollects.so'])
 
     def test_corrupt_payload_never_publishes_a_directory(self):
         self.fixture.make_linux(corrupt=True)

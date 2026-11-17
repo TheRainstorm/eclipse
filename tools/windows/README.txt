@@ -1,8 +1,12 @@
 Eclipse — Windows / Linux 远程串流客户端（Windows x64 包）
 
-安装与更新
+解压即用与更新
 
-在解压目录打开 PowerShell，执行：
+将完整 ZIP 解压到可写目录，直接双击 eclipse.exe 即可使用，无需运行安装脚本。
+默认在程序旁的 eclipse-data 保存配置，复制整个目录即可迁移；更新时保留该目录。
+完整包自带匹配的 wallpaper-collects 壁纸插件，默认关闭，可在插件管理中启用。
+
+如需复制到固定位置、创建快捷方式或更新已有安装，可选在解压目录打开 PowerShell，执行：
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 默认安装到 %LOCALAPPDATA%\Programs\Eclipse。-InstallDir 可指定安装位置；
@@ -16,11 +20,9 @@ Eclipse — Windows / Linux 远程串流客户端（Windows x64 包）
 
 配置与便携模式
 
-用户设置、设备与插件数据默认在 %LOCALAPPDATA%\Eclipse，
-日志在 %LOCALAPPDATA%\Eclipse\state；应用设置 → 常规可查看实际目录。
-首次使用新目录时复制旧 uu-remote 配置并保留原目录，已有 Eclipse 配置不会被覆盖。
-要体验首次使用或分别保存不同版本的配置，将完整包解压到可写的独立目录，
-在 eclipse.exe 旁新建空的 eclipse-data 文件夹，再双击启动，无需删除原配置。
+用户设置、设备与插件数据默认在实际 eclipse.exe 旁的 eclipse-data；
+应用设置 → 常规可查看实际目录。要体验首次使用或分别保存不同版本的配置，
+将完整包解压到新的可写独立目录，再双击启动，无需删除原配置。
 便携设置保存在 eclipse-data\data，日志与状态在 eclipse-data\state。
 退出此配置的所有窗口和托盘后，复制整个程序目录即可携带其中的配置和插件；
 更新时保留 eclipse-data。不同版本各使用独立的目录和配置副本。

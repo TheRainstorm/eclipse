@@ -386,19 +386,16 @@ jobs:
           for archive in artifacts/packages/*.zip; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done
-      - name: Package matching wallpaper plugin
+      - name: Scan matching bundled wallpaper plugin
         run: |
-          target=x86_64-unknown-linux-gnu
-          features=(--features vaapi)
-          application="artifacts/packages/eclipse-linux-x86_64-${SOURCE_COMMIT:0:12}"
+          # Each platform packager builds this once against the staged SDK,
+          # includes it in the complete package, and retains this optional asset.
+          # Cached complete packages can restore that asset without a build.
           if [ '${{ matrix.platform }}' = windows-x64 ]; then
-            target=x86_64-pc-windows-gnu
-            features=()
-            application="$RUNNER_TEMP/wallpaper-application"
-            python3 -m zipfile -e "artifacts/packages/eclipse-windows-x64-${SOURCE_COMMIT:0:12}.zip" "$application"
+            python3 tools/release/bundled_plugins.py --windows-archive "artifacts/packages/eclipse-windows-x64-${SOURCE_COMMIT:0:12}.zip" --output-dir artifacts/plugins
+          else
+            python3 tools/release/bundled_plugins.py --application "artifacts/packages/eclipse-linux-x86_64-${SOURCE_COMMIT:0:12}" --output-dir artifacts/plugins
           fi
-          python3 tools/release/package_plugin.py --manifest extensions/wallpaper-collects/plugin.json \
-            --target "$target" "${features[@]}" --application "$application" --output-dir artifacts/plugins
           for archive in artifacts/plugins/*.zip; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done

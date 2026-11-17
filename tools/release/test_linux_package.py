@@ -124,6 +124,59 @@ class LinuxPackageTests(unittest.TestCase):
         self.assertEqual(current.resolve().name, 'a' * 12 + '-' + 'b' * 12)
         self.assertEqual(installer.verify_installation(current)[1]['plugin_commit'], 'b' * 40)
 
+    def complete_package(self):
+        package = self.package()
+        shutil.copy2(ROOT / 'tools/linux/uninstall.py', package / 'uninstall.py')
+        manifest = json.loads((package/'version.json').read_text())
+        manifest.update(uninstaller='uninstall.py', target='x86_64-unknown-linux-gnu',
+                        bundled_plugins={'wallpaper-collects': 'libcollects.so'})
+        addon = package/'plugins/wallpaper-collects'; addon.mkdir(parents=True)
+        shutil.copy2('/bin/true', addon/'libcollects.so')
+        (addon/'plugin.json').write_text(json.dumps(dict(id='wallpaper-collects', api_version=1, sdk_id='f'*64,
+            library='libcollects.so', library_sha256=hashlib.sha256((addon/'libcollects.so').read_bytes()).hexdigest())))
+        (addon/'build.json').write_text(json.dumps(dict(sdk_id='f'*64, target=manifest['target'],
+            source_commit=manifest['source_commit'], application_source_commit=manifest['source_commit'])))
+        for name in ('README.md','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt'):
+            (addon/name).write_text('owned notice')
+        manifest['sha256'] = {name: hashlib.sha256((package/name).read_bytes()).hexdigest()
+                              for name in installer.required_files(manifest)}
+        (package/'version.json').write_text(json.dumps(manifest))
+        return package
+
+    def test_complete_package_installs_plugin_and_prefix_bound_uninstaller(self):
+        package = self.complete_package(); prefix = self.root/'custom prefix'
+        self.install(package, prefix)
+        current = prefix/'opt/eclipse/current'
+        self.assertTrue((current/'plugins/wallpaper-collects/plugin.json').is_file())
+        command = prefix/'bin/eclipse-uninstall'
+        result = subprocess.run([str(command), '--dry-run'], capture_output=True, text=True, check=True)
+        self.assertIn(str(prefix/'opt/eclipse'), json.loads(result.stdout)['paths'])
+        self.assertFalse((current/'eclipse-data').exists())
+        (package/'plugins/wallpaper-collects/libcollects.so').write_bytes(b'corrupt')
+        with self.assertRaises(ValueError): self.install(package, prefix)
+        self.assertTrue(command.is_symlink())
+
+    def test_foreign_uninstall_command_is_preserved_before_installation(self):
+        package = self.complete_package(); prefix = self.root/'custom'
+        command = prefix/'bin/eclipse-uninstall'; command.parent.mkdir(parents=True)
+        command.write_text('unrelated command')
+        with self.assertRaisesRegex(ValueError, 'another installation'): self.install(package, prefix)
+        self.assertEqual(command.read_text(), 'unrelated command')
+        self.assertFalse((prefix/'opt/eclipse/current').exists())
+
+    def test_complete_archive_cache_preserves_nested_payload(self):
+        package = self.complete_package()
+        manifest = json.loads((package/'version.json').read_text())
+        manifest.update(platform=f'linux-{platform.machine()}', features=packager.FEATURES, build_glibc=list(platform.libc_ver()))
+        (package/'version.json').write_text(json.dumps(manifest))
+        destination = self.root/'cached-complete'; package.rename(destination)
+        archive = Path(shutil.make_archive(str(self.root/'complete'), 'gztar', root_dir=self.root, base_dir=destination.name))
+        shutil.rmtree(destination)
+        with patch.object(packager,'source_revision',return_value='a'*40):
+            self.assertTrue(packager.reuse_archive(archive,destination,'a'*40)['cached'])
+        self.assertTrue((destination/'uninstall.py').stat().st_mode & 0o111)
+        self.assertIn('plugins/wallpaper-collects/libcollects.so', installer.verify_package(destination)['sha256'])
+
     def test_new_plugin_commit_retains_previous_paired_installation(self):
         package = self.paired_package(); prefix = self.root / 'installed'
         self.install(package, prefix)
@@ -265,14 +318,15 @@ class LinuxPackageTests(unittest.TestCase):
         binaries = self.root / 'custom-target/x86_64-unknown-linux-gnu/release';binaries.mkdir(parents=True)
         for name in ('eclipse-cli', 'eclipse'):(binaries / name).write_bytes(('owned ' + name).encode())
         (self.root/'fixture-runtime.so').write_bytes(b'owned Vulkan runtime fixture')
-        for path in ['tools/linux/install.py', 'tools/linux/README.txt', 'assets/branding/eclipse-512.png', *packager.LICENSES]:
+        for path in ['tools/linux/install.py', 'tools/linux/uninstall.py', 'tools/linux/README.txt', 'assets/branding/eclipse-512.png', *packager.LICENSES]:
             target = self.root / path;target.parent.mkdir(parents=True, exist_ok=True);target.write_text(path)
-        with patch.object(packager, 'ROOT', self.root), patch.object(packager, 'source_revision', return_value='a' * 40), patch.object(packager.subprocess, 'check_output', side_effect=lambda cmd,**kwargs:'host: x86_64-unknown-linux-gnu\n' if cmd[0]=='rustc' else metadata), patch.object(packager.subprocess, 'run'), patch.object(packager.pyrowave_runtime,'build',return_value=self.root/'fixture-runtime.so'), contextlib.redirect_stdout(io.StringIO()):packager.main([])
+        with patch.object(packager, 'ROOT', self.root), patch.object(packager, 'source_revision', return_value='a' * 40), patch.object(packager.subprocess, 'check_output', side_effect=lambda cmd,**kwargs:'host: x86_64-unknown-linux-gnu\n' if cmd[0]=='rustc' else metadata), patch.object(packager.subprocess, 'run'), patch.object(packager.pyrowave_runtime,'build',return_value=self.root/'fixture-runtime.so'), patch.object(packager.bundled_plugins,'stage') as stage, contextlib.redirect_stdout(io.StringIO()):packager.main([])
+        self.assertEqual(stage.call_args.args[2:4], ('x86_64-unknown-linux-gnu',['vaapi']))
         archives = list((self.root / 'artifacts/packages').glob('*.tar.gz'));self.assertEqual(len(archives), 1)
         with tarfile.open(archives[0]) as archive:
             manifest = next(entry for entry in archive if entry.name.endswith('/version.json'))
             record = json.load(archive.extractfile(manifest))
-            self.assertEqual(set(record['sha256']), set([*installer.PAYLOAD,*self.runtime]))
+            self.assertEqual(set(record['sha256']), set([*installer.PAYLOAD,'uninstall.py',*self.runtime]))
             self.assertEqual(record['source_commit'], 'a' * 40)
             self.assertIn('intel-vpl', record['features'])
 

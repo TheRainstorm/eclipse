@@ -6,8 +6,21 @@ import os
 from pathlib import Path
 import shutil
 
-COMMANDS = ('eclipse', 'eclipse-cli', 'uu-client', 'uu-remote-rust', 'uu-rust')
-DESKTOPS = ('Eclipse.desktop', 'uu-remote-rust.desktop', 'uu-client.desktop')
+COMMANDS = ('eclipse', 'eclipse-cli', 'eclipse-uninstall', 'uu-client', 'uu-remote-rust', 'uu-rust')
+DESKTOPS = ('Eclipse.desktop', 'eclipse.desktop', 'uu-remote-rust.desktop', 'uu-client.desktop')
+
+
+def default_prefix():
+    script = Path(__file__).resolve()
+    if (script.parent.parent.name == 'releases' and script.parents[2].name == 'eclipse'
+            and script.parents[3].name == 'opt'):
+        return script.parents[4]
+    return Path.home() / '.local'
+
+
+def autostart_exec(executable):
+    escaped = str(executable).replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$').replace('%', '%%')
+    return 'Exec=' + ('"/usr/bin/env" "' + escaped + '"').replace('\\', '\\\\')
 
 
 def installed_processes(base):
@@ -46,17 +59,26 @@ def uninstall(prefix, purge=False, dry_run=False):
     running = installed_processes(base)
     if running:
         raise RuntimeError('Exit Eclipse and its streaming windows first; running PIDs: ' + ', '.join(map(str, running)))
+    if not purge and base.exists() and any(path.is_symlink() or (path.is_dir() and any(path.iterdir()))
+            for path in (base / 'releases').glob('*/eclipse-data')):
+        raise RuntimeError('Back up portable eclipse-data before uninstalling, or use --purge to delete it explicitly')
     paths = []
     for name in COMMANDS:
         path = prefix / 'bin' / name
         if path.is_symlink() and path.resolve().is_relative_to(base):
             paths.append(path)
-    for folder in (prefix / 'share/applications', Path.home() / '.config/autostart'):
+    config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config').expanduser()
+    if not config.is_absolute():
+        raise ValueError('XDG_CONFIG_HOME must be an absolute path')
+    for folder in (prefix / 'share/applications', config / 'autostart'):
         for name in DESKTOPS:
             path = folder / name
             if path.is_file() and not path.is_symlink():
-                text = path.read_text()
-                if any('TryExec=' + str(base / 'current' / gui) in text for gui in ('eclipse', 'uu-gui')):
+                lines = path.read_text().splitlines()
+                targets = [base / 'current' / gui for gui in ('eclipse', 'uu-gui')]
+                targets.extend((base / 'releases').glob('*/eclipse'))
+                if any('TryExec=' + str(target) in lines or autostart_exec(target) in lines
+                       or 'Exec=' + str(target) in lines or 'Exec="' + str(target) + '"' in lines for target in targets):
                     paths.append(path)
     if base.exists():
         paths.append(base)
@@ -76,7 +98,7 @@ def uninstall(prefix, purge=False, dry_run=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--prefix', type=Path, default=Path.home() / '.local', help='Installation prefix (default: ~/.local)')
+    parser.add_argument('--prefix', type=Path, default=default_prefix(), help='Installation prefix (default: this installation, or ~/.local from an extracted package)')
     parser.add_argument('--purge', action='store_true', help='Also delete current and legacy settings, paired devices, history and caches')
     parser.add_argument('--dry-run', action='store_true', help='List paths without removing them')
     args = parser.parse_args(argv)

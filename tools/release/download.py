@@ -62,11 +62,11 @@ def linux_manifest(path):
         total = 0
         for member in members:
             parts = PurePosixPath(member.name).parts
-            if len(parts) not in (1, 2) or any(p in ('.', '..') for p in parts) or member.name.startswith('/') or '\\' in member.name:
+            if not 1 <= len(parts) <= 4 or any(p in ('.', '..') for p in parts) or member.name.startswith('/') or '\\' in member.name:
                 raise ValueError('Unsafe Linux archive path')
             if member.isdir():
                 continue
-            if not member.isfile() or len(parts) != 2 or member.name in files:
+            if not member.isfile() or len(parts) < 2 or member.name in files:
                 raise ValueError('Unexpected Linux archive entry')
             total += member.size
             if member.size > 128 * 1024**2 or total > 512 * 1024**2:
@@ -84,6 +84,7 @@ def linux_manifest(path):
         for filename, expected in manifest['sha256'].items():
             if hashlib.sha256(files[prefix + filename]).hexdigest() != expected:
                 raise ValueError('Linux payload hash mismatch: ' + filename)
+        _linux_installer.verify_bundled_plugins(manifest, lambda filename: files[prefix + filename])
         return manifest
 
 

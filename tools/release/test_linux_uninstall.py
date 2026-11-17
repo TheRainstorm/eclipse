@@ -79,6 +79,25 @@ class UninstallTests(unittest.TestCase):
         finally:
             process.terminate(); process.wait(timeout=5)
 
+    def test_default_uninstall_preserves_portable_data_until_explicit_purge(self):
+        portable = self.release/'eclipse-data/data'; portable.mkdir(parents=True)
+        (portable/'settings.json').write_text('owned settings')
+        with self.assertRaisesRegex(RuntimeError, 'Back up portable'): uninstaller.uninstall(self.prefix)
+        self.assertTrue((portable/'settings.json').is_file())
+        uninstaller.uninstall(self.prefix, purge=True)
+        self.assertFalse(self.base.exists())
+
+    def test_xdg_autostart_is_removed_only_for_exact_owned_program(self):
+        directory = self.home/'custom config/autostart'; directory.mkdir(parents=True)
+        owned = directory/'eclipse.desktop'
+        owned.write_text('[Desktop Entry]\n'+uninstaller.autostart_exec(self.release/'eclipse')+'\n')
+        unrelated = directory/'uu-client.desktop'
+        unrelated.write_text('TryExec='+str(self.base/'current/eclipse-other')+'\n')
+        with patch.dict(os.environ, XDG_CONFIG_HOME=str(directory.parent)):
+            uninstaller.uninstall(self.prefix)
+        self.assertFalse(owned.exists())
+        self.assertTrue(unrelated.exists())
+
 
 if __name__ == '__main__':
     unittest.main()
