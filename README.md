@@ -151,7 +151,7 @@ python3 uninstall.py
 - **壁纸合集已随完整包提供**：打开“应用设置 → 插件”，启用“壁纸合集”，再到“外观”选择 Pipw 二次元或 Wallhaven；必应每日壁纸无需插件。
 - **UU 兼容插件按需安装**：从 [UU 插件仓库](https://github.com/TheRainstorm/uu-client-plugins#readme)下载与当前主程序 SDK 匹配的包，解压到 Eclipse 目录，确认文件位于 `plugins/uu/plugin.json`；重开软件，在“应用设置 → 插件”启用。支持的账号设备、连接服务与实验性兼容入口，以及各模块用法，见插件仓库说明。
 
-壁纸与 UU 插件默认关闭，用户自行启用。升级时保留 `eclipse-data`、自选目录的 `eclipse-profile.json` 及外部数据，并使用匹配主程序 SDK 的插件。[插件说明](docs/plugins.md)
+壁纸合集和 UU 插件均默认关闭，用户自行启用。升级时保留 `eclipse-data`、自选目录的 `eclipse-profile.json` 及外部数据，并使用匹配主程序 SDK 的插件。[插件说明](docs/plugins.md)
 
 本项目由个人维护，目前无盈利，与网易及其 UU 远程产品无隶属、合作或官方授权关系。第三方名称仅说明兼容对象，商标及权利归原权利人所有。如相关权利人要求下架，维护者将配合停止公开分发并处理相关内容。[许可与兼容接入说明](docs/licensing-and-compatibility.md)
 
