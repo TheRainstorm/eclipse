@@ -1,13 +1,13 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-16T11:10:54Z",
+  "updated_at": "2026-11-17T09:19:46Z",
   "files": {
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "5ac844b2f8c9e44503ba64bc9a5b26fbc56ae4b58173ff97bfba6c2d9b48e0f7",
-      "size": 134390,
-      "normalized_sha256": "5ac844b2f8c9e44503ba64bc9a5b26fbc56ae4b58173ff97bfba6c2d9b48e0f7"
+      "sha256": "78210b95898919f8bce2447b906d9c505ca055639040fd3f2548f751a378abf2",
+      "size": 134953,
+      "normalized_sha256": "78210b95898919f8bce2447b906d9c505ca055639040fd3f2548f751a378abf2"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -233,9 +233,9 @@
     },
     "crates/uu-core/src/client_settings.rs": {
       "role": "index",
-      "sha256": "93967986a6b4428ee4c82bb329c46d079f09ad51da89add321d7c5787a2df92d",
-      "size": 20617,
-      "normalized_sha256": "93967986a6b4428ee4c82bb329c46d079f09ad51da89add321d7c5787a2df92d"
+      "sha256": "2e6026f1bfaf54f10208ee637213f5f5082484767941867e3773765651ef51b5",
+      "size": 22944,
+      "normalized_sha256": "2e6026f1bfaf54f10208ee637213f5f5082484767941867e3773765651ef51b5"
     },
     "crates/uu-core/src/clipboard.rs": {
       "role": "index",
@@ -1097,9 +1097,9 @@
     },
     "crates/uu-gui/src/main.rs": {
       "role": "index",
-      "sha256": "40140839ce984868da0832da9602f605f1b2ee0647a725d7596c58e91f1188e3",
-      "size": 98603,
-      "normalized_sha256": "40140839ce984868da0832da9602f605f1b2ee0647a725d7596c58e91f1188e3"
+      "sha256": "ed3b5fbe5f57e8323d425157c3957d537de621ebe453d16ffdf95a19bd2c9a64",
+      "size": 98623,
+      "normalized_sha256": "ed3b5fbe5f57e8323d425157c3957d537de621ebe453d16ffdf95a19bd2c9a64"
     },
     "crates/uu-gui/src/native_keys.rs": {
       "role": "index",
@@ -1169,9 +1169,9 @@
     },
     "crates/uu-gui/src/settings.rs": {
       "role": "index",
-      "sha256": "a003336e4652d38ce3674149671ea2306661460536e759a2a77fb75d44ef6913",
-      "size": 72498,
-      "normalized_sha256": "a003336e4652d38ce3674149671ea2306661460536e759a2a77fb75d44ef6913"
+      "sha256": "33c68a17613a153f22263d55b7a6baadec3bb3031d7980a66e1b998aa1e9c7f6",
+      "size": 74457,
+      "normalized_sha256": "33c68a17613a153f22263d55b7a6baadec3bb3031d7980a66e1b998aa1e9c7f6"
     },
     "crates/uu-gui/src/sharing_ui.rs": {
       "role": "index",
@@ -1199,9 +1199,9 @@
     },
     "crates/uu-gui/src/stream_menu.rs": {
       "role": "index",
-      "sha256": "250ed10d41ad013316ee1c236ab2da1a9c1139ecebbc292520792e61ccc7e2f9",
-      "size": 91167,
-      "normalized_sha256": "250ed10d41ad013316ee1c236ab2da1a9c1139ecebbc292520792e61ccc7e2f9"
+      "sha256": "ec070c371a5d9a5bb6c6e77fee9b6b7e0bffec71c5525f898ae044212b34823f",
+      "size": 97729,
+      "normalized_sha256": "ec070c371a5d9a5bb6c6e77fee9b6b7e0bffec71c5525f898ae044212b34823f"
     },
     "crates/uu-gui/src/stream_tabs_ui.rs": {
       "role": "index",
@@ -1292,6 +1292,12 @@
       "sha256": "4888335d303a48aa262d984ca303fd6347866b50d48266f473925b567a1d3314",
       "size": 15896,
       "normalized_sha256": "4888335d303a48aa262d984ca303fd6347866b50d48266f473925b567a1d3314"
+    },
+    "crates/uu-gui/src/video_settings.rs": {
+      "role": "index",
+      "sha256": "c695941373adaf549f3efee1687618f00651ac739103417a4f655763a2a508d1",
+      "size": 13751,
+      "normalized_sha256": "c695941373adaf549f3efee1687618f00651ac739103417a4f655763a2a508d1"
     },
     "crates/uu-gui/src/video_texture.rs": {
       "role": "index",
@@ -1751,9 +1757,9 @@
     },
     "crates/uu-plugin-sdk/src/theme/controls.rs": {
       "role": "index",
-      "sha256": "5fc490ef3622933be9e75a65967bfeb1c298b2b594edc5cf5822fd8868b1dd96",
-      "size": 35382,
-      "normalized_sha256": "5fc490ef3622933be9e75a65967bfeb1c298b2b594edc5cf5822fd8868b1dd96"
+      "sha256": "92292fce44d4c861c5087cc55e0fe730bbd9a9ffcb523c3a2a390e5923049732",
+      "size": 35500,
+      "normalized_sha256": "92292fce44d4c861c5087cc55e0fe730bbd9a9ffcb523c3a2a390e5923049732"
     },
     "crates/uu-plugin-sdk/src/theme/design_system.rs": {
       "role": "index",
