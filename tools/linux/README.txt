@@ -6,6 +6,7 @@ CLI：~/.local/bin/eclipse-cli（保留 uu-rust 别名）
 卸载：~/.local/bin/eclipse-uninstall，或在解压目录执行 python3 uninstall.py。
 自定义安装前缀时，解压目录的卸载命令也需传相同 --prefix；已安装入口会识别本次安装。
 默认保留用户配置；--purge 明确删除配置与缓存，--dry-run 只列出操作。
+--purge 同时清除保存的目录选择；外部自选数据目录不会自动删除，请自行备份或删除。
 卸载前退出所有 Eclipse 窗口和托盘；安装目录含便携数据时先备份，或明确使用 --purge。
 完整包自带匹配的 wallpaper-collects 壁纸插件，默认关闭，可在插件管理中启用。
 

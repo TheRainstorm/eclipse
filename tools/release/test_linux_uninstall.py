@@ -1,5 +1,6 @@
 """Uninstallation checks confined to owned temporary installations."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -33,7 +34,7 @@ class UninstallTests(unittest.TestCase):
         patch_home = patch.object(Path, 'home', return_value=self.home)
         patch_home.start(); self.addCleanup(patch_home.stop)
         patch_env = patch.dict(os.environ, {key: str(self.home / name) for key, name in
-                                           [('XDG_DATA_HOME', 'data'), ('XDG_STATE_HOME', 'state'), ('XDG_CACHE_HOME', 'cache')]})
+                                           [('XDG_DATA_HOME', 'data'), ('XDG_STATE_HOME', 'state'), ('XDG_CACHE_HOME', 'cache'), ('XDG_CONFIG_HOME', 'config')]})
         patch_env.start(); self.addCleanup(patch_env.stop)
         self.profiles = uninstaller.profile_paths(self.home, os.environ)
         for path in self.profiles:
@@ -97,6 +98,31 @@ class UninstallTests(unittest.TestCase):
             uninstaller.uninstall(self.prefix)
         self.assertFalse(owned.exists())
         self.assertTrue(unrelated.exists())
+
+    def test_normal_uninstall_keeps_saved_selection_and_external_data(self):
+        external = self.home/'custom data'; external.mkdir()
+        data = external/'settings.json'; data.write_text('owned custom preferences')
+        selection = self.home/'config/eclipse/profile.json'; selection.parent.mkdir(parents=True)
+        selection.write_text(json.dumps(dict(version=1,directory=str(external))))
+        uninstaller.uninstall(self.prefix)
+        self.assertTrue(selection.is_file())
+        self.assertEqual(data.read_text(), 'owned custom preferences')
+
+    def test_purge_clears_only_fixed_selection_and_preserves_external_custom_data(self):
+        external = self.home/'custom data'; external.mkdir()
+        data = external/'settings.json'; data.write_text('owned custom preferences')
+        selection = self.home/'config/eclipse/profile.json'; selection.parent.mkdir(parents=True)
+        selection.write_text(json.dumps(dict(version=1,directory=str(external))))
+        unrelated = selection.with_name('unrelated.json'); unrelated.write_text('keep')
+        report = uninstaller.uninstall(self.prefix,purge=True,dry_run=True)
+        self.assertIn(str(selection),report['paths'])
+        self.assertNotIn(str(external),report['paths'])
+        self.assertTrue(selection.is_file())
+        self.assertIn('external data separately',report['note'])
+        uninstaller.uninstall(self.prefix,purge=True)
+        self.assertFalse(selection.exists())
+        self.assertEqual(data.read_text(),'owned custom preferences')
+        self.assertTrue(unrelated.is_file())
 
 
 if __name__ == '__main__':

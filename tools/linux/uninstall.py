@@ -85,8 +85,14 @@ def uninstall(prefix, purge=False, dry_run=False):
     if purge:
         paths.extend(path for path in profile_paths(Path.home(), os.environ)
                      if path.exists() or path.is_symlink())
+        selection = config / 'eclipse/profile.json'
+        if selection.exists() or selection.is_symlink():
+            paths.append(selection)
     paths = list(dict.fromkeys(paths))
     report = dict(dry_run=dry_run, purge=purge, paths=[str(path) for path in paths])
+    if purge:
+        report['note'] = ('Custom data directories outside this installation and the standard XDG profile paths '
+                          'are preserved; only the saved directory selection is cleared. Remove external data separately if needed.')
     if not dry_run:
         for path in paths:
             if path.is_symlink() or not path.is_dir():
@@ -99,7 +105,7 @@ def uninstall(prefix, purge=False, dry_run=False):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prefix', type=Path, default=default_prefix(), help='Installation prefix (default: this installation, or ~/.local from an extracted package)')
-    parser.add_argument('--purge', action='store_true', help='Also delete current and legacy settings, paired devices, history and caches')
+    parser.add_argument('--purge', action='store_true', help='Also delete standard settings, caches and the saved directory selection; external custom data is preserved')
     parser.add_argument('--dry-run', action='store_true', help='List paths without removing them')
     args = parser.parse_args(argv)
     try:
