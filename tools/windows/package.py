@@ -145,7 +145,7 @@ def build_package(output, vpl_archive=None, rebuild=False):
         try:
             manifest = verify_package(archive)
             if (manifest['source_commit'] == revision and manifest.get('target') == TARGET
-                    and manifest.get('format_version') == 5 and 'wallpaper-collects' in manifest.get('bundled_plugins', {})):
+                    and manifest.get('format_version') == 5 and {'wallpaper-collects','uu'} <= set(manifest.get('bundled_plugins', {}))):
                 if clean_revision() != revision:
                     raise RuntimeError('核验缓存期间源码版本发生变化')
                 result = {'source_commit': revision, 'archive': archive.name, 'sha256': sha256(archive)}
@@ -195,7 +195,7 @@ def build_package(output, vpl_archive=None, rebuild=False):
                     'runtime_sources': {'intel_vpl': vpl_runtime.COMMIT,'pyrowave':pyrowave_runtime.LOCK},
                     'sha256': {filename: sha256(staging / filename) for filename in (*REQUIRED, sdk.name, standard.name)}}
         (staging / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-        bundled_plugins.stage(staging, manifest, TARGET, [], output.parent / 'plugins')
+        bundled_plugins.stage(staging, manifest, TARGET, [], output.parent / 'plugins', sdk)
         verify_imports(staging)
         (staging / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         zip_path = Path(temp) / archive.name

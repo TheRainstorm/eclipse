@@ -94,7 +94,10 @@ def prepare(input_dir, output_dir, tag, revision):
                     or not manifests[platform].get('plugin_sdk_id')
                     or manifest.get('sdk_id') != manifests[platform]['plugin_sdk_id']
                     or build.get('sdk_id') != manifest.get('sdk_id')
-                    or build.get('source_commit') != revision or build.get('application_source_commit') != revision
+                    or build.get('source_commit') != manifests[platform].get('bundled_plugin_sources',{}).get(plugin_id,{}).get('revision',revision)
+                    or (plugin_id in manifests[platform].get('bundled_plugin_sources',{})
+                        and build.get('source_repository') != manifests[platform]['bundled_plugin_sources'][plugin_id]['repository'])
+                    or build.get('application_source_commit') != revision
                     or build.get('target') != target or PurePosixPath(library).name != library
                     or not all(n.startswith(prefix) and '/' not in n[len(prefix):] for n in archive.namelist())
                     or hashlib.sha256(archive.read(prefix + library)).hexdigest() != manifest.get('library_sha256')):

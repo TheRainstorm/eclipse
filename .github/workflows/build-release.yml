@@ -178,6 +178,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ needs.source.outputs.source_commit }}
+      - name: Check pinned UU plugin source
+        run: |
+          # Fail before installing toolchains or building if the source commit
+          # has not been published. Older product tags keep their own inputs.
+          if [ -f tools/release/uu-plugin.json ]; then
+            python3 tools/release/package_uu.py --check-source
+          fi
       - name: Load matching validation harness
         env:
           WORKFLOW_SHA: ${{ github.workflow_sha }}
@@ -386,10 +393,10 @@ jobs:
           for archive in artifacts/packages/*.zip; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done
-      - name: Scan matching bundled wallpaper plugin
+      - name: Export and scan bundled plugins
         run: |
-          # Each platform packager builds this once against the staged SDK,
-          # includes it in the complete package, and retains this optional asset.
+          # Each platform packager builds the pinned UU and wallpaper plugins
+          # against its staged SDK and includes them in the complete package.
           # Cached complete packages can restore that asset without a build.
           if [ '${{ matrix.platform }}' = windows-x64 ]; then
             python3 tools/release/bundled_plugins.py --windows-archive "artifacts/packages/eclipse-windows-x64-${SOURCE_COMMIT:0:12}.zip" --output-dir artifacts/plugins

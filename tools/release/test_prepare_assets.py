@@ -129,6 +129,34 @@ class PrepareTests(unittest.TestCase):
         self.assertIn('eclipse-plugin-wallpaper-collects-x86_64-unknown-linux-gnu-v1.2.3.zip', names)
         self.assertEqual(set(download.checksums((self.output / 'SHA256SUMS').read_text())), names)
 
+    def test_bundled_uu_keeps_independent_source_when_release_uses_main_tag(self):
+        old = self.plugin()
+        (self.fixture.assets/old).unlink()
+        path = self.fixture.assets/self.fixture.windows
+        with zipfile.ZipFile(path) as archive: files = {name:archive.read(name) for name in archive.namelist()}
+        main = json.loads(files.pop('version.json')); prefix = 'plugins/uu/'
+        source = dict(repository='https://github.com/TheRainstorm/uu-client-plugins.git',revision='b'*40)
+        main.update(target='x86_64-pc-windows-gnu',bundled_plugins={'uu':'uu_compat.dll'},
+                    bundled_plugin_sources={'uu':source},bundled_plugin_notices={'uu':['LICENSE','ENGINE-THIRD-PARTY-NOTICES.txt']})
+        for name in ('uu_compat.dll','README.md','LICENSE','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt','ENGINE-THIRD-PARTY-NOTICES.txt'):
+            files[prefix+name] = ('fixture '+name).encode()
+        plugin = dict(id='uu',api_version=1,sdk_id='f'*64,library='uu_compat.dll',library_sha256=hashlib.sha256(files[prefix+'uu_compat.dll']).hexdigest())
+        build = dict(sdk_id='f'*64,source_commit=source['revision'],source_repository=source['repository'],application_source_commit=self.fixture.revision,target=main['target'])
+        files[prefix+'plugin.json'] = json.dumps(plugin).encode(); files[prefix+'build.json'] = json.dumps(build).encode()
+        main['sha256'] = {name:hashlib.sha256(data).hexdigest() for name,data in files.items()}
+        with zipfile.ZipFile(path,'w') as archive:
+            for name,data in files.items():archive.writestr(name,data)
+            archive.writestr('version.json',json.dumps(main))
+        asset = self.fixture.assets/f"eclipse-plugin-uu-{main['target']}-{self.fixture.revision[:12]}.zip"
+        with zipfile.ZipFile(asset,'w') as archive:
+            for name,data in files.items():
+                if name.startswith(prefix):archive.writestr(name,data)
+        self.prepare()
+        with zipfile.ZipFile(self.output/'eclipse-plugin-uu-x86_64-pc-windows-gnu-v1.2.3.zip') as archive:
+            self.assertEqual(json.loads(archive.read(prefix+'build.json')),build)
+        delivered = download.verify_package(self.output/'eclipse-windows-x64-v1.2.3.zip')
+        self.assertEqual(delivered['bundled_plugin_sources']['uu'],source)
+
     def test_plugin_sdk_must_match_the_platform_application(self):
         self.plugin(sdk='e' * 64)
         with self.assertRaisesRegex(ValueError, 'SDK'): self.prepare()

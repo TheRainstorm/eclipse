@@ -27,15 +27,19 @@ class ReleaseTests(unittest.TestCase):
         manifest = {'format_version': 5,'plugin_sdk_id':'f'*64,'plugin_runtime':['uu_plugin_sdk.dll','std-0123456789abcdef.dll'], 'target':package.TARGET, 'source_commit': 'a' * 40,
                     'sha256': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
         if with_plugin:
-            library = 'eclipse_wallpaper_collects.dll'
-            prefix = 'plugins/wallpaper-collects/'
-            manifest['bundled_plugins'] = {'wallpaper-collects': library}
-            for name in (library, *package.bundled_plugins.NOTICES): files[prefix + name] = ('fixture ' + name).encode()
-            files[prefix + 'plugin.json'] = json.dumps(dict(id='wallpaper-collects', api_version=1, sdk_id='f'*64,
-                library=library, library_sha256=hashlib.sha256(files[prefix + library]).hexdigest())).encode()
-            files[prefix + 'build.json'] = json.dumps(dict(source_commit='a'*40, application_source_commit='a'*40,
-                sdk_id='f'*64, target=package.TARGET)).encode()
-            manifest['sha256'].update({name: hashlib.sha256(data).hexdigest() for name, data in files.items() if name.startswith(prefix)})
+            manifest['bundled_plugins'] = {'wallpaper-collects':'eclipse_wallpaper_collects.dll','uu':'uu_compat.dll'}
+            manifest['bundled_plugin_sources'] = {'uu':json.loads((package.ROOT/'tools/release/uu-plugin.json').read_text())}
+            manifest['bundled_plugin_notices'] = {'uu':['LICENSE','ENGINE-THIRD-PARTY-NOTICES.txt']}
+            for name in package.bundled_plugins.files(manifest): files[name] = ('fixture '+name).encode()
+            for identifier,library in manifest['bundled_plugins'].items():
+                prefix = 'plugins/'+identifier+'/'
+                files[prefix+'plugin.json'] = json.dumps(dict(id=identifier,api_version=1,sdk_id='f'*64,
+                    library=library,library_sha256=hashlib.sha256(files[prefix+library]).hexdigest())).encode()
+                build = dict(source_commit=package.bundled_plugins.source_revision(manifest,identifier),
+                             application_source_commit='a'*40,sdk_id='f'*64,target=package.TARGET)
+                if identifier=='uu':build['source_repository']=manifest['bundled_plugin_sources']['uu']['repository']
+                files[prefix+'build.json'] = json.dumps(build).encode()
+            manifest['sha256'].update({name:hashlib.sha256(data).hexdigest() for name,data in files.items() if name.startswith('plugins/')})
         files['version.json'] = json.dumps(manifest).encode()
         if transform:
             transform(files)
@@ -82,6 +86,14 @@ class ReleaseTests(unittest.TestCase):
             files['version.json'] = json.dumps(manifest).encode()
         with self.assertRaisesRegex(ValueError, 'SDK'):
             sync.verify_package(self.make_bundle(mismatch, with_plugin=True))
+        def wrong_source(files):
+            name = 'plugins/uu/build.json'
+            build = json.loads(files[name]); build['source_commit'] = 'a'*40
+            files[name] = json.dumps(build).encode()
+            manifest = json.loads(files['version.json']); manifest['sha256'][name] = hashlib.sha256(files[name]).hexdigest()
+            files['version.json'] = json.dumps(manifest).encode()
+        with self.assertRaisesRegex(ValueError, 'source'):
+            sync.verify_package(self.make_bundle(wrong_source, with_plugin=True))
 
     def test_standalone_plugin_is_recovered_from_complete_cache_without_building(self):
         archive = self.make_bundle(with_plugin=True)
@@ -89,28 +101,28 @@ class ReleaseTests(unittest.TestCase):
         output = self.root/'plugins'
         with zipfile.ZipFile(archive) as bundle, patch.object(package.bundled_plugins.subprocess,'run',side_effect=AssertionError('no build')):
             package.bundled_plugins.export(manifest,bundle.read,output)
-        assets = list(output.glob('*.zip')); self.assertEqual(len(assets),1)
-        with zipfile.ZipFile(assets[0]) as plugin:
-            self.assertEqual(set(plugin.namelist()),set(package.bundled_plugins.files(manifest)))
-            self.assertEqual(json.loads(plugin.read('plugins/wallpaper-collects/plugin.json'))['sdk_id'],manifest['plugin_sdk_id'])
-            self.assertFalse(any('settings.json' in name for name in plugin.namelist()))
+        assets = list(output.glob('*.zip')); self.assertEqual(len(assets),2)
+        for asset in assets:
+            with zipfile.ZipFile(asset) as plugin:
+                identifier = json.loads(plugin.read(next(name for name in plugin.namelist() if name.endswith('/plugin.json'))))['id']
+                self.assertEqual(set(plugin.namelist()),{name for name in package.bundled_plugins.files(manifest) if name.startswith('plugins/'+identifier+'/')})
+                self.assertFalse(any('settings.json' in name for name in plugin.namelist()))
 
     def test_full_packager_reuses_verified_standalone_plugin_contract(self):
         source = self.make_bundle(with_plugin=True)
         manifest = sync.verify_package(source)
         application = self.root/'application'; application.mkdir()
         output = self.root/'plugin-assets'; output.mkdir()
-        asset = output/'eclipse-plugin-wallpaper-collects-x86_64-pc-windows-gnu-aaaaaaaaaaaa.zip'
-        with zipfile.ZipFile(source) as original, zipfile.ZipFile(asset,'w') as archive:
-            for name in package.bundled_plugins.files(manifest): archive.writestr(name, original.read(name))
+        with zipfile.ZipFile(source) as original:
+            package.bundled_plugins.export(manifest,original.read,output)
         manifest.pop('bundled_plugins')
         manifest['sha256'] = {name:digest for name,digest in manifest['sha256'].items() if not name.startswith('plugins/')}
         with patch.object(package.bundled_plugins.subprocess,'run') as run:
-            package.bundled_plugins.stage(application,manifest,package.TARGET,[],output)
+            package.bundled_plugins.stage(application,manifest,package.TARGET,[],output,self.root/'build-sdk.dll')
         self.assertIn('--application',run.call_args.args[0])
         self.assertIs(run.call_args.kwargs['stdout'],sys.stderr)
         package.bundled_plugins.verify(manifest,lambda name:(application/name).read_bytes())
-        self.assertEqual(set(manifest['bundled_plugins']),{'wallpaper-collects'})
+        self.assertEqual(set(manifest['bundled_plugins']),{'wallpaper-collects','uu'})
 
     def test_corrupt_stale_and_wrong_target_caches_require_building(self):
         for kind in ['corrupt','stale','target','force']:

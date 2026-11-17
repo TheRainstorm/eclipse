@@ -79,16 +79,36 @@ if ($format -ge 4) {
 if ($null -ne $manifest.bundled_plugins) {
     if ($format -ne 5 -or $manifest.bundled_plugins -isnot [pscustomobject] -or
         @($manifest.bundled_plugins.PSObject.Properties).Count -gt 16) { throw 'Invalid bundled plugin inventory' }
+    foreach ($field in @('bundled_plugin_sources','bundled_plugin_notices')) {
+        $value = $manifest.$field
+        if ($null -ne $value -and ($value -isnot [pscustomobject] -or
+            @($value.PSObject.Properties.Name | Where-Object { $_ -cnotin $manifest.bundled_plugins.PSObject.Properties.Name }).Count)) {
+            throw 'Invalid bundled plugin metadata'
+        }
+    }
     foreach ($entry in $manifest.bundled_plugins.PSObject.Properties) {
         if ($entry.Name -cnotmatch '^[a-z0-9][a-z0-9-]{0,63}$' -or
             $entry.Value -isnot [string] -or $entry.Value -cnotmatch '^[A-Za-z0-9_-]+\.dll$') { throw 'Invalid bundled plugin path' }
         $prefix = 'plugins/' + $entry.Name + '/'
         $required += @('plugin.json','build.json',$entry.Value,'README.md','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt') | ForEach-Object { $prefix + $_ }
+        $notices = @($manifest.bundled_plugin_notices.($entry.Name) | Where-Object { $null -ne $_ })
+        if (@($notices | Where-Object { $_ -cnotin @('LICENSE','ENGINE-THIRD-PARTY-NOTICES.txt') }).Count -or
+            @($notices | Select-Object -Unique).Count -ne $notices.Count) { throw 'Invalid bundled plugin notice path' }
+        $required += $notices | ForEach-Object { $prefix + $_ }
+        $source = $manifest.bundled_plugin_sources.($entry.Name)
+        $sourceRevision = $manifest.source_commit
+        if ($null -ne $source) {
+            if ($source.revision -cnotmatch '^[0-9a-f]{40}$' -or $source.repository -cne 'https://github.com/TheRainstorm/uu-client-plugins.git') {
+                throw 'Invalid bundled plugin source revision'
+            }
+            $sourceRevision = $source.revision
+        }
         $plugin = Get-Content -LiteralPath (Join-Path $SourceDir ($prefix + 'plugin.json')) -Raw -Encoding UTF8 | ConvertFrom-Json
         $build = Get-Content -LiteralPath (Join-Path $SourceDir ($prefix + 'build.json')) -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($plugin.id -cne $entry.Name -or $plugin.api_version -ne 1 -or $plugin.library -cne $entry.Value -or
             $plugin.sdk_id -cne $manifest.plugin_sdk_id -or $build.sdk_id -cne $manifest.plugin_sdk_id -or
-            $build.source_commit -cne $manifest.source_commit -or $build.application_source_commit -cne $manifest.source_commit -or
+            $build.source_commit -cne $sourceRevision -or ($null -ne $source -and $build.source_repository -cne $source.repository) -or
+            $build.application_source_commit -cne $manifest.source_commit -or
             $build.target -cne $manifest.target -or $plugin.library_sha256 -cne $manifest.sha256.($prefix + $entry.Value)) {
             throw 'Bundled plugin source or SDK differs from application'
         }

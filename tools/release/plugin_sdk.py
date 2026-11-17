@@ -54,9 +54,11 @@ def verify_windows_imports(extension,sdk):
     return len(required)
 
 
-def build(root, target, packages, features=(),environment=None):
+def build(root, target, packages, features=(),environment=None,library_only=False):
     command = ['cargo', 'build', '--release', '--locked', '--target', target,
                '--message-format=json-render-diagnostics']
+    if library_only:
+        command.append('--lib')
     for package in packages:
         command += ['-p', package]
     if features:

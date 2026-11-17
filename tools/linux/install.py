@@ -17,17 +17,37 @@ V2_PAYLOAD = [*LEGACY_PAYLOAD,'libpyrowave-shared.so.1']
 PAYLOAD = ['eclipse','eclipse-cli',*V2_PAYLOAD[2:]]
 
 
+def bundled_plugin_source(manifest, identifier):
+    sources = manifest.get('bundled_plugin_sources', {})
+    if not isinstance(sources, dict) or not set(sources).issubset(manifest.get('bundled_plugins', {})):
+        raise ValueError('Invalid bundled plugin sources')
+    source = sources.get(identifier)
+    if source is None:
+        return manifest['source_commit']
+    if (not isinstance(source, dict) or not re.fullmatch(r'[0-9a-f]{40}', source.get('revision', ''))
+            or source.get('repository') != 'https://github.com/TheRainstorm/uu-client-plugins.git'):
+        raise ValueError('Invalid bundled plugin source revision')
+    return source['revision']
+
+
 def bundled_plugin_files(manifest):
     plugins = manifest.get('bundled_plugins', {})
     if not isinstance(plugins, dict) or len(plugins) > 16:
         raise ValueError('Invalid bundled plugin inventory')
+    notices = manifest.get('bundled_plugin_notices', {})
+    if not isinstance(notices, dict) or not set(notices).issubset(plugins):
+        raise ValueError('Invalid bundled plugin notices')
     files = []
     for identifier, library in plugins.items():
         if (not isinstance(identifier, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', identifier)
                 or not isinstance(library, str) or not re.fullmatch(r'[A-Za-z0-9_-]+\.so', library)):
             raise ValueError('Invalid bundled plugin path')
+        extra = notices.get(identifier, [])
+        if not isinstance(extra, list) or any(not isinstance(name,str) for name in extra) or len(extra) != len(set(extra)) or not set(extra).issubset({'LICENSE','ENGINE-THIRD-PARTY-NOTICES.txt'}):
+            raise ValueError('Invalid bundled plugin notice path')
+        bundled_plugin_source(manifest,identifier)
         files.extend('plugins/' + identifier + '/' + name for name in
-                     ('plugin.json', 'build.json', library, 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt'))
+                     ('plugin.json', 'build.json', library, 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt', *extra))
     return files
 
 
@@ -39,7 +59,9 @@ def verify_bundled_plugins(manifest, read):
                 or plugin.get('sdk_id') != manifest.get('plugin_sdk_id') or plugin.get('library') != library
                 or plugin.get('library_sha256') != manifest['sha256'][prefix + library]
                 or build.get('sdk_id') != manifest.get('plugin_sdk_id')
-                or build.get('source_commit') != manifest['source_commit']
+                or build.get('source_commit') != bundled_plugin_source(manifest,identifier)
+                or (identifier in manifest.get('bundled_plugin_sources', {})
+                    and build.get('source_repository') != manifest['bundled_plugin_sources'][identifier]['repository'])
                 or build.get('application_source_commit') != manifest['source_commit']
                 or build.get('target') != manifest.get('target')):
             raise ValueError('Bundled plugin source or SDK differs from application')

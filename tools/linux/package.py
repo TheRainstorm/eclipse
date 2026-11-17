@@ -107,7 +107,7 @@ def main(argv=None):
     if not args.rebuild:
         try:
             cached = reuse_archive(archive, dest, revision)
-            if cached:
+            if cached and {'uu','wallpaper-collects'} <= set(verify_package(dest).get('bundled_plugins', {})):
                 print(json.dumps(cached, ensure_ascii=False))
                 return
         except (ValueError, OSError, tarfile.TarError) as error:
@@ -130,7 +130,7 @@ def main(argv=None):
     files = {name: hashlib.sha256((dest / name).read_bytes()).hexdigest() for name in [*PAYLOAD,'uninstall.py',sdk.name,standard.name]}
     manifest = {'format_version':4,'uninstaller':'uninstall.py','target':target,'plugin_sdk_id':sdk_metadata['sdk_id'],'plugin_runtime':[sdk.name,standard.name],'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'platform': f'linux-{platform.machine()}', 'features': FEATURES, 'build_glibc': platform.libc_ver(),'runtime_sources':{'pyrowave':pyrowave_runtime.LOCK}, 'sha256': files}
     (dest / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
-    bundled_plugins.stage(dest, manifest, target, ['vaapi'], dest.parent.parent / 'plugins')
+    bundled_plugins.stage(dest, manifest, target, ['vaapi'], dest.parent.parent / 'plugins', sdk)
     (dest / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     verify_package(dest)
     archive = str(dest) + '.tar.gz'

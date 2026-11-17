@@ -31,19 +31,29 @@ function New-TestPackage([string]$Name, [int]$Format = 5) {
 function Assert-Test([bool]$Condition, [string]$Message) {
     if (!$Condition) { throw $Message }
 }
-function Add-TestPlugin([string]$Directory, [string]$Content) {
-    $prefix = 'plugins/wallpaper-collects/'
+function Add-TestPlugin([string]$Directory, [string]$Content, [string]$Identifier = 'wallpaper-collects') {
+    $prefix = 'plugins/' + $Identifier + '/'
     $library = 'collects.dll'
+    if ($Identifier -eq 'uu') { $library = 'uu_compat.dll' }
     $folder = Join-Path $Directory $prefix
     New-Item -ItemType Directory -Force $folder | Out-Null
     $manifest = Get-Content -LiteralPath (Join-Path $Directory 'version.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    $manifest | Add-Member NoteProperty target 'x86_64-pc-windows-gnu'
-    $manifest | Add-Member NoteProperty bundled_plugins @{'wallpaper-collects'=$library}
-    foreach ($name in @($library,'README.md','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt')) {
+    $manifest | Add-Member NoteProperty target 'x86_64-pc-windows-gnu' -Force
+    if ($null -eq $manifest.bundled_plugins) { $manifest | Add-Member NoteProperty bundled_plugins ([pscustomobject]@{}) }
+    $manifest.bundled_plugins | Add-Member NoteProperty $Identifier $library -Force
+    $notices = @('README.md','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt')
+    if ($Identifier -eq 'uu') { $notices += @('LICENSE','ENGINE-THIRD-PARTY-NOTICES.txt') }
+    foreach ($name in @($library) + $notices) {
         [IO.File]::WriteAllText((Join-Path $folder $name), "$Content/$name", $utf8)
     }
-    $plugin = @{id='wallpaper-collects';name='壁纸合集';api_version=1;sdk_id=$manifest.plugin_sdk_id;library=$library;library_sha256=(Get-FileHash -LiteralPath (Join-Path $folder $library)).Hash.ToLowerInvariant()}
+    $plugin = @{id=$Identifier;name=$Identifier;api_version=1;sdk_id=$manifest.plugin_sdk_id;library=$library;library_sha256=(Get-FileHash -LiteralPath (Join-Path $folder $library)).Hash.ToLowerInvariant()}
     $build = @{target=$manifest.target;sdk_id=$manifest.plugin_sdk_id;source_commit=$manifest.source_commit;application_source_commit=$manifest.source_commit}
+    if ($Identifier -eq 'uu') {
+        $manifest | Add-Member NoteProperty bundled_plugin_sources ([pscustomobject]@{uu=@{repository='https://github.com/TheRainstorm/uu-client-plugins.git';revision=('b'*40)}}) -Force
+        $manifest | Add-Member NoteProperty bundled_plugin_notices ([pscustomobject]@{uu=@('LICENSE','ENGINE-THIRD-PARTY-NOTICES.txt')}) -Force
+        $build.source_commit = 'b'*40
+        $build.source_repository = 'https://github.com/TheRainstorm/uu-client-plugins.git'
+    }
     [IO.File]::WriteAllText((Join-Path $folder 'plugin.json'), ($plugin | ConvertTo-Json), $utf8)
     [IO.File]::WriteAllText((Join-Path $folder 'build.json'), ($build | ConvertTo-Json), $utf8)
     foreach ($file in Get-ChildItem -LiteralPath $folder -File) {
@@ -151,8 +161,8 @@ try {
     Assert-Test (!(Test-Path -LiteralPath (Join-Path $renamedTarget 'uu.exe'))) 'Legacy CLI left in active installation'
     Assert-Test (Test-Path -LiteralPath (Join-Path $renamed.Archive 'previous/uu-gui.exe')) 'Legacy GUI was not archived'
     Assert-Test ([IO.File]::ReadAllText((Join-Path $renamedTarget 'user-config.json')) -eq 'keep configuration') 'Renaming changed user configuration'
-    $pluginOld = New-TestPackage 'plugin-old'; Add-TestPlugin $pluginOld 'old plugin'
-    $pluginNew = New-TestPackage 'plugin-new'; Add-TestPlugin $pluginNew 'new plugin'
+    $pluginOld = New-TestPackage 'plugin-old'; Add-TestPlugin $pluginOld 'old plugin'; Add-TestPlugin $pluginOld 'old UU' 'uu'
+    $pluginNew = New-TestPackage 'plugin-new'; Add-TestPlugin $pluginNew 'new plugin'; Add-TestPlugin $pluginNew 'new UU' 'uu'
     $pluginTarget = Join-Path $root 'plugin-installed'
     & $Installer -SourceDir $pluginOld -InstallDir $pluginTarget -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null
     $pluginFile = Join-Path $pluginTarget 'plugins/wallpaper-collects/collects.dll'
@@ -167,6 +177,7 @@ try {
     } finally { $lockedPlugin.Dispose() }
     & $Installer -SourceDir $pluginNew -InstallDir $pluginTarget -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null
     Assert-Test ((Get-FileHash -LiteralPath $pluginFile).Hash -eq (Get-FileHash -LiteralPath (Join-Path $pluginNew 'plugins/wallpaper-collects/collects.dll')).Hash) 'Bundled plugin was omitted during upgrade'
+    Assert-Test (Test-Path -LiteralPath (Join-Path $pluginTarget 'plugins/uu/ENGINE-THIRD-PARTY-NOTICES.txt')) 'UU engine notice was omitted during upgrade'
     Assert-Test (!(Test-Path -LiteralPath (Join-Path $pluginTarget 'eclipse-data/data/plugins/settings.json'))) 'Bundled plugin was enabled implicitly'
     $before = Get-TestHashes
     $unknown = New-TestPackage 'unsupported' 6

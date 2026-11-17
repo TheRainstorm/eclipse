@@ -140,6 +140,18 @@ class LinuxPackageTests(unittest.TestCase):
             (addon/name).write_text('owned notice')
         manifest['sha256'] = {name: hashlib.sha256((package/name).read_bytes()).hexdigest()
                               for name in installer.required_files(manifest)}
+        manifest['bundled_plugins']['uu'] = 'libuu_compat.so'
+        manifest['bundled_plugin_sources'] = {'uu':dict(repository='https://github.com/TheRainstorm/uu-client-plugins.git',revision='b'*40)}
+        manifest['bundled_plugin_notices'] = {'uu':['LICENSE','ENGINE-THIRD-PARTY-NOTICES.txt']}
+        uu = package/'plugins/uu'; uu.mkdir()
+        shutil.copy2('/bin/true',uu/'libuu_compat.so')
+        (uu/'plugin.json').write_text(json.dumps(dict(id='uu',api_version=1,sdk_id='f'*64,library='libuu_compat.so',
+            library_sha256=hashlib.sha256((uu/'libuu_compat.so').read_bytes()).hexdigest())))
+        (uu/'build.json').write_text(json.dumps(dict(sdk_id='f'*64,target=manifest['target'],source_commit='b'*40,
+            source_repository=manifest['bundled_plugin_sources']['uu']['repository'],application_source_commit=manifest['source_commit'])))
+        for name in ('README.md','LICENSE','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt','ENGINE-THIRD-PARTY-NOTICES.txt'):
+            (uu/name).write_text('owned UU notice')
+        manifest['sha256'] = {name:hashlib.sha256((package/name).read_bytes()).hexdigest() for name in installer.required_files(manifest)}
         (package/'version.json').write_text(json.dumps(manifest))
         return package
 
@@ -148,6 +160,7 @@ class LinuxPackageTests(unittest.TestCase):
         self.install(package, prefix)
         current = prefix/'opt/eclipse/current'
         self.assertTrue((current/'plugins/wallpaper-collects/plugin.json').is_file())
+        self.assertTrue((current/'plugins/uu/ENGINE-THIRD-PARTY-NOTICES.txt').is_file())
         command = prefix/'bin/eclipse-uninstall'
         result = subprocess.run([str(command), '--dry-run'], capture_output=True, text=True, check=True)
         self.assertIn(str(prefix/'opt/eclipse'), json.loads(result.stdout)['paths'])
