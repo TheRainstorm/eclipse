@@ -229,7 +229,7 @@ impl Settings {
         s.fps = s.fps.clamp(5, 240);
         s.bitrate = s.bitrate.min(6);
         s.custom_mbps = s.custom_mbps.clamp(1, 1000);
-        s.resolution = s.resolution.min(3);
+        s.resolution = s.resolution.min(uu_core::client_settings::CUSTOM_RESOLUTION);
         s.volume = s.volume.min(100);
         anyhow::ensure!(s.lan_service_port != 0 && s.lan_discovery_port != 0,
             "{}", uu_i18n::format!("局域网端口必须在 1–65535 之间；原文件已保留"));
@@ -835,6 +835,42 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn resolution_preferences_survive_save_and_reopen() {
+        use uu_core::client_settings::CUSTOM_RESOLUTION;
+        let root=std::env::temp_dir().join(format!("eclipse-resolution-settings-{}",uuid::Uuid::new_v4()));
+        for resolution in 0..=CUSTOM_RESOLUTION {
+            let path=root.join(format!("resolution-{resolution}.json"));
+            let mut settings=Settings::default();
+            settings.resolution=resolution;
+            settings.custom_resolution=if resolution==CUSTOM_RESOLUTION {[1280,720]}else{[1920,1080]};
+            settings.save(&path).unwrap();
+            let reopened=Settings::load(&path).unwrap();
+            assert_eq!(reopened.resolution,resolution,"saved resolution {resolution} must survive reopening");
+            assert_eq!(reopened.custom_resolution,settings.custom_resolution);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolution_load_clamps_only_values_above_the_supported_range() {
+        use uu_core::client_settings::CUSTOM_RESOLUTION;
+        let root=std::env::temp_dir().join(format!("eclipse-resolution-bound-{}",uuid::Uuid::new_v4()));
+        let path=root.join("gui-settings.json");
+        std::fs::create_dir(&root).unwrap();
+        for resolution in [CUSTOM_RESOLUTION+1,usize::MAX] {
+            let mut settings=Settings::default();
+            settings.resolution=resolution;settings.custom_resolution=[1280,720];
+            let original=serde_json::to_vec(&settings).unwrap();
+            std::fs::write(&path,&original).unwrap();
+            let reopened=Settings::load(&path).unwrap();
+            assert_eq!(reopened.resolution,CUSTOM_RESOLUTION);
+            assert_eq!(reopened.custom_resolution,[1280,720]);
+            assert_eq!(std::fs::read(&path).unwrap(),original,"loading must not rewrite stored settings");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn service_startup_is_independent_of_login_and_persists_an_explicit_opt_out() {
         let mut settings=Settings::default();
