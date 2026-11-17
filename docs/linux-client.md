@@ -1,6 +1,6 @@
 # Linux 客户端与自动验收
 
-主程序可直接检出构建，无需下载插件源码。可选插件单独下载、构建和发布，见[插件说明](plugins.md)。
+主程序可直接检出构建，无需下载 UU 插件源码。完整包自带默认关闭的壁纸合集，在设置中启用即可；UU 兼容插件仍独立分发，见[插件说明](plugins.md)。
 
 Linux VA-API 支持完整访问单元提交，并依据 H.264 色彩标记选择范围和 BT.601 / BT.709 转换。
 
@@ -24,6 +24,8 @@ python3 install.py
 同一提交已有完整安装包时，打包脚本核验内容、目标平台、功能和 glibc 兼容性后直接复用，不调用 Cargo；解包目录缺失时从已核验归档恢复。`--rebuild` 可强制执行构建流程，仍使用 Cargo 缓存。检查与测试产物不等于 release 安装包，因此首次打包仍需要 release 构建。
 
 正式入口为 `~/.local/bin/eclipse`、`~/.local/bin/eclipse-cli` 或应用菜单 **Eclipse**。实际文件在 `~/.local/opt/eclipse/releases/<revision>/`，`current` 指向当前版本。旧 `uu-client`、`uu-remote-rust` 和 `uu-rust` 命令保留为兼容别名。升级保留原用户配置和旧版本文件；请退出旧窗口后重新启动。
+
+完整包同时提供 `uninstall.py`，不需要另行获取源码。先退出软件，在解压目录运行 `python3 uninstall.py` 即可卸载，默认保留用户配置；`--purge` 同时清除默认用户配置与自选位置记录，外部自选数据保留，备份后可自行清理。自定义安装使用的 `--prefix` 也应传给卸载器。安装后还可使用 `eclipse-uninstall` 入口。
 
 应用菜单使用与窗口 app_id 一致的 `Eclipse.desktop`。旧桌面启动项保留为隐藏兼容入口；需要更新固定图标时，从应用菜单重新固定 Eclipse。安装路径中的空格和特殊字符按桌面启动项规则转义，启动不经过 shell。
 

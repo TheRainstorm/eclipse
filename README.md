@@ -7,7 +7,7 @@
 
 Eclipse 将多屏远程办公、游戏串流和主机共享管理放在同一个开源应用中。Windows / Linux 均可作为控制端和被控端，Linux 原生运行，无需 Wine。可以在局域网直接连接，也可以部署自己的公网连接服务；原生串流无需第三方账号，设备配对与访问授权由自己管理。
 
-可选功能通过独立下载的插件提供。主程序完整包不包含 UU 插件，也不需要插件才能构建或使用原生串流。项目仍在快速迭代，实际格式、帧率和延迟取决于两端硬件、驱动、显示与网络。
+正式完整包自带壁纸合集插件，在设置中启用即可；UU 兼容插件从独立仓库按需安装。原生串流无需插件。项目仍在快速迭代，实际格式、帧率和延迟取决于两端硬件、驱动、显示与网络。
 
 [下载正式版](https://github.com/TheRainstorm/eclipse/releases) · [版本说明](docs/releases.md) · [设备连接与授权](docs/device-connection-and-trust.md) · [插件安装](docs/plugins.md) · [TODO / 路线图](docs/roadmap.md)
 
@@ -52,7 +52,7 @@ Eclipse 将多屏远程办公、游戏串流和主机共享管理放在同一个
 
 - **Windows 主机服务**：关闭图形界面后继续共享，集中管理授权、会话与虚拟屏；Linux 在登录的桌面会话中共享，可通过托盘保留运行。
 - **串流结束恢复锁屏**：Windows 默认按连接前的锁定状态决定是否恢复锁屏，也可设置始终锁定或不自动锁定；在最后一个会话结束后执行。客户端另有“锁定远端”和“锁定远端并断开”。
-- **便携配置与版本隔离**：在程序旁创建 `eclipse-data` 即可保存独立的客户端与服务端配置，方便复制和试用不同版本；一台 Windows 电脑同时只激活一个主机服务配置。
+- **便携配置与版本隔离**：Windows 默认在程序旁保存 `eclipse-data`，解压即可运行；设置中可更换数据目录，应用后迁移并重启。客户端与服务端配置独立保存，一台 Windows 电脑同时只激活一个主机服务配置。
 - **连接可见**：Windows 被控端显示短暂连接提醒，会话页可分页查看最近 200 次连接记录。
 
 [后台服务与锁屏](docs/windows-background-service.md) · [配置与便携模式](docs/configuration-storage.md)
@@ -111,53 +111,47 @@ Sunshine 是主机端，通常搭配 Moonlight 客户端使用，因此这里比
 
 ## 开始使用
 
-**0.24.7** 修复老板键隐藏并恢复串流窗口后，鼠标可用但键盘无响应的问题，统一原生键盘与界面修饰键的归属。详见[0.24.7 版本说明](docs/releases/v0.24.7.md)。
+从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包。以下为当前开发分支的使用方式，旧版本以包内说明和[发布记录](docs/releases.md)为准。
 
-**0.24.6** 增加串流结束后的锁屏策略、手动锁定远端及持久虚拟屏退出保留；修复本机输入检测与服务插件同步，内置必应并支持壁纸前后浏览和独立壁纸合集。详见[0.24.6 版本说明](docs/releases/v0.24.6.md)。
+### Windows
 
-**0.24.5** 改进桌面切换与无首图时的采集恢复、多客户端键鼠交接、Linux 托盘和闲置后输入恢复；修复 Windows 首次安装，增加 Wallhaven 壁纸来源，并统一发布预检和失败诊断。Windows/Linux 完整包使用版本标签命名，详见[0.24.5 版本说明](docs/releases/v0.24.5.md)。
+1. 解压 Windows ZIP 到可写目录，保留包内文件。
+2. 双击 **eclipse.exe**，即可使用。
 
-**0.24.4** 增加服务端逐会话权限、共享游戏厅、本机键鼠优先和悬浮球会话中心，支持Windows多客户端同屏；老板键只隐藏串流窗口。详见[0.24.4版本说明](docs/releases/v0.24.4.md)。Windows和Linux完整包由GitHub CI构建，正式资产以Releases为准。自建连接服务说明见[部署指南](docs/connection-service.md)。
+默认采用便携模式，设置、设备、配对与服务端配置保存在程序旁的 **eclipse-data**。在“应用设置 → 常规 → 配置存储”可以更换目录；保存应用后自动迁移并重启，原目录保留作为备份。
 
-从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包，保留包内全部运行库与清单。
+作为被控端时，在“服务管理”启用本机后台服务，按系统提示授权。日常运行无需执行安装脚本；需要创建系统入口时，可选用包内的 `install.ps1`。[配置与迁移](docs/configuration-storage.md) · [后台服务](docs/windows-background-service.md)
 
-需要独立体验首次使用或按版本保存配置，可在程序旁新建空的 `eclipse-data` 文件夹启用便携模式；退出后复制整个程序目录即可携带客户端配置。已有 Windows 主机服务仍由本机统一管理。[配置位置、便携模式与迁移](docs/configuration-storage.md)
+### Linux
 
-**Windows**：解压 `eclipse-windows-x64-v<版本>.zip`（开发包使用提交号），在解压目录执行：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-默认安装到 `%LOCALAPPDATA%\Programs\Eclipse`，桌面入口为 **Eclipse**；`-InstallDir` 可指定位置。升级已有安装时，请指定原安装目录以更新原程序。安装保留用户配置与现有进程，完成后退出旧主页、串流窗口再重新打开。Windows 主机配置统一由后台服务持有；完整安装包一并更新服务；有串流、临时屏或未完成显示器操作时，保留待更新状态，启动器在空闲时继续。[安装与运行库说明](docs/windows-build.md) · [后台服务](docs/windows-background-service.md)
-
-**Linux**：解压 `eclipse-linux-x86_64-v<版本>.tar.gz`（开发包使用提交号），在包目录执行：
+解压 Linux 压缩包，在包目录执行：
 
 ```sh
 python3 install.py
 ~/.local/bin/eclipse
 ```
 
-应用菜单入口为 **Eclipse**，命令行为 `eclipse-cli`。旧 `uu-client`、`uu-remote-rust` 和 `uu-rust` 别名保留，原用户数据目录继续使用。共享支持 X11 与 Wayland；Wayland 需要门户授权或合成器提供的采集与输入能力。[运行依赖与平台差异](docs/linux-client.md)
-
-Linux 卸载工具位于源码的 `tools/linux/uninstall.py`，也可单独复制到目标电脑运行。先退出 Eclipse，再执行 `python3 uninstall.py`；使用 `--prefix` 可指定安装前缀。默认保留用户配置，`python3 uninstall.py --purge` 同时删除新旧配置、已配对设备、历史和缓存，适合重新体验首次使用。`--dry-run` 可查看将要删除的路径。
-
-**连接两台设备**：在被控端打开“服务管理”，启用所需入口并启动共享；在控制端设备页右键添加地址，发起配对，将八位码输入被控端确认。之后可从设备卡片连接，并按设备保存画质配置。[局域网连接与配对](docs/native-lan.md) · [连接服务与外网直连/中转](docs/connection-service.md)
-
-已有源码和 GitHub CLI 时，也可下载并校验发布包，无需本机编译：
+也可从应用菜单打开 **Eclipse**。卸载工具随包提供，先退出软件，再执行：
 
 ```sh
-python3 tools/release/download.py
-# 也可指定 --tag v0.21.1 --platform windows
+python3 uninstall.py
+# 默认保留配置；清除默认用户配置时使用：python3 uninstall.py --purge
 ```
 
-下载工具核对标签提交、归档校验和与包内全部文件，保存到 `artifacts/packages/`，不会安装或启动程序。
+安装和卸载均可用 `--prefix` 指定同一个安装前缀。自选的外部数据目录保留，可自行备份或清理。Linux 支持 X11 / Wayland，采集与控制受桌面授权约束。[依赖与平台说明](docs/linux-client.md)
 
-## 可选 UU 兼容插件
+### 连接设备
 
-UU 插件在[独立仓库](https://github.com/TheRainstorm/uu-client-plugins)分发；壁纸合集插件随本仓库 Release 提供对应平台的独立附件。下载与主程序 SDK 匹配的版本，解压到软件目录，使文件位于 `plugins/uu/`，重启 Eclipse 后在“应用设置 → 插件”手动启用。
+在被控端打开“服务管理”启动共享；控制端添加 IP 地址，或导入同一自建服务器接入码并选择在线设备。首次连接按提示完成配对，以后从设备列表直接连接。
 
-三个模块可分别开关：**UU 兼容客户端**提供原设备列表和远程协助；**UU 账号连接服务**为原生设备提供账号寻址；**UU 兼容服务器（实验性）**提供官方客户端连接本机的兼容入口。允许官方中转默认关闭，只有显式开启后才允许无法 P2P 时使用官方中转。真实官方手机互通仍待验收。[插件安装与默认值](docs/plugins.md)
+[连接与配对](docs/device-connection-and-trust.md) · [自建连接服务](docs/connection-service.md)
+
+### 壁纸与可选 UU 插件
+
+- **壁纸合集已随完整包提供**：打开“应用设置 → 插件”，启用“壁纸合集”，再到“外观”选择 Pipw 二次元或 Wallhaven；必应每日壁纸无需插件。
+- **UU 兼容插件按需安装**：从 [UU 插件仓库](https://github.com/TheRainstorm/uu-client-plugins#readme)下载与当前主程序 SDK 匹配的包，解压到 Eclipse 目录，确认文件位于 `plugins/uu/plugin.json`；重开软件，在“应用设置 → 插件”启用。支持的账号设备、连接服务与实验性兼容入口，以及各模块用法，见插件仓库说明。
+
+壁纸与 UU 插件默认关闭，用户自行启用。升级时保留 `eclipse-data`、自选目录的 `eclipse-profile.json` 及外部数据，并使用匹配主程序 SDK 的插件。[插件说明](docs/plugins.md)
 
 本项目由个人维护，目前无盈利，与网易及其 UU 远程产品无隶属、合作或官方授权关系。第三方名称仅说明兼容对象，商标及权利归原权利人所有。如相关权利人要求下架，维护者将配合停止公开分发并处理相关内容。[许可与兼容接入说明](docs/licensing-and-compatibility.md)
 
