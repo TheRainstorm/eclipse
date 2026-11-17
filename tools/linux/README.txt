@@ -8,7 +8,7 @@ CLI：~/.local/bin/eclipse-cli（保留 uu-rust 别名）
 默认保留用户配置；--purge 明确删除配置与缓存，--dry-run 只列出操作。
 --purge 同时清除保存的目录选择；外部自选数据目录不会自动删除，请自行备份或删除。
 卸载前退出所有 Eclipse 窗口和托盘；安装目录含便携数据时先备份，或明确使用 --purge。
-完整包自带匹配的 wallpaper-collects 壁纸插件，默认关闭，可在插件管理中启用。
+完整包自带匹配的 UU 兼容插件与 wallpaper-collects 壁纸插件，默认关闭，可在插件管理中启用。
 
 配对密码脚本（源码仓库 tools/linux/set_pairing_password.py，仅需 Python 3）：
 python3 tools/linux/set_pairing_password.py
@@ -18,7 +18,7 @@ python3 tools/linux/set_pairing_password.py
 服务管理权限。已有配对设备不受影响。自动化可用 --password-stdin 从标准输入读取。
 
 首次使用：默认 Eclipse 局域网，无需第三方账号。目标电脑启动服务后默认接收配对申请，将控制端八位码输入主机确认，不自动批准。
-使用官方被控端需另行安装并启用兼容插件，再从“UU 兼容客户端”登录；原账号与设置保留。
+使用官方被控端时，在插件管理启用随包提供的 UU 插件，再从“UU 兼容客户端”登录；升级保留已有启用偏好、账号与设置。
 原生连接提供 IP 直连、UU 寻址与自建连接服务，统一使用设备授权和共享设置。
 
 共享支持 X11 与 Wayland。Wayland 通过系统门户选择画面及许可键鼠，需要 PipeWire、xdg-desktop-portal 和对应桌面后端；Sway等wlroots桌面在屏幕授权后可使用同合成器提供的虚拟键鼠，按所选输出与缩放定位；明确拒绝输入授权时保持只观看。不支持绕过系统授权的无人值守采集。
