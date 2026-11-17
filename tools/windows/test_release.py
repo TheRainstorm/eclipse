@@ -108,6 +108,7 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(package.bundled_plugins.subprocess,'run') as run:
             package.bundled_plugins.stage(application,manifest,package.TARGET,[],output)
         self.assertIn('--application',run.call_args.args[0])
+        self.assertIs(run.call_args.kwargs['stdout'],sys.stderr)
         package.bundled_plugins.verify(manifest,lambda name:(application/name).read_bytes())
         self.assertEqual(set(manifest['bundled_plugins']),{'wallpaper-collects'})
 

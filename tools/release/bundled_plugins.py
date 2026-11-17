@@ -52,7 +52,7 @@ def stage(application, manifest, target, features, output):
     subprocess.run([sys.executable, str(ROOT / 'tools/release/package_plugin.py'),
                     '--manifest', str(ROOT / 'extensions/wallpaper-collects/plugin.json'),
                     '--target', target, '--application', str(application),
-                    '--output-dir', str(output), '--features', *features], check=True, cwd=ROOT)
+                    '--output-dir', str(output), '--features', *features], check=True, cwd=ROOT, stdout=sys.stderr)
     source = manifest['source_commit']
     archive = output / f"eclipse-plugin-{definition['id']}-{target}-{source[:12]}.zip"
     library = definition['library'] + '.dll' if 'windows' in target else 'lib' + definition['library'] + '.so'
