@@ -331,6 +331,7 @@ struct Presentation {
 
 };
 struct NativePresentation:Presentation {
+    ComPtr<ID3D11RenderTargetView> render_target;
     std::array<ComPtr<ID3D11Texture2D>,3> overlays;
     std::array<ComPtr<ID3D11ShaderResourceView>,3> overlay_views;
     ComPtr<ID3D11Device5> modern;
@@ -398,7 +399,10 @@ float4 ps(float4 pos:SV_Position):SV_Target{
         D3D11_RASTERIZER_DESC rd{};rd.FillMode=D3D11_FILL_SOLID;rd.CullMode=D3D11_CULL_NONE;rd.DepthClipEnable=TRUE;check(device->CreateRasterizerState(&rd,&rasterizer),"create native composition rasterizer");
     }
     void resize(unsigned w,unsigned h){
-        if(width==w&&height==h)return;
+        if(width==w&&height==h&&render_target)return;
+        // D3D11 keeps buffer zero's view usable across flips. All references
+        // to the old buffer must be released before ResizeBuffers.
+        render_target.Reset();
         for(auto& view:overlay_views)view.Reset();for(auto& texture:overlays)texture.Reset();
         debug_target.Reset();debug_pixels.clear();
         Presentation::resize(w,h,false);
@@ -409,6 +413,9 @@ float4 ps(float4 pos:SV_Position):SV_Target{
             ComPtr<ID3D11Texture2D> sampled=overlays[i];
             check(device->CreateShaderResourceView(sampled.Get(),nullptr,&overlay_views[i]),"create native UI ring view");
         }
+        ComPtr<ID3D11Texture2D> backbuffer;
+        check(chain->GetBuffer(0,IID_PPV_ARGS(&backbuffer)),"get native video backbuffer");
+        check(device->CreateRenderTargetView(backbuffer.Get(),nullptr,&render_target),"create native video target");
     }
     void offer(uint64_t id,void* const* handles,uint64_t produced_value,uint64_t consumed_value,const float* rect,bool source_hdr,float source_white){
         if(source_id!=id){
@@ -441,17 +448,15 @@ float4 ps(float4 pos:SV_Position):SV_Target{
     void begin(){offered=false;params.flags[3]=0;observation_ready=false;}
     int present(unsigned index,bool vsync,bool unchanged){
         submitted_return=0;
-        if(index>=3||!chain)throw std::runtime_error("native presentation ring is not ready");
+        if(index>=3||!render_target)throw std::runtime_error("native presentation ring is not ready");
         // Retry occluded/failed submissions; only S_OK establishes reusable
         // content. No D3D read or consumed-fence signal occurs on this path.
         if(unchanged&&last_present_result==S_OK&&content_visible)return 1;
         if(!admit_frame(vsync))return 2;
-        ComPtr<ID3D11Texture2D> backbuffer;check(chain->GetBuffer(0,IID_PPV_ARGS(&backbuffer)),"get native video backbuffer");
-        ComPtr<ID3D11RenderTargetView> target;check(device->CreateRenderTargetView(backbuffer.Get(),nullptr,&target),"create native video target");
         if(offered)check(commands->Wait(ready.Get(),ready_value),"GPU wait for converted native video");
         params.output[0]=float(width);params.output[1]=float(height);params.output[2]=(debug_enabled&&debug_white>0?debug_white:white)/80;params.flags[1]=(debug_enabled&&debug_hdr>=0?debug_hdr!=0:hdr)?1:0;params.flags[2]=offered?1:0;
         context->UpdateSubresource(parameters.Get(),0,nullptr,&params,0,0);
-        context->OMSetRenderTargets(1,target.GetAddressOf(),nullptr);context->OMSetBlendState(nullptr,nullptr,0xffffffff);context->OMSetDepthStencilState(nullptr,0);context->RSSetState(rasterizer.Get());
+        context->OMSetRenderTargets(1,render_target.GetAddressOf(),nullptr);context->OMSetBlendState(nullptr,nullptr,0xffffffff);context->OMSetDepthStencilState(nullptr,0);context->RSSetState(rasterizer.Get());
         D3D11_VIEWPORT viewport{0,0,float(width),float(height),0,1};context->RSSetViewports(1,&viewport);context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context->VSSetShader(vertex.Get(),nullptr,0);context->PSSetShader(pixel.Get(),nullptr,0);context->PSSetConstantBuffers(0,1,parameters.GetAddressOf());
         ID3D11ShaderResourceView* views[4]={offered?image_view.Get():nullptr,overlay_views[index].Get(),cursor_views[0].Get(),cursor_views[1].Get()};context->PSSetShaderResources(0,4,views);
@@ -462,6 +467,8 @@ float4 ps(float4 pos:SV_Position):SV_Target{
             // Explicit generated-image probe only. Production never allocates a
             // staging buffer or copies a video frame to the CPU.
             if(width>2048||height>2048)throw std::runtime_error("native pixel probe target too large");
+            ComPtr<ID3D11Texture2D> backbuffer;
+            check(chain->GetBuffer(0,IID_PPV_ARGS(&backbuffer)),"get native video pixel probe backbuffer");
             if(!debug_target){D3D11_TEXTURE2D_DESC td{};backbuffer->GetDesc(&td);td.Usage=D3D11_USAGE_STAGING;td.BindFlags=td.MiscFlags=0;td.CPUAccessFlags=D3D11_CPU_ACCESS_READ;check(device->CreateTexture2D(&td,nullptr,&debug_target),"create native pixel probe staging");}
             context->CopyResource(debug_target.Get(),backbuffer.Get());D3D11_MAPPED_SUBRESOURCE map{};check(context->Map(debug_target.Get(),0,D3D11_MAP_READ,0,&map),"read generated native composition");
             debug_pixels.resize(size_t(width)*height*4);for(unsigned y=0;y<height;y++)std::memcpy(debug_pixels.data()+size_t(y)*width*4,(const unsigned char*)map.pData+size_t(y)*map.RowPitch,size_t(width)*8);context->Unmap(debug_target.Get(),0);
