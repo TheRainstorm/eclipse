@@ -88,6 +88,19 @@ Windows 共享采集由一个源所有者安排采集机会，每个订阅者只
 
 正式 GUI 的可选管线追踪使用解码时冻结的完整图像身份记录邮箱出队与绘制边界。原生路径只在确认 GPU 读取已经排队后记录对应的合成调用边界；这些仍是 CPU/API 观察。AU 完成后冻结其读取跨度，迟到的重复或修复包继续计数，但不延长已经完成的组帧时间。
 
+## Windows 客户端的 2∶1 SDR 缩放实验
+
+在 1080p 视频区域显示 4K SDR 串流时，可以让 Windows 原生 D3D11 路径直接生成半宽、半高的 RGB 中间纹理。网络与解码仍按 4K 工作。实验先恢复四个原始像素的颜色，再做平均，以保留字幕和饱和色边。它使用每像素四字节的 RGB10 纹理。
+
+实验默认关闭。在客户端程序目录打开 PowerShell，退出先前的客户端进程，再启动一个继承该设置的新进程。
+
+```powershell
+$env:ECLIPSE_EXPERIMENT_SDR_HALF_SCALE = '1'
+.\eclipse.exe
+```
+
+实验需要 SDR NV12 解码面、原生 GPU 呈现和精确 2∶1 的物理像素比例。会话诊断的 `video_stats.video_color.conversion` 显示 `nv12-half-r10-shader` 时已经采用半尺寸输出。调整窗口或切换显示器后，可用该项确认实际路径。比较新旧路径时固定场景、帧率、VSync 和窗口几何，同时记录系统显示间隔及独立源图显示率。恢复默认时，在启动新客户端进程前执行 `Remove-Item Env:ECLIPSE_EXPERIMENT_SDR_HALF_SCALE -ErrorAction SilentlyContinue`。
+
 ## 可选的 Windows 呈现队列实验
 
 Windows 原生 D3D 呈现默认保持 `SetMaximumFrameLatency(3)`。定位窗口与全屏显示延迟差异时，可在单独的客户端进程启动前设置 `ECLIPSE_PRESENT_QUEUE_LIMIT`，严格只接受 `1`、`2`、`3`；未设置仍为 `3`，非法显式值会使原生呈现初始化报错，避免实验静默回落。配置在首次构造呈现器时按进程冻结，所有窗口使用同一值，运行中的进程不随环境变量变化调参。

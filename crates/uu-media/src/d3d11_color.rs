@@ -20,6 +20,7 @@ unsafe extern "C" {
         len: usize,
     ) -> *mut c_void;
     fn eclipse_color_close(value: *mut c_void);
+    fn eclipse_color_open_sdr_half(device:*mut c_void,w:u32,h:u32,error:*mut c_char,len:usize)->*mut c_void;
     fn eclipse_color_target_new(value:*mut c_void,error:*mut c_char,len:usize)->*mut c_void;
     fn eclipse_color_target_close(value:*mut c_void);
     fn eclipse_color_convert_into(value:*mut c_void,source:*mut c_void,target:*mut c_void,error:*mut c_char,len:usize)->*mut c_void;
@@ -45,6 +46,18 @@ pub(crate) struct Converter(NonNull<c_void>);
 pub(crate) struct EncodeTarget(NonNull<c_void>);
 impl Drop for EncodeTarget {fn drop(&mut self){unsafe{eclipse_color_target_close(self.0.as_ptr());}}}
 impl Converter {
+    pub(crate) fn external_sdr_half(
+        device: &ID3D11Device,
+        size: [u32; 2],
+    ) -> Result<Self, String> {
+        let mut error = [0; 1024];
+        let raw = unsafe {
+            eclipse_color_open_sdr_half(
+                device.as_raw(), size[0], size[1], error.as_mut_ptr(), error.len(),
+            )
+        };
+        NonNull::new(raw).map(Self).ok_or_else(|| message(&error))
+    }
     pub fn target(&self)->Result<EncodeTarget,String> {
         let mut error=[0;1024];
         NonNull::new(unsafe{eclipse_color_target_new(self.0.as_ptr(),error.as_mut_ptr(),error.len())}).map(EncodeTarget).ok_or_else(||message(&error))

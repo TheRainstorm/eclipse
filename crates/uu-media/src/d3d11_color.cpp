@@ -117,8 +117,8 @@ float4 encode_sdr(float4 position:SV_Position):SV_Target {
     float2 uv=float2((rgb.b-y)/1.772,(rgb.r-y)/1.402);
     return options.x<0.5?float4((16+219*y)/255,0,0,1):float4((128+224*uv)/255,0,1);
 }
-float4 decode_sdr(float4 position:SV_Position):SV_Target {
-    float2 coord=position.xy/dimensions.zw;
+float3 decode_sdr_signal(float2 position) {
+    float2 coord=position/dimensions.zw;
     // MPEG-2/LEFT 4:2:0: chroma is horizontally co-sited with luma.
     // Bound both planes to visible samples, excluding codec alignment rows.
     float2 uv_coord=clamp(coord+float2(0.5/dimensions.z,0),1/dimensions.zw,(dimensions.xy-1)/dimensions.zw);
@@ -128,7 +128,21 @@ float4 decode_sdr(float4 position:SV_Position):SV_Target {
     y=(y-(full?0:16))/(full?255:219);
     uv=(uv-128)/(full?255:224);
     float4 c=options.x>0.5?float4(1.5748,0.187324,0.468124,1.8556):float4(1.402,0.344136,0.714136,1.772);
-    return float4(saturate(float3(y+c.x*uv.y,y-c.y*uv.x-c.z*uv.y,y+c.w*uv.x)),1);
+    return saturate(float3(y+c.x*uv.y,y-c.y*uv.x-c.z*uv.y,y+c.w*uv.x));
+}
+float4 decode_sdr(float4 position:SV_Position):SV_Target {
+    return float4(decode_sdr_signal(position.xy),1);
+}
+// Preserve the existing four full-resolution RGB samples, their LEFT chroma
+// coordinates, clipping and R8 UNORM rounding before the final 2:1 average.
+// R10 stores that average without a second coarse 8-bit quantization.
+float4 decode_sdr_half(float4 position:SV_Position):SV_Target {
+    float2 p=position.xy*2;
+    float3 a=round(decode_sdr_signal(p+float2(-0.5,-0.5))*255)/255;
+    float3 b=round(decode_sdr_signal(p+float2( 0.5,-0.5))*255)/255;
+    float3 c=round(decode_sdr_signal(p+float2(-0.5, 0.5))*255)/255;
+    float3 d=round(decode_sdr_signal(p+float2( 0.5, 0.5))*255)/255;
+    return float4((a+b+c+d)*0.25,1);
 }
 float4 decode(float4 position:SV_Position):SV_Target {
     float2 coord=clamp(position.xy/dimensions.zw,0.5/dimensions.zw,(dimensions.xy-0.5)/dimensions.zw);
@@ -219,8 +233,8 @@ struct Color {
     ComPtr<ID3D11RenderTargetView> target;
     ComPtr<ID3D11RasterizerState> rasterizer;
     ComPtr<ID3D11DepthStencilState> depth;
-    unsigned width,height;
-    bool decoder,hdr;unsigned shared;
+    unsigned width,height,output_width,output_height;
+    bool decoder,hdr,half;unsigned shared;
     float white;
     struct SourceView {ComPtr<ID3D11Texture2D> texture;ComPtr<ID3D11ShaderResourceView> view;};
     std::array<SourceView,2> cached_sources;
@@ -232,14 +246,15 @@ struct Color {
             "uu-color-input pooled_frames=%llu fresh_frames=%llu target_allocations=%llu source_view_allocations=%llu output=%s\n",
             pooled_frames,fresh_frames,target_allocations,source_view_allocations,hdr?"P010":"NV12");
     }
-    Color(ID3D11Device* native,unsigned w,unsigned h,bool decoding,bool high,unsigned exportable,float sdr_white)
-        :device(native),width(w),height(h),decoder(decoding),hdr(high),shared(exportable),white(sdr_white) {
+    Color(ID3D11Device* native,unsigned w,unsigned h,bool decoding,bool high,unsigned exportable,float sdr_white,bool half_size=false)
+        :device(native),width(w),height(h),output_width(half_size?w/2:w),output_height(half_size?h/2:h),decoder(decoding),hdr(high),half(half_size),shared(exportable),white(sdr_white) {
         if(!native||w<2||h<2||w>8192||h>8192||w%2||h%2||sdr_white<40||sdr_white>1000)throw std::runtime_error("invalid GPU color converter layout");
+        if(half&&(!decoder||hdr||shared!=2))throw std::runtime_error("half-size conversion requires external SDR decoder output");
         device->GetImmediateContext(&context);
         check(context.As(&threading),"query HDR context threading");threading->SetMultithreadProtected(TRUE);
         ComPtr<ID3DBlob> vertex,pixel,errors;
         check(D3DCompile(shader,sizeof(shader)-1,nullptr,nullptr,nullptr,"vertex","vs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&vertex,&errors),"compile color vertex shader");
-        HRESULT result=D3DCompile(shader,sizeof(shader)-1,nullptr,nullptr,nullptr,decoder?(hdr?"decode":"decode_sdr"):(hdr?"encode":"encode_sdr"),"ps_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&pixel,&errors);
+        HRESULT result=D3DCompile(shader,sizeof(shader)-1,nullptr,nullptr,nullptr,decoder?(hdr?"decode":half?"decode_sdr_half":"decode_sdr"):(hdr?"encode":"encode_sdr"),"ps_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&pixel,&errors);
         if(FAILED(result)&&errors)throw std::runtime_error(std::string((const char*)errors->GetBufferPointer(),errors->GetBufferSize()));
         check(result,"compile color pixel shader");
         check(device->CreateVertexShader(vertex->GetBufferPointer(),vertex->GetBufferSize(),nullptr,&vs),"create HDR vertex shader");
@@ -254,7 +269,7 @@ struct Color {
         check(device->CreateDepthStencilState(&dd,&depth),"create HDR depth state");
         const char* profiling=std::getenv("UU_GPU_ENCODE_PROFILE");
         if(!decoder&&profiling&&std::strcmp(profiling,"1")==0)profile=std::make_unique<GpuProfile>(device.Get());
-        if(decoder){output=texture(hdr?DXGI_FORMAT_R16G16B16A16_FLOAT:(shared>=2?DXGI_FORMAT_R8G8B8A8_UNORM:DXGI_FORMAT_B8G8R8A8_UNORM),w,h,shared);check(device->CreateRenderTargetView(output.Get(),nullptr,&target),"create decoder RGB output view");if(!hdr)prepare_source(w,h);}
+        if(decoder){output=texture(half?DXGI_FORMAT_R10G10B10A2_UNORM:hdr?DXGI_FORMAT_R16G16B16A16_FLOAT:(shared>=2?DXGI_FORMAT_R8G8B8A8_UNORM:DXGI_FORMAT_B8G8R8A8_UNORM),output_width,output_height,shared);check(device->CreateRenderTargetView(output.Get(),nullptr,&target),"create decoder RGB output view");if(!hdr)prepare_source(w,h);}
     }
     ComPtr<ID3D11Texture2D> texture(DXGI_FORMAT format,unsigned w,unsigned h,unsigned exportable) {
         D3D11_TEXTURE2D_DESC td{};td.Width=w;td.Height=h;td.ArraySize=1;td.MipLevels=1;td.Format=format;td.SampleDesc.Count=1;
@@ -308,7 +323,7 @@ struct Color {
             }
             context->CopySubresourceRegion(source.Get(),0,0,0,0,input,index,nullptr);
             ID3D11ShaderResourceView* views[]={y.Get(),uv.Get()};context->PSSetShaderResources(0,2,views);
-            draw(target.Get(),width,height,values);
+            draw(target.Get(),output_width,output_height,values);
         } else {
             if((td.Format!=DXGI_FORMAT_R16G16B16A16_FLOAT && td.Format!=DXGI_FORMAT_B8G8R8A8_UNORM) || index!=0)throw std::runtime_error("HDR capture requires linear_rgb FP16 scRGB");
             values[6]=td.Format==DXGI_FORMAT_B8G8R8A8_UNORM?1.f:0.f;
@@ -351,6 +366,10 @@ struct Color {
 }
 extern "C" void* eclipse_color_open(void* device,unsigned width,unsigned height,int decoder,int hdr,int shared,float white,char* error,size_t capacity) {
     try{return new Color((ID3D11Device*)device,width,height,decoder!=0,hdr!=0,shared,white);}
+    catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return nullptr;}
+}
+extern "C" void* eclipse_color_open_sdr_half(void* device,unsigned width,unsigned height,char* error,size_t capacity) {
+    try{return new Color((ID3D11Device*)device,width,height,true,false,2,203.,true);}
     catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return nullptr;}
 }
 extern "C" void eclipse_color_close(void* value){delete (Color*)value;}

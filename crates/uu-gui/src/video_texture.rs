@@ -42,6 +42,9 @@ pub(crate) fn record_presenter_failure(ctx:&egui::Context,stats:&uu_core::media:
 #[path="video_native_source.rs"]
 mod native_source;
 #[cfg(any(windows,test))]
+#[path="video_native_scale.rs"]
+mod native_scale;
+#[cfg(any(windows,test))]
 #[path="video_native_capacity.rs"]
 mod native_capacity;
 #[cfg(windows)]
@@ -51,6 +54,7 @@ pub(crate) struct NativeImage {
     pub consumed:Arc<std::sync::atomic::AtomicU64>,pub valid:Arc<std::sync::atomic::AtomicBool>,
     pub rect:[f32;4],pub hdr:bool,pub source_white:f32,pub cursor:Option<uu_core::native_cursor::Snapshot>,
     pub observation:Option<FrameObservation>,
+    pub half_scale:bool,
 }
 pub struct VideoTexture {
     continuity:Mutex<frame_continuity::Continuity>,
@@ -198,7 +202,8 @@ impl VideoTexture {
     pub fn color_diagnostics(&self) -> Option<serde_json::Value> {
         let gpu=self.gpu.as_ref()?.lock().unwrap();
         #[cfg(windows)]
-        let conversion=if gpu.d3d_active {gpu.d3d_importer.as_ref().and_then(|i|i.color_backend())}else{None};
+        let conversion=if gpu.native_active {gpu.native.as_ref().map(|source|source.backend())}
+            else if gpu.d3d_active {gpu.d3d_importer.as_ref().and_then(|i|i.color_backend())}else{None};
         #[cfg(not(windows))]
         let conversion:Option<&str>=None;
         Some(serde_json::json!({"layout":format!("{:?}",gpu.layout),"yuv_color":format!("{:?}",gpu.color),"conversion":conversion}))
@@ -289,7 +294,29 @@ impl VideoTexture {
                             let rect=[pixels.left_px as f32,pixels.top_px as f32,pixels.width_px as f32,pixels.height_px as f32];
                             if let Some(image)=state.native_image(&ctx,viewport,rect,source_white) {
                                 let observation=image.observation.clone();
-                                match eframe::glow_presentation::native_video(&ctx,viewport,Arc::new(image)) {
+                                let half = image.half_scale;
+                                let mut offered = eframe::glow_presentation::native_video(&ctx, viewport, Arc::new(image));
+                                if offered.is_err()
+                                    && half
+                                    && state
+                                        .native
+                                        .as_mut()
+                                        .is_some_and(|source| source.disable_half())
+                                {
+                                    Planes::record_native(
+                                        observation.as_ref(),
+                                        serde_json::json!({"event":"native_video_half_scale_fallback","phase":"composition_offer","reason":offered.as_ref().err().map(|s|s.chars().take(512).collect::<String>())}),
+                                    );
+                                    // Re-convert the same retained decoded image once. A
+                                    // failed R10 import never changes its frozen identity.
+                                    if let Some(original) = state.native_image(&ctx, viewport, rect, source_white) {
+                                        if !original.half_scale {
+                                            offered =
+                                                eframe::glow_presentation::native_video(&ctx, viewport, Arc::new(original));
+                                        }
+                                    }
+                                }
+                                match offered {
                                     Ok(true)=>{
                                         if !eframe::glow_presentation::ui_reused(&ctx,viewport) {
                                         let gl=&state.gl;let mut scissor=[0;4];gl.get_parameter_i32_slice(glow::SCISSOR_BOX,&mut scissor);
@@ -649,45 +676,134 @@ impl Planes {
         if self.native_active {if self.pending.is_none(){self.pending=self.native_last.take();}else{self.native_last=None;}self.native_active=false;self.native.take();}
     }
     #[cfg(windows)]
-    fn native_image(&mut self,ctx:&egui::Context,viewport:egui::ViewportId,rect:[f32;4],source_white:f32)->Option<NativeImage>{
+    fn native_image(
+        &mut self,
+        ctx: &egui::Context,
+        viewport: egui::ViewportId,
+        rect: [f32; 4],
+        source_white: f32,
+    ) -> Option<NativeImage> {
         use native_source::Update;
-        self.native_deferred=false;
-        if self.native_disabled{return None;}
-        if let Some((frame,color,observation))=self.pending.as_ref(){
-            let Some(surface)=frame.d3d11.as_ref().filter(|_|frame.gpu) else{self.restore_native_frame();return None;};
-            let prepared=(||->Result<Update,native_source::Failure>{
-                if self.native.as_ref().is_none_or(|n|!n.matches(surface)){self.native.take();self.native=Some(native_source::Source::new(surface)?);}
-                self.native.as_mut().unwrap().set(surface.clone(),*color,observation.clone())
+        self.native_deferred = false;
+        if self.native_disabled {
+            return None;
+        }
+        let wanted = |frame: &RawFrame, color: YuvColor| {
+            native_scale::select(
+                native_scale::enabled(),
+                frame.format == PixelFormat::Nv12 && !color.hdr(),
+                [frame.width, frame.height],
+                rect,
+            )
+        };
+        // A static stream may receive no new decoded frame during a resize.
+        // Reuse its retained exact image and observation to change output, not
+        // a newly guessed PTS or a cached RGB image of the wrong dimensions.
+        let reselect = self.pending.is_none()
+            && self.native_last.as_ref().is_some_and(|(frame, color, _)| {
+                self.native
+                    .as_ref()
+                    .is_some_and(|source| source.needs_selection(wanted(frame, *color)))
+            });
+        let selected = self.pending.as_ref().or_else(|| {
+            if reselect {
+                self.native_last.as_ref()
+            } else {
+                None
+            }
+        });
+        if let Some((frame, color, observation)) = selected {
+            let half = wanted(frame, *color);
+            let Some(surface) = frame.d3d11.as_ref().filter(|_| frame.gpu) else {
+                self.restore_native_frame();
+                return None;
+            };
+            let prepared = (|| -> Result<Update, native_source::Failure> {
+                if self.native.as_ref().is_none_or(|n| !n.matches(surface)) {
+                    self.native.take();
+                    self.native = Some(native_source::Source::new(surface, half)?);
+                }
+                self.native.as_mut().unwrap().set(
+                    surface.clone(),
+                    *color,
+                    observation.clone(),
+                    half,
+                )
             })();
             match prepared {
-                Ok(admission)=>{
-                    let (transition,retry,reason)=match admission {
-                        Update::Updated{transition}=>(transition,None,None),
-                        Update::Deferred{transition,retry_after,reason}=>(transition,Some(retry_after),Some(reason)),
+                Ok(admission) => {
+                    let (transition, retry, reason) = match admission {
+                        Update::Updated { transition } => (transition, None, None),
+                        Update::Deferred {
+                            transition,
+                            retry_after,
+                            reason,
+                        } => (transition, Some(retry_after), Some(reason)),
                     };
-                    if let Some(transition)=transition {
-                        Self::record_native(observation.as_ref(),serde_json::json!({"event":"native_video_capacity","transition":transition,"reason":reason,"actual_size":[frame.width,frame.height],"source":self.native.as_ref().map(|s|s.diagnostics())}));
+                    if let Some(transition) = transition {
+                        Self::record_native(
+                            observation.as_ref(),
+                            serde_json::json!({"event":"native_video_capacity","transition":transition,"reason":reason,"actual_size":[frame.width,frame.height],"source":self.native.as_ref().map(|s|s.diagnostics())}),
+                        );
                     }
-                    if let Some(retry)=retry {
-                        self.native_deferred=true;
-                        native_capacity::request_retry(ctx,viewport,retry);
+                    if let Some(retry) = retry {
+                        self.native_deferred = true;
+                        native_capacity::request_retry(ctx, viewport, retry);
                         // Keep the pending latest decoded image and the old
                         // converted image's exact ready/observation together.
-                        return self.native_active.then(||self.native.as_ref().unwrap().image(rect,self.color.hdr(),source_white,self.cursor.state.clone()));
+                        return self.native_active.then(|| {
+                            self.native.as_ref().unwrap().image(
+                                rect,
+                                self.color.hdr(),
+                                source_white,
+                                self.cursor.state.clone(),
+                            )
+                        });
                     }
-                },
-                Err(e)=>{
-                    Self::record_native(observation.as_ref(),serde_json::json!({"event":"native_video_fallback","phase":e.phase,"kind":e.kind,"reason":e.reason.chars().take(512).collect::<String>(),"actual_size":[frame.width,frame.height],"leases":e.leases,"source":self.native.as_ref().map(|s|s.diagnostics())}));
-                    eprintln!("native video image unavailable, using WGL: {e}");self.native_disabled=true;self.native.take();self.native_active=false;return None;
-                },
+                    if let Some(event) = self
+                        .native
+                        .as_mut()
+                        .and_then(|source| source.take_selection_event([frame.width, frame.height]))
+                    {
+                        Self::record_native(observation.as_ref(), event);
+                    }
+                }
+                Err(e) => {
+                    Self::record_native(
+                        observation.as_ref(),
+                        serde_json::json!({"event":"native_video_fallback","phase":e.phase,"kind":e.kind,"reason":e.reason.chars().take(512).collect::<String>(),"actual_size":[frame.width,frame.height],"leases":e.leases,"source":self.native.as_ref().map(|s|s.diagnostics())}),
+                    );
+                    eprintln!("native video image unavailable, using WGL: {e}");
+                    self.native_disabled = true;
+                    self.native.take();
+                    self.native_active = false;
+                    return None;
+                }
             }
-            let frame=self.pending.take().unwrap();self.size=[frame.0.width,frame.0.height];self.layout=Some(frame.0.format);self.color=frame.1;
-            self.native_last=Some(frame);self.native_active=true;self.d3d_active=false;
-            if let Some(retry)=self.native.as_ref().and_then(|source|source.completion_retry()) {
-                native_capacity::request_retry(ctx,viewport,retry);
+            if let Some(frame) = self.pending.take() {
+                self.size = [frame.0.width, frame.0.height];
+                self.layout = Some(frame.0.format);
+                self.color = frame.1;
+                self.native_last = Some(frame);
+            }
+            self.native_active = true;
+            self.d3d_active = false;
+            if let Some(retry) = self
+                .native
+                .as_ref()
+                .and_then(|source| source.completion_retry())
+            {
+                native_capacity::request_retry(ctx, viewport, retry);
             }
         }
-        self.native_active.then(||self.native.as_ref().unwrap().image(rect,self.color.hdr(),source_white,self.cursor.state.clone()))
+        self.native_active.then(|| {
+            self.native.as_ref().unwrap().image(
+                rect,
+                self.color.hdr(),
+                source_white,
+                self.cursor.state.clone(),
+            )
+        })
     }
     #[cfg(windows)]
     fn record_native(observation:Option<&FrameObservation>,event:serde_json::Value){

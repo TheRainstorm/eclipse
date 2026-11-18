@@ -436,31 +436,58 @@ struct ShaderConverter {
     device:ID3D11Device,
     context:ID3D11DeviceContext,
     completion:ID3D11Query,
-    size:[u32;2],allocation:[u32;2],
+    size:[u32;2],allocation:[u32;2],output_size:[u32;2],
 }
 impl Converter {
     pub fn new(frame:&Frame)->Result<Self,String>{Self::with_shared_export(frame,false)}
     pub fn with_shared_export(frame:&Frame,shared:bool)->Result<Self,String> {Self::with_sharing(frame,i32::from(shared))}
     pub fn with_external_export(frame:&Frame)->Result<Self,String>{Self::with_sharing(frame,2)}
+    /// Experimental exact 2:1 SDR output. Input geometry and sample ownership
+    /// stay unchanged; callers must independently validate the display rect.
+    pub fn with_external_sdr_half(frame: &Frame) -> Result<Self, String> {
+        if frame.format != DXGI_FORMAT_NV12 {
+            return Err("half-size conversion requires NV12".into());
+        }
+        Self::shader(frame, 2, true)
+    }
     pub fn external_sync(&self)->Result<ExternalSync,String>{ExternalSync::new(self)}
     fn with_sharing(frame:&Frame,sharing:i32)->Result<Self,String> {
         let shared=sharing!=0;
         if frame.format==DXGI_FORMAT_B8G8R8A8_UNORM {return RgbConverter::create(frame,sharing).map(|v|Self(Conversion::Rgb(v)));}
         let hdr=frame.format==DXGI_FORMAT_P010;
-        let shader:Result<Self,String>=(|| {
-            let color=crate::d3d11_color::Converter::with_sharing(&frame.device,frame.visible,true,hdr,sharing,203.)?;
-            let context=unsafe{frame.device.GetImmediateContext()}.map_err(|e|e.to_string())?;
-            let mut completion=None;
-            unsafe{frame.device.CreateQuery(&D3D11_QUERY_DESC{Query:D3D11_QUERY_EVENT,MiscFlags:0},Some(&mut completion))}.map_err(|e|e.to_string())?;
-            Ok(Self(Conversion::Shader(ShaderConverter{hdr,color,device:frame.device.clone(),context,completion:completion.ok_or("missing GPU query")?,size:frame.visible,allocation:frame.allocation})))
-        })();
+        let shader=Self::shader(frame,sharing,false);
         if hdr||sharing>=2{return shader;}
         match shader {Ok(value)=>Ok(value),Err(error)=>{
             tracing::warn!(%error,"SDR shader unavailable; using video processor");
             SdrConverter::with_shared_export(frame,shared).map(|c|Self(Conversion::Sdr(c)))
         }}
     }
-    pub fn backend_name(&self)->&'static str {match &self.0 {Conversion::Sdr(_)=>"video-processor",Conversion::Shader(c)=>if c.hdr{"p010-shader"}else{"nv12-shader"},Conversion::Rgb(_)=>"rgb-copy"}}
+    fn shader(frame: &Frame, sharing: i32, half: bool) -> Result<Self, String> {
+        let hdr = frame.format == DXGI_FORMAT_P010;
+        let color = if half {
+            crate::d3d11_color::Converter::external_sdr_half(&frame.device, frame.visible)?
+        } else {
+            crate::d3d11_color::Converter::with_sharing(
+                &frame.device, frame.visible, true, hdr, sharing, 203.,
+            )?
+        };
+        let context = unsafe { frame.device.GetImmediateContext() }.map_err(|e| e.to_string())?;
+        let mut completion = None;
+        unsafe {
+            frame.device.CreateQuery(
+                &D3D11_QUERY_DESC { Query: D3D11_QUERY_EVENT, MiscFlags: 0 },
+                Some(&mut completion),
+            )
+        }.map_err(|e| e.to_string())?;
+        let output_size = if half { frame.visible.map(|v| v / 2) } else { frame.visible };
+        Ok(Self(Conversion::Shader(ShaderConverter {
+            hdr, color, device: frame.device.clone(), context,
+            completion: completion.ok_or("missing GPU query")?,
+            size: frame.visible, allocation: frame.allocation, output_size,
+        })))
+    }
+    pub fn backend_name(&self)->&'static str {match &self.0 {Conversion::Sdr(_)=>"video-processor",Conversion::Shader(c)=>if c.hdr{"p010-shader"}else if c.output_size!=c.size{"nv12-half-r10-shader"}else{"nv12-shader"},Conversion::Rgb(_)=>"rgb-copy"}}
+    pub fn output_size(&self)->[u32;2]{match &self.0{Conversion::Sdr(c)=>c.size,Conversion::Shader(c)=>c.output_size,Conversion::Rgb(c)=>c.size}}
 
     pub fn matches(&self,frame:&Frame)->bool {match &self.0 {
         Conversion::Sdr(c)=>frame.format==DXGI_FORMAT_NV12 && c.matches(frame),
@@ -493,7 +520,10 @@ impl Converter {
     }}
     pub fn readback(&self)->Result<Vec<u8>,String> {match &self.0 {
         Conversion::Sdr(c)=>c.readback(),Conversion::Shader(c)=>{
-            if !c.hdr{let raw=c.color.output();let texture=unsafe{ID3D11Texture2D::from_raw_borrowed(&raw)}.ok_or("missing SDR shader output")?;return readback_bgra(&c.device,&c.context,texture,c.size);}
+            if !c.hdr{
+                if c.output_size!=c.size{return Err("R10 native output has no BGRA readback".into());}
+                let raw=c.color.output();let texture=unsafe{ID3D11Texture2D::from_raw_borrowed(&raw)}.ok_or("missing SDR shader output")?;return readback_bgra(&c.device,&c.context,texture,c.size);
+            }
 
             let words=self.readback_fp16()?;
             let data=words.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>();
