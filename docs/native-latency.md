@@ -101,6 +101,19 @@ $env:ECLIPSE_EXPERIMENT_SDR_HALF_SCALE = '1'
 
 实验需要 SDR NV12 解码面、原生 GPU 呈现和精确 2∶1 的物理像素比例。会话诊断的 `video_stats.video_color.conversion` 显示 `nv12-half-r10-shader` 时已经采用半尺寸输出。调整窗口或切换显示器后，可用该项确认实际路径。比较新旧路径时固定场景、帧率、VSync 和窗口几何，同时记录系统显示间隔及独立源图显示率。恢复默认时，在启动新客户端进程前执行 `Remove-Item Env:ECLIPSE_EXPERIMENT_SDR_HALF_SCALE -ErrorAction SilentlyContinue`。
 
+## Windows 客户端在绘制前选取更新帧
+
+客户端取到解码图像后，仍可能等到下一次绘制才开始 GPU 颜色转换。在这段时间里，同一视频轨道可能已解码出更新的一帧。Windows 原生 D3D11 路径可以在转换前再查看一次该轨道的邮箱。如果有兼容的新帧就直接显示它。邮箱繁忙或没有合适的新帧时，立即沿用已取出的图像。这个实验也适用于视频和窗口分辨率相同的情况。
+
+实验默认关闭。退出控制端已有的串流进程，在程序目录用 PowerShell 开启实验并重新连接。设为 `0` 后重新启动控制端即可对照。主机使用相同设置。
+
+```powershell
+$env:ECLIPSE_EXPERIMENT_LATE_LATCH = '1'
+.\eclipse.exe
+```
+
+会话诊断中的 `video_stats.video_late_latch` 记录当前轨道的累计值。`attempts` 是转换前查看邮箱的次数，`replaced` 是选中更新帧的次数。若要判断用户看见的画面是否更及时，需要在相同负载、窗口位置和 VSync 设置下，把实际显示的图像与源图逐帧对应，再比较系统显示延迟和每秒显示的独立源图数。Windows 显示事件的时间范围止于系统呈现，物理像素响应需要另行测量。
+
 ## 可选的 Windows 呈现队列实验
 
 Windows 原生 D3D 呈现默认保持 `SetMaximumFrameLatency(3)`。定位窗口与全屏显示延迟差异时，可在单独的客户端进程启动前设置 `ECLIPSE_PRESENT_QUEUE_LIMIT`，严格只接受 `1`、`2`、`3`；未设置仍为 `3`，非法显式值会使原生呈现初始化报错，避免实验静默回落。配置在首次构造呈现器时按进程冻结，所有窗口使用同一值，运行中的进程不随环境变量变化调参。
