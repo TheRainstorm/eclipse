@@ -137,7 +137,7 @@ struct Snapshot<'a> {
     reason: &'static str,
     clock: &'static str,
     qpc_anchor: Option<crate::socket_trace::ClockAnchor>,
-    stages: [&'static str; 9],
+    stages: [&'static str; STAGES.len()],
     limit: usize,
     total_frames: u64,
     retained_frames: u64,
@@ -452,6 +452,11 @@ mod tests {
             assert_eq!(value["complete"], true);
             assert_eq!(value["terminal_scope"], "this_trace_last_owner_drop");
             assert_eq!(value["limit"], EXPORT_LIMIT);
+            assert_eq!(value["stages"], serde_json::json!(STAGES));
+            for row in value["frames"].as_array().unwrap() {
+                assert_eq!(row["at_us"].as_array().unwrap().len(), STAGES.len());
+                assert!(row.get("replaced_row_id").is_none());
+            }
         }
     }
     #[test]

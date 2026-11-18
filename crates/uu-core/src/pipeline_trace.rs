@@ -9,7 +9,13 @@ use std::{
 mod export;
 const LIMIT: usize = 8192;
 const EXPORT_LIMIT: usize = 32768;
-const STAGES: [&str; 9] = ["first_rtp_read", "last_rtp_read", "complete_au", "decode_start", "decode_return", "publish_call", "mailbox_take", "draw_callback", "output_available_by_pts"];
+// Terminal exports carry this table alongside at_us. Append new boundaries so
+// an existing position keeps the same meaning in older recordings.
+const STAGES: [&str; 11] = [
+    "first_rtp_read", "last_rtp_read", "complete_au", "decode_start", "decode_return",
+    "publish_call", "mailbox_take", "draw_callback", "output_available_by_pts",
+    "mailbox_published", "native_image_selected",
+];
 pub(crate) fn diagnostic_limit()->usize {if std::env::var("ECLIPSE_SOCKET_TRACE").as_deref()==Ok("1"){32768}else{LIMIT}}
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -21,6 +27,10 @@ pub enum Stage {
     MailboxTake = 6,
     Draw = 7,
     OutputAvailable = 8,
+    /// The decoded image was installed in its track's current mailbox generation.
+    MailboxPublished = 9,
+    /// First choice of these pixels at the native pre-conversion boundary.
+    NativeImageSelected = 10,
 }
 type Key = (u64, u32, u32, u32); // media epoch, track, SSRC, RTP timestamp
 /// Frozen receive identity for an actual decoded output, not the newest input.
@@ -43,7 +53,9 @@ struct Row {
     rtp: u32,
     pts_us: Option<u64>,
     generation: Option<u64>,
-    at_us: [Option<u64>; 9],
+    at_us: [Option<u64>; STAGES.len()],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replaced_row_id: Option<u64>,
     primary_packets: u32,
     repair_packets: u32,
 }
@@ -135,6 +147,9 @@ impl Trace {
             }
             s.total += 1;
             let id = s.total;
+            let mut at_us = [None; STAGES.len()];
+            at_us[0] = Some(at);
+            at_us[1] = Some(at);
             s.rows.push_back(Row {
                 id,
                 epoch,
@@ -143,7 +158,8 @@ impl Trace {
                 rtp,
                 pts_us: None,
                 generation: None,
-                at_us: [Some(at), Some(at), None, None, None, None, None, None, None],
+                at_us,
+                replaced_row_id: None,
                 primary_packets: 0,
                 repair_packets: 0,
             });
@@ -214,16 +230,40 @@ impl Trace {
         self.observed_image_at(image,stage,Instant::now())
     }
     pub fn observed_image_at(&self, image:ImageIdentity, stage:Stage, observed:Instant) -> bool {
+        self.record_observation(image, stage, observed, None)
+    }
+    /// Bind a replacement to the original pixels selected by this paint pass.
+    /// Missing, evicted or retired identities leave the relation unknown.
+    pub fn observed_native_selection_at(
+        &self, image: ImageIdentity, replaced: Option<ImageIdentity>, observed: Instant,
+    ) -> bool {
+        self.record_observation(image, Stage::NativeImageSelected, observed, replaced)
+    }
+    fn observed_index(s: &State, image: ImageIdentity) -> Option<usize> {
+        let i = Self::index(s, image.row_id)?;
+        let row = &s.rows[i];
+        ((row.epoch, row.track, row.ssrc, row.rtp, row.generation, row.pts_us) ==
+            (image.media_epoch, image.track, image.ssrc, image.rtp_timestamp,
+             Some(image.decode_generation), Some(image.pts_us))).then_some(i)
+    }
+    fn record_observation(
+        &self, image: ImageIdentity, stage: Stage, observed: Instant, replaced: Option<ImageIdentity>,
+    ) -> bool {
         if !self.enabled { return false; }
         let at=self.offset(observed);
         let Ok(mut s)=self.state.try_lock() else { return false; };
-        let Some(i)=Self::index(&s,image.row_id) else { return false; };
-        let row=&mut s.rows[i];
-        if (row.epoch,row.track,row.ssrc,row.rtp,row.generation,row.pts_us)
-            != (image.media_epoch,image.track,image.ssrc,image.rtp_timestamp,Some(image.decode_generation),Some(image.pts_us)) {
-            return false;
+        let Some(i) = Self::observed_index(&s, image) else { return false; };
+        if s.rows[i].at_us[stage as usize].is_none() {
+            if let Some(old) = replaced {
+                if old.media_epoch == image.media_epoch && old.track == image.track
+                    && old.ssrc == image.ssrc && old.decode_generation == image.decode_generation
+                    && old.pts_us < image.pts_us && Self::observed_index(&s, old).is_some()
+                {
+                    s.rows[i].replaced_row_id = Some(old.row_id);
+                }
+            }
+            s.rows[i].at_us[stage as usize] = Some(at);
         }
-        row.at_us[stage as usize].get_or_insert(at);
         true
     }
     pub fn report(&self) -> Option<serde_json::Value> {
@@ -308,6 +348,56 @@ mod tests {
         for n in 201..201+LIMIT {t.packet(1,0,10,n as u32,true,Instant::now());}
         assert!(!t.observed_image(old,Stage::Draw),"evicted identity cannot attach to a reused row slot");
         assert!(!Trace::new(false).observed_image(old,Stage::Draw));
+    }
+    #[test]
+    fn mailbox_and_native_selection_bind_the_first_observation_to_the_exact_image() {
+        let trace = Trace::new(true);
+        for (epoch, ssrc) in [(1, 10), (2, 20)] {
+            trace.packet(epoch, 0, ssrc, 7, true, Instant::now());
+            trace.frame(epoch, 0, ssrc, 7, Stage::DecodeStart, Some((5, 1)));
+        }
+        let old = trace.image_identity(1, 0, 5).unwrap();
+        let current = trace.image_identity(2, 0, 5).unwrap();
+        let observed = Instant::now();
+        for stage in [Stage::MailboxPublished, Stage::NativeImageSelected] {
+            assert!(trace.observed_image_at(current, stage, observed));
+            assert!(trace.observed_image_at(current, stage, observed + std::time::Duration::from_millis(10)));
+            assert!(!trace.observed_image(ImageIdentity { row_id: old.row_id, ..current }, stage));
+            let guard = trace.state.lock().unwrap();
+            assert!(!trace.observed_image(current, stage));
+            drop(guard);
+        }
+        let report = trace.report().unwrap();
+        assert_eq!(report["stages"][8], "output_available_by_pts");
+        for (stage, name) in [(Stage::MailboxPublished, "mailbox_published"), (Stage::NativeImageSelected, "native_image_selected")] {
+            let index = stage as usize;
+            assert_eq!(report["stages"][index], name);
+            assert!(report["frames"][0]["at_us"][index].is_null());
+            assert_eq!(report["frames"][1]["at_us"][index], trace.offset(observed));
+        }
+        assert!(report["frames"][1]["at_us"][Stage::Draw as usize].is_null());
+    }
+    #[test]
+    fn only_the_first_native_selection_links_its_replaced_image_in_the_same_stream() {
+        let trace = Trace::new(true);
+        let image = |epoch, ssrc, generation, pts| {
+            trace.packet(epoch, 0, ssrc, pts as u32, true, Instant::now());
+            trace.frame(epoch, 0, ssrc, pts as u32, Stage::DecodeStart, Some((pts, generation)));
+            trace.image_identity(epoch, 0, pts).unwrap()
+        };
+        let early = image(1, 5, 2, 100);
+        let late = image(1, 5, 2, 200);
+        let at = Instant::now();
+        assert!(trace.observed_native_selection_at(late, Some(early), at));
+        assert!(trace.observed_native_selection_at(late, None, at));
+        for other in [image(2, 5, 2, 300), image(1, 6, 2, 400), image(1, 5, 3, 500)] {
+            assert!(trace.observed_native_selection_at(other, Some(late), at));
+        }
+        let report = trace.report().unwrap();
+        assert_eq!(report["frames"][1]["replaced_row_id"], early.row_id);
+        for row in &report["frames"].as_array().unwrap()[2..] {
+            assert!(row.get("replaced_row_id").is_none());
+        }
     }
     #[test]
     fn wrap_duplicates_reorder_and_epoch_are_distinct() {
