@@ -313,6 +313,7 @@ pub(crate) async fn receive_video(
                 return;
             }
         };
+        let mut decoder_source = crate::display_frames::DecoderSource::new(source_ssrc);
         if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
             s.set_backend(decoder.backend_name());
         }
@@ -360,7 +361,10 @@ pub(crate) async fn receive_video(
                 // snapshot. A format change cannot feed the previous decoder.
                 if !key { continue; }
                 match create(sample_codec) {
-                    Ok(next) => decoder = next,
+                    Ok(next) => {
+                        decoder = next;
+                        decoder_source = crate::display_frames::DecoderSource::new(source_ssrc);
+                    },
                     Err(_) => { gate.failed(); worker_requests.request(); worker_refresh.notify_one();if let Some(s)=&worker_stats{s.recovery(RecoveryCause::DecoderError);}continue; }
                 }
                 codec = sample_codec;
@@ -384,7 +388,10 @@ pub(crate) async fn receive_video(
                     create(codec)
                 };
                 match next {
-                    Ok(fresh) => decoder = fresh,
+                    Ok(fresh) => {
+                        decoder = fresh;
+                        decoder_source = crate::display_frames::DecoderSource::new(source_ssrc);
+                    },
                     Err(_) => continue,
                 }
                 reset_decoder = false;
@@ -452,11 +459,15 @@ pub(crate) async fn receive_video(
                         if let Some(tx) = frame_tx.as_ref().filter(|tx| index == last && (tx.accepts_decoded(&frame) || key || sample_rx.is_empty())) {
                             if let Some(s)=&worker_stats{s.pipeline_trace.image(trace_epoch,track_idx,frame.pts.0,crate::pipeline_trace::Stage::Publish);}
                             let observation=worker_stats.as_ref().map(|s|crate::display_frames::DecodedObservation {
-                                media_epoch:trace_epoch,track:track_idx,pts_us:frame.pts.0,
+                                media_epoch:trace_epoch,track:track_idx,pts_us:frame.pts.0,source:Some(decoder_source),
                                 token:s.video_e2e.frame_for_pts(trace_epoch,track_idx,frame.pts.0),
                                 receive:s.pipeline_trace.image_identity(trace_epoch,track_idx,frame.pts.0),
                             });
-                            let _ = tx.send_observed_decoded(track_idx, frame, color,observation);
+                            if let Ok(Some(published)) = tx.send_observed_decoded_timed(track_idx, frame, color, observation) {
+                                if let Some((stats, image)) = worker_stats.as_ref().zip(observation.and_then(|o|o.receive)) {
+                                    stats.pipeline_trace.observed_image_at(image, crate::pipeline_trace::Stage::MailboxPublished, published);
+                                }
+                            }
                         } else if let Some(s) = worker_stats.as_ref().filter(|_|frame_tx.is_some()) {
                             s.decoded_display_skips.fetch_add(1, Ordering::Relaxed);
                             if index != last {

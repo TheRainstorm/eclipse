@@ -14,6 +14,22 @@ pub enum DisplayImage {
     Rgba(DisplayFrame),
     Decoded(u32, RawFrame, YuvColor),
 }
+/// The actual decoder owner returning an image, independent of diagnostics.
+/// A buffered output still belongs to that owner; PTS is never used to infer it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct DecoderSource {
+    pub ssrc: u32,
+    pub instance: u64,
+}
+impl DecoderSource {
+    pub(crate) fn new(ssrc: u32) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            ssrc,
+            instance: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
 /// Frozen at actual decoder output and replaced atomically with its image.
 /// A legacy RGBA send has no identity; conversion of an observed decoded image
 /// preserves this same sidecar even when the resulting pixels become RGBA.
@@ -22,6 +38,7 @@ pub struct DecodedObservation {
     pub media_epoch:u64,
     pub track:u32,
     pub pts_us:u64,
+    pub source:Option<DecoderSource>,
     pub token:Option<crate::video_e2e::FrameToken>,
     pub receive:Option<crate::pipeline_trace::ImageIdentity>,
 }
@@ -44,7 +61,11 @@ struct Mailbox {
 }
 impl Mailbox {
     fn pop_first(&mut self) -> Option<(DisplayImage, std::time::Instant, Option<DecodedObservation>)> {
-        let (track, (frame, published, observation)) = self.images.pop_first()?;
+        let track = *self.images.keys().next()?;
+        self.pop_track(track)
+    }
+    fn pop_track(&mut self, track: u32) -> Option<(DisplayImage, std::time::Instant, Option<DecodedObservation>)> {
+        let (frame, published, observation) = self.images.remove(&track)?;
         let now = std::time::Instant::now();
         let waits = self.waits.entry(track).or_default();
         waits.push_back((now, now.duration_since(published).as_secs_f32() * 1000.0));
@@ -69,6 +90,70 @@ pub struct FrameReceiver {
     wake: mpsc::Receiver<()>,
     notify: Waker,
     planar: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A render callback may consume only its current track/generation. It never
+/// owns or drains the receiver's wake token, so other tracks remain deliverable.
+#[derive(Clone)]
+pub struct FrameLatch {
+    pending: Pending,
+    generation: u64,
+}
+pub struct LatchedFrame {
+    pub image: DisplayImage,
+    pub observation: DecodedObservation,
+    /// Captured while the chosen image is removed, only for opted-in tracing.
+    pub taken_at: Option<std::time::Instant>,
+}
+impl FrameLatch {
+    pub fn try_take_newer(
+        &self,
+        current: &RawFrame,
+        color: YuvColor,
+        owner: DecodedObservation,
+        compatible: impl FnOnce(&RawFrame) -> bool,
+    ) -> Option<LatchedFrame> {
+        let mut mailbox = self.pending.try_lock().ok()?;
+        if mailbox.generation != self.generation
+            || owner.media_epoch != self.generation
+            || owner.pts_us != current.pts.0
+            || owner.source.is_none()
+        {
+            return None;
+        }
+        let (DisplayImage::Decoded(track, next, next_color), _, Some(next_owner)) =
+            mailbox.images.get(&owner.track)?
+        else {
+            return None;
+        };
+        if *track != owner.track
+            || next_owner.track != owner.track
+            || next_owner.media_epoch != owner.media_epoch
+            || next_owner.source != owner.source
+            || next_owner.pts_us != next.pts.0
+            || next.pts <= current.pts
+            || [next.width, next.height, next.stride]
+                != [current.width, current.height, current.stride]
+            || next.format != current.format
+            || next.gpu != current.gpu
+            || *next_color != color
+        {
+            return None;
+        }
+        // Diagnostic sampling can be absent or contended. It must never
+        // change eligibility, which uses the actual decoder owner above.
+        if !compatible(next) {
+            return None;
+        }
+        let (image, _, observed) = mailbox.pop_track(owner.track)?;
+        let observation = observed?;
+        let taken_at = observation.receive.map(|_| std::time::Instant::now());
+        Some(LatchedFrame {
+            image,
+            observation,
+            taken_at,
+        })
+    }
 }
 
 pub fn channel() -> (FrameSender, FrameReceiver) {
@@ -114,39 +199,53 @@ impl FrameSender {
         frame.gpu || self.planar.load(std::sync::atomic::Ordering::Acquire)
     }
     pub(crate) fn send_observed_decoded(&self, track:u32, frame:RawFrame, color:YuvColor, observation:Option<DecodedObservation>)->Result<(),mpsc::SendError<()>> {
+        self.send_observed_decoded_timed(track, frame, color, observation).map(|_| ())
+    }
+    pub(crate) fn send_observed_decoded_timed(&self, track:u32, frame:RawFrame, color:YuvColor, observation:Option<DecodedObservation>)->Result<Option<std::time::Instant>,mpsc::SendError<()>> {
         let observation=observation.filter(|value| value.media_epoch==self.generation&&value.track==track&&value.pts_us==frame.pts.0);
         let decoded = self.accepts_decoded(&frame);
         let image = DisplayImage::Decoded(track, frame, color);
         if decoded {
-            self.send_delivery(image,observation)
+            self.send_delivery_timed(image,observation)
         } else {
-            self.send_delivery(DisplayImage::Rgba(image.into_rgba()),observation)
+            self.send_delivery_timed(DisplayImage::Rgba(image.into_rgba()),observation)
         }
     }
     fn send_image(&self, frame: DisplayImage) -> Result<(), mpsc::SendError<()>> {
         self.send_delivery(frame,None)
     }
     fn send_delivery(&self, frame:DisplayImage, observation:Option<DecodedObservation>)->Result<(),mpsc::SendError<()>> {
-        {
+        self.send_delivery_timed(frame, observation).map(|_| ())
+    }
+    fn send_delivery_timed(&self, frame:DisplayImage, observation:Option<DecodedObservation>)->Result<Option<std::time::Instant>,mpsc::SendError<()>> {
+        let (replaced, published) = {
             let mut mailbox = self.pending.lock().unwrap();
-            if mailbox.generation != self.generation { return Ok(()); }
+            if mailbox.generation != self.generation { return Ok(None); }
             let track = frame.track();
-            let replaced = mailbox.images.insert(track, (frame, std::time::Instant::now(), observation)).is_some();
+            let replaced = mailbox.images.insert(track, (frame, std::time::Instant::now(), observation));
             let counts = mailbox.counts.entry(track).or_default();
             counts[0] += 1;
-            counts[1] += u64::from(replaced);
-        }
+            counts[1] += u64::from(replaced.is_some());
+            (replaced, observation.filter(|o| o.receive.is_some()).map(|_| std::time::Instant::now()))
+        };
         // Invoke outside the lock: a UI integration may immediately drain.
         let notify = self.notify.lock().unwrap().clone();
         if let Some(notify) = notify { notify(); }
-        match self.wake.try_send(()) {
-            Ok(()) | Err(mpsc::TrySendError::Full(())) => Ok(()),
+        let result = match self.wake.try_send(()) {
+            Ok(()) | Err(mpsc::TrySendError::Full(())) => Ok(published),
             Err(mpsc::TrySendError::Disconnected(())) => Err(mpsc::SendError(())),
-        }
+        };
+        // A decoder sample's last release may enter a driver. Never hold the
+        // mailbox lock or delay the GUI wake while releasing replaced images.
+        drop(replaced);
+        result
     }
 }
 impl FrameReceiver {
     pub fn generation(&self) -> u64 { self.pending.lock().unwrap().generation }
+    pub fn latch(&self) -> FrameLatch {
+        FrameLatch { pending: self.pending.clone(), generation: self.generation() }
+    }
     /// Published, overwritten before delivery, and delivered images for a track.
     /// Overwrites discard stale decoded images, never compressed reference frames.
     pub fn delivery_counts(&self, track: u32) -> [u64; 3] {
@@ -203,9 +302,139 @@ impl FrameReceiver {
 mod tests {
     use super::*;
     fn observed(client:&crate::video_e2e::Client,epoch:u64,pts:u64)->DecodedObservation {
-        DecodedObservation{media_epoch:epoch,track:0,pts_us:pts,token:client.frame_for_pts(epoch,0,pts),receive:None}
+        DecodedObservation{media_epoch:epoch,track:0,pts_us:pts,source:None,token:client.frame_for_pts(epoch,0,pts),receive:None}
     }
     fn decoded(pts:u64,value:u8)->RawFrame {RawFrame::new_i420(2,2,vec![value;6],Timestamp(pts))}
+    fn owned(pts: u64, source: DecoderSource) -> DecodedObservation {
+        DecodedObservation {
+            media_epoch: 0,
+            track: 0,
+            pts_us: pts,
+            source: Some(source),
+            token: None,
+            receive: None,
+        }
+    }
+    #[test]
+    fn late_take_is_latest_same_decoder_without_trace_and_preserves_other_track_wakes() {
+        let (tx, mut rx) = channel();
+        rx.enable_planar();
+        let source = DecoderSource::new(7);
+        let first = decoded(1, 16);
+        let owner = owned(1, source);
+        tx.send_observed_decoded(0, first.clone(), YuvColor::Limited709, Some(owner))
+            .unwrap();
+        rx.try_recv_observed_image().unwrap();
+        let latch = rx.latch();
+        for pts in [2, 3] {
+            tx.send_observed_decoded(
+                0,
+                decoded(pts, 32),
+                YuvColor::Limited709,
+                Some(owned(pts, source)),
+            )
+            .unwrap();
+        }
+        tx.send((1, 2, 2, vec![9])).unwrap();
+        let delivery = latch
+            .try_take_newer(&first, YuvColor::Limited709, owner, |_| true)
+            .unwrap();
+        assert!(matches!(delivery.image, DisplayImage::Decoded(0,f,_) if f.pts.0==3));
+        assert_eq!(delivery.observation.source, Some(source));
+        assert_eq!(rx.try_recv().unwrap().0, 1);
+        assert!(
+            rx.try_recv().is_err(),
+            "old wake tokens are harmless and cannot produce an old image"
+        );
+        tx.send((1, 2, 2, vec![10])).unwrap();
+        assert_eq!(rx.try_recv().unwrap().3, vec![10]);
+        assert_eq!(rx.delivery_counts(0), [3, 1, 2]);
+    }
+    #[test]
+    fn late_take_does_not_consume_incompatible_or_retired_images() {
+        let (tx, mut rx) = channel();
+        rx.enable_planar();
+        let source = DecoderSource::new(7);
+        let current = decoded(1, 16);
+        let owner = owned(1, source);
+        let latch = rx.latch();
+        let other = DecoderSource::new(7);
+        tx.send_observed_decoded(
+            0,
+            decoded(2, 32),
+            YuvColor::Limited709,
+            Some(owned(2, other)),
+        )
+        .unwrap();
+        assert!(latch
+            .try_take_newer(&current, YuvColor::Limited709, owner, |_| true)
+            .is_none());
+        assert!(rx.try_recv_observed_image().is_ok());
+        tx.send_observed_decoded(0, decoded(2, 32), YuvColor::Full709, Some(owned(2, source)))
+            .unwrap();
+        assert!(latch
+            .try_take_newer(&current, YuvColor::Limited709, owner, |_| true)
+            .is_none());
+        assert!(rx.try_recv_observed_image().is_ok());
+        tx.send_observed_decoded(
+            0,
+            decoded(3, 32),
+            YuvColor::Limited709,
+            Some(owned(3, source)),
+        )
+        .unwrap();
+        assert!(latch
+            .try_take_newer(&current, YuvColor::Limited709, owner, |_| false)
+            .is_none());
+        let locked = rx.pending.lock().unwrap();
+        assert!(latch
+            .try_take_newer(&current, YuvColor::Limited709, owner, |_| true)
+            .is_none());
+        drop(locked);
+        assert!(rx.try_recv_observed_image().is_ok());
+        let fresh = tx.renew();
+        fresh
+            .send_observed_decoded(0, decoded(4, 48), YuvColor::Limited709, None)
+            .unwrap();
+        assert!(latch
+            .try_take_newer(&current, YuvColor::Limited709, owner, |_| true)
+            .is_none());
+        assert!(
+            rx.try_recv_observed_image().is_ok(),
+            "an old render callback cannot steal a new media generation"
+        );
+    }
+    #[test]
+    fn missing_trace_sidecar_does_not_change_late_selection() {
+        for traced in [false, true] {
+            let (tx, mut rx) = channel();
+            rx.enable_planar();
+            let source = DecoderSource::new(7);
+            let current = decoded(1, 16);
+            let mut owner = owned(1, source);
+            let mut next = owned(2, source);
+            if traced {
+                owner.receive = Some(crate::pipeline_trace::ImageIdentity {
+                    row_id: 1,
+                    media_epoch: 0,
+                    track: 0,
+                    ssrc: 7,
+                    rtp_timestamp: 100,
+                    decode_generation: 0,
+                    pts_us: 1,
+                });
+            }
+            // The second trace write may be contended. Runtime choice stays the
+            // same; only a replacement's diagnostic provenance becomes unknown.
+            next.receive = None;
+            tx.send_observed_decoded(0, decoded(2, 32), YuvColor::Limited709, Some(next))
+                .unwrap();
+            assert!(rx
+                .latch()
+                .try_take_newer(&current, YuvColor::Limited709, owner, |_| true)
+                .is_some());
+        }
+    }
     #[test]
     fn mailbox_freezes_old_image_identity_while_ssrc_reuses_its_pts() {
         let (tx,mut rx)=channel();rx.enable_planar();

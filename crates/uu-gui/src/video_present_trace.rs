@@ -321,6 +321,7 @@ mod tests {
             &stats,
             &image,
             Some(DecodedObservation {
+                source: None,
                 media_epoch: 0,
                 track: 0,
                 pts_us: 123,

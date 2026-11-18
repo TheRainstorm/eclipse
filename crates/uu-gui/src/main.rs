@@ -709,10 +709,14 @@ impl App {
                 None => {
                     if native && (self.status.starts_with("正在")||["Establishing", "Connecting", "Preparing", "Verifying", "Waiting"].iter().any(|p|self.status.starts_with(p))) {self.status=uu_i18n::text("原生串流已连接").into();}
                     h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"backend":h.stats.backend(),"video_size":h.stats.res()}));
-                    self.textures.insert(idx, video_texture::VideoTexture::new_observed(ctx, self.video_gl.as_ref(), image,&h.stats,observation));
+                    let texture = video_texture::VideoTexture::new_observed(ctx, self.video_gl.as_ref(), image,&h.stats,observation);
+                    #[cfg(windows)]
+                    if video_texture::late_latch_enabled() { texture.set_frame_latch(h.frames.latch()); }
+                    self.textures.insert(idx, texture);
                 }
             }
             if let Some(texture)=self.textures.get_mut(&idx){texture.set_source_white(source_white);}
+
             self.unpresented.insert(idx);
         }
         if let Some(h) = self.controller.as_ref() {
@@ -1624,6 +1628,7 @@ impl App {
                 let cursor=s.native_cursor.snapshot();
                 report["native_cursor"]=serde_json::json!({"supported":s.native_cursor.supported(),"revision":cursor.as_ref().map(|c|c.revision),"shape_id":cursor.as_ref().map(|c|c.shape_id),"position":cursor.as_ref().and_then(|c|c.position),"desktop":cursor.as_ref().map(|c|c.desktop),"shape_size":cursor.as_ref().and_then(|c|c.shape.as_ref()).and_then(|s|s.description.size())});
                 report["video_paint_window"]=self.textures.get(&self.selected_track).and_then(|t|t.paint_diagnostics()).into();
+                report["video_late_latch"]=self.textures.get(&self.selected_track).and_then(|t|t.late_latch_diagnostics()).into();
                 report["video_continuity"]=self.textures.get(&self.selected_track).and_then(|t|t.continuity()).map(|s|serde_json::json!({"scope":"focused visible new-image submissions, not display scanout or content motion","window_seconds":60,"long_gaps":s.long_gaps,"threshold_ms":s.threshold_ms,"max_gap_ms":s.max_gap_ms,"ongoing_gap_ms":s.ongoing_gap_ms,"observed_seconds":s.observed_seconds})).into();
                 report["host_video_latency"]=serde_json::to_value(uu_core::frame_trace::video_latency(s)).unwrap_or_default();
                 report["video_e2e"]=serde_json::to_value(s.video_e2e.snapshot()).unwrap_or_default();

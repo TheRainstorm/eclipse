@@ -56,6 +56,13 @@ pub(crate) struct NativeImage {
     pub observation:Option<FrameObservation>,
     pub half_scale:bool,
 }
+/// Keep normal presentation unchanged until the client explicitly opts in.
+pub(super) fn late_latch_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(windows)
+        && *ENABLED
+            .get_or_init(|| std::env::var("ECLIPSE_EXPERIMENT_LATE_LATCH").as_deref() == Ok("1"))
+}
 pub struct VideoTexture {
     continuity:Mutex<frame_continuity::Continuity>,
     cursor:Mutex<Option<uu_core::native_cursor::Snapshot>>,
@@ -103,6 +110,22 @@ impl VideoTexture {
         };
         texture.set_with_observation(ctx, image,observation);
         texture
+    }
+    #[cfg(windows)]
+    pub fn set_frame_latch(&self, latch: uu_core::display_frames::FrameLatch) {
+        if let Some(gpu) = &self.gpu {
+            gpu.lock().unwrap().latch = Some(latch);
+        }
+    }
+    pub fn late_latch_diagnostics(&self) -> Option<serde_json::Value> {
+        #[cfg(windows)]
+        if let Some(gpu) = &self.gpu {
+            let gpu = gpu.lock().unwrap();
+            return Some(
+                serde_json::json!({"enabled":late_latch_enabled(),"attempts":gpu.latch_counts[0],"replaced":gpu.latch_counts[1]}),
+            );
+        }
+        None
     }
     pub fn set_source_white(&mut self,white:f32){if white.is_finite()&&(40.0..=1000.0).contains(&white){self.source_white_nits=white;}}
     pub fn set_continuity_active(&self,active:bool,fps:u32){self.continuity.lock().unwrap().set_active(active,fps);}
@@ -292,7 +315,8 @@ impl VideoTexture {
                         if eframe::glow_presentation::native_video_available(&ctx,viewport) {
                             let started=std::time::Instant::now();let pixels=info.viewport_in_pixels();
                             let rect=[pixels.left_px as f32,pixels.top_px as f32,pixels.width_px as f32,pixels.height_px as f32];
-                            if let Some(image)=state.native_image(&ctx,viewport,rect,source_white) {
+                            let replaced = state.latch_pending();
+                            if let Some(image)=state.native_image(&ctx,viewport,rect,source_white,replaced.as_ref()) {
                                 let observation=image.observation.clone();
                                 let half = image.half_scale;
                                 let mut offered = eframe::glow_presentation::native_video(&ctx, viewport, Arc::new(image));
@@ -309,7 +333,7 @@ impl VideoTexture {
                                     );
                                     // Re-convert the same retained decoded image once. A
                                     // failed R10 import never changes its frozen identity.
-                                    if let Some(original) = state.native_image(&ctx, viewport, rect, source_white) {
+                                    if let Some(original) = state.native_image(&ctx, viewport, rect, source_white,None) {
                                         if !original.half_scale {
                                             offered =
                                                 eframe::glow_presentation::native_video(&ctx, viewport, Arc::new(original));
@@ -408,6 +432,10 @@ struct Planes {
     color: YuvColor,
     paint_timings: video_timing::Timings,
     pending: Option<(RawFrame, YuvColor,Option<FrameObservation>)>,
+    #[cfg(windows)]
+    latch: Option<uu_core::display_frames::FrameLatch>,
+    #[cfg(windows)]
+    latch_counts: [u64; 2],
     observation:Option<FrameObservation>,
     uv_scale_uniform: Option<glow::UniformLocation>,
     dma_active: bool,
@@ -523,6 +551,10 @@ impl Planes {
             color: YuvColor::default(),
             paint_timings: Default::default(),
             pending: None,
+            #[cfg(windows)]
+            latch: None,
+            #[cfg(windows)]
+            latch_counts: [0; 2],
             observation:None,
             uv_scale_uniform,
             dma_active: false,
@@ -676,12 +708,47 @@ impl Planes {
         if self.native_active {if self.pending.is_none(){self.pending=self.native_last.take();}else{self.native_last=None;}self.native_active=false;self.native.take();}
     }
     #[cfg(windows)]
+    fn latch_pending(&mut self) -> Option<(RawFrame, YuvColor, Option<FrameObservation>)> {
+        if !late_latch_enabled() || !self.native_active || self.native_disabled {
+            return None;
+        }
+        let (frame, color, Some(observation)) = self.pending.as_ref()? else {
+            return None;
+        };
+        let stats = observation.current_stats()?;
+        let owner = observation.decoded_owner()?;
+        let source = self.native.as_ref()?;
+        let latch = self.latch.as_ref()?;
+        self.latch_counts[0] += 1;
+        // This is a single nonblocking mailbox take. The already converted old
+        // image and all GPU leases remain owned by Source while capacity is busy.
+        let delivery = latch.try_take_newer(frame, *color, owner, |next| {
+            next.gpu
+                && next
+                    .d3d11
+                    .as_ref()
+                    .is_some_and(|surface| source.matches(surface))
+        })?;
+        let next_observation =
+            FrameObservation::new(&stats, &delivery.image, Some(delivery.observation))?;
+        if let Some(taken_at) = delivery.taken_at {
+            next_observation.trace_at(uu_core::pipeline_trace::Stage::MailboxTake, taken_at);
+        }
+        let DisplayImage::Decoded(_, frame, color) = delivery.image else {
+            return None;
+        };
+        let original = self.pending.replace((frame, color, Some(next_observation)));
+        self.latch_counts[1] += 1;
+        original
+    }
+    #[cfg(windows)]
     fn native_image(
         &mut self,
         ctx: &egui::Context,
         viewport: egui::ViewportId,
         rect: [f32; 4],
         source_white: f32,
+        replaced: Option<&(RawFrame, YuvColor, Option<FrameObservation>)>,
     ) -> Option<NativeImage> {
         use native_source::Update;
         self.native_deferred = false;
@@ -718,6 +785,13 @@ impl Planes {
                 self.restore_native_frame();
                 return None;
             };
+            // Same boundary for baseline and candidate, before any GPU convert.
+            // It records selection, not conversion success or an old ready frame.
+            if let Some(observation) = observation.as_ref().filter(|o|o.tracing()) {
+                let old = replaced.and_then(|(_, _, observation)| observation.as_ref())
+                    .and_then(|o| o.current_identity()).and_then(|id| id.receive);
+                observation.selected_at(old, std::time::Instant::now());
+            }
             let prepared = (|| -> Result<Update, native_source::Failure> {
                 if self.native.as_ref().is_none_or(|n| !n.matches(surface)) {
                     self.native.take();
@@ -774,6 +848,10 @@ impl Planes {
                         serde_json::json!({"event":"native_video_fallback","phase":e.phase,"kind":e.kind,"reason":e.reason.chars().take(512).collect::<String>(),"actual_size":[frame.width,frame.height],"leases":e.leases,"source":self.native.as_ref().map(|s|s.diagnostics())}),
                     );
                     eprintln!("native video image unavailable, using WGL: {e}");
+                    // An experimental replacement failed conversion. Existing
+                    // WGL fallback receives the original early image, not a
+                    // failed candidate or an unrelated cached observation.
+                    if let Some(original) = replaced { self.pending = Some(original.clone()); }
                     self.native_disabled = true;
                     self.native.take();
                     self.native_active = false;

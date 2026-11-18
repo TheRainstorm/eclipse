@@ -11,6 +11,8 @@ pub(crate) struct FrameIdentity {
     pub media_epoch: u64,
     pub track: u32,
     pub actual_pts_us: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<uu_core::display_frames::DecoderSource>,
     pub token: Option<FrameToken>,
     pub receive: Option<uu_core::pipeline_trace::ImageIdentity>,
 }
@@ -76,10 +78,42 @@ impl FrameObservation {
                 media_epoch: epoch,
                 track,
                 actual_pts_us: pts,
+                source: frozen.and_then(|value| value.source),
                 token,
                 receive,
             },
         })
+    }
+    #[cfg(windows)]
+    pub(crate) fn decoded_owner(&self) -> Option<DecodedObservation> {
+        self.current_stats()?;
+        Some(DecodedObservation {
+            media_epoch: self.identity.media_epoch,
+            track: self.identity.track,
+            pts_us: self.identity.actual_pts_us,
+            source: self.identity.source,
+            token: self.identity.token.map(Into::into),
+            receive: self.identity.receive,
+        })
+    }
+    #[cfg(windows)]
+    pub(crate) fn selected_at(
+        &self,
+        replaced: Option<uu_core::pipeline_trace::ImageIdentity>,
+        at: std::time::Instant,
+    ) {
+        if let Some((stats, image)) = self.current_stats().zip(self.identity.receive) {
+            if !stats
+                .pipeline_trace
+                .observed_native_selection_at(image, replaced, at)
+            {
+                // Missing/conflicting replacement evidence affects attribution,
+                // never which real image was selected for conversion.
+                stats
+                    .pipeline_trace
+                    .observed_native_selection_at(image, None, at);
+            }
+        }
     }
     /// A queued or cached image cannot regain the identity of a retired session.
     pub(crate) fn current_identity(&self) -> Option<FrameIdentity> {
@@ -148,6 +182,7 @@ mod tests {
             rtp_timestamp: 123,
         };
         let frozen = DecodedObservation {
+            source: None,
             media_epoch: 7,
             track: 0,
             pts_us: 0,
@@ -164,6 +199,27 @@ mod tests {
         assert!(observation.current_identity().is_none());
         assert!(untracked.current_identity().is_none());
         assert!(FrameObservation::new(&stats, &image(), Some(frozen)).is_none());
+    }
+    #[test]
+    fn decoder_owner_is_frozen_without_a_diagnostic_receive_or_e2e_token() {
+        let stats = Arc::new(MediaStats::default());
+        let source = uu_core::display_frames::DecoderSource {
+            ssrc: 7,
+            instance: 19,
+        };
+        let frozen = DecodedObservation {
+            media_epoch: 0,
+            track: 0,
+            pts_us: 0,
+            source: Some(source),
+            token: None,
+            receive: None,
+        };
+        let observation = FrameObservation::new(&stats, &image(), Some(frozen)).unwrap();
+        assert_eq!(observation.current_identity().unwrap().source, Some(source));
+        assert!(observation.current_identity().unwrap().receive.is_none());
+        stats.native_media_retired.store(true, Ordering::Release);
+        assert!(observation.current_identity().is_none());
     }
     #[test]
     fn missing_metadata_never_reconstructs_a_token_from_a_newer_input() {
@@ -184,6 +240,7 @@ mod tests {
         let stats = Arc::new(MediaStats::default());
         let ctx = eframe::egui::Context::default();
         let frozen = DecodedObservation {
+            source: None,
             media_epoch: 0,
             track: 0,
             pts_us: 123,
