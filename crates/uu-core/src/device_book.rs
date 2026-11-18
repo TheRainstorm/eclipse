@@ -589,14 +589,14 @@ impl Store {
     }
     pub fn open(directory: impl Into<PathBuf>) -> Result<Self> {
         let directory = directory.into();
-        std::fs::create_dir_all(&directory)?;
+        std::fs::create_dir_all(&directory).with_context(|| format!("创建设备连接配置目录失败：{}", directory.display()))?;
         let value = Self { directory };
         value.read()?;
         Ok(value)
     }
     pub fn read(&self) -> Result<Book> {
         let path = self.directory.join("connections.json");
-        if !path.try_exists()? {
+        if !path.try_exists().with_context(|| format!("检查设备连接配置失败：{}", path.display()))? {
             return Ok(Book::default());
         }
         let mut value: Book = serde_json::from_slice(&read_private(&path)?)
@@ -642,17 +642,16 @@ impl Store {
         let encoded=serde_json::to_vec_pretty(&value)?;
         ensure!(encoded.len()<=1024*1024,"{}", uu_i18n::format!("设备与配置记录总量超过1 MiB，请先移除不再使用的记录"));
         let original=self.directory.join("connections.json");
-        if original.exists() {
+        if original.try_exists().with_context(|| format!("检查设备连接配置失败：{}", original.display()))? {
             let bytes=read_private(&original)?;
             let version=serde_json::from_slice::<serde_json::Value>(&bytes)?["version"].as_u64().unwrap_or(0);
             if matches!(version, 2 | 3 | 4) {
-                crate::private_file::write_atomic(&self.directory.join(format!("connections.v{version}-backup-{}.json",uuid::Uuid::new_v4())),&bytes)?;
+                let backup = self.directory.join(format!("connections.v{version}-backup-{}.json",uuid::Uuid::new_v4()));
+                crate::private_file::write_atomic(&backup,&bytes).with_context(|| format!("备份设备连接配置失败：{}", backup.display()))?;
             }
         }
-        crate::private_file::write_atomic(
-            &self.directory.join("connections.json"),
-            &encoded,
-        )?;
+        crate::private_file::write_atomic(&original, &encoded)
+            .with_context(|| format!("保存设备连接配置失败：{}", original.display()))?;
         Ok(())
     }
     pub fn sharing(&self, sharing: Sharing) -> Result<()> {

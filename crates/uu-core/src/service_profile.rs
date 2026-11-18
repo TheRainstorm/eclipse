@@ -1,7 +1,7 @@
 //! A configuration directory owns both its client state and its host profile.
 //! Windows runs one selected host from protected storage and mirrors host data
 //! back as the owning user; a different frontend never edits that profile.
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -197,11 +197,12 @@ pub fn valid_id(value: &str) -> bool {
 /// Runs as the ordinary GUI user, before requesting installation authorization.
 pub fn prepare_source(config: &crate::Config) -> Result<()> {
     let source = config.at("server");
-    if source.join("device-trust/connections.json").try_exists()? {
-        ensure!(
-            source.join("device-trust/identity.pk8").is_file(),
-            "服务端身份文件缺失，原配置已保留；请恢复此目录的备份后重试。"
-        );
+    let connections = source.join("device-trust/connections.json");
+    if connections.try_exists().with_context(|| format!("检查服务连接配置失败：{}", connections.display()))? {
+        let identity = source.join("device-trust/identity.pk8");
+        let metadata = fs::metadata(&identity)
+            .with_context(|| format!("检查服务端身份文件失败，原配置已保留：{}", identity.display()))?;
+        ensure!(metadata.is_file(), "服务端身份必须是文件：{}", identity.display());
         crate::device_book::Store::open(source.join("device-trust"))?.read()?;
         crate::device_trust::TrustStore::open(source.join("device-trust"))?;
         return Ok(());
@@ -253,7 +254,8 @@ impl DataSnapshot {
         let files = crate::profile_storage::snapshot(source)?;
         let mut captured = Vec::new();
         for (relative, expected) in &files {
-            let bytes = fs::read(source.join(relative))?;
+            let path = source.join(relative);
+            let bytes = fs::read(&path).with_context(|| format!("读取服务配置快照失败：{}", path.display()))?;
             ensure!(
                 <[u8; 32]>::from(Sha256::digest(&bytes)) == *expected,
                 "Host profile changed during copy"
@@ -287,7 +289,7 @@ impl DataSnapshot {
                 serde_json::from_slice(&bytes)?
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e).with_context(|| format!("读取服务配置快照清单失败：{}", marker.display())),
         };
         for relative in previous.keys() {
             ensure!(
@@ -335,7 +337,9 @@ impl DataSnapshot {
                                 .expect("validated captured credential")
                                 .1;
                             let relative = PathBuf::from("device-trust").join(&alias);
-                            crate::private_file::write_atomic(&destination.join(&relative), bytes)?;
+                            let target = destination.join(&relative);
+                            crate::private_file::write_atomic(&target, bytes)
+                                .with_context(|| format!("保存服务凭据文件失败：{}", target.display()))?;
                             published
                                 .insert(relative, hex::encode(Sha256::digest(bytes.as_slice())));
                             *path = alias;
@@ -345,8 +349,14 @@ impl DataSnapshot {
                 bytes = zeroize::Zeroizing::new(serde_json::to_vec_pretty(&book)?);
             }
             let target = destination.join(relative);
-            if fs::read(&target).ok().as_deref() != Some(bytes.as_slice()) {
-                crate::private_file::write_atomic(&target, &bytes)?;
+            let changed = match fs::read(&target) {
+                Ok(current) => current != bytes.as_slice(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(error) => return Err(error).with_context(|| format!("读取已有服务配置文件失败：{}", target.display())),
+            };
+            if changed {
+                crate::private_file::write_atomic(&target, &bytes)
+                    .with_context(|| format!("写入服务配置快照失败：{}", target.display()))?;
             }
             published.insert(
                 relative.clone(),
@@ -366,13 +376,14 @@ impl DataSnapshot {
                         hex::encode(Sha256::digest(&bytes)) == *expected,
                         "Host backup was edited separately; its changed file was preserved"
                     );
-                    fs::remove_file(target)?;
+                    fs::remove_file(&target).with_context(|| format!("移除已停用的服务配置文件失败：{}", target.display()))?;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e).with_context(|| format!("读取待移除的服务配置文件失败：{}", target.display())),
             }
         }
-        crate::private_file::write_atomic(&marker, &serde_json::to_vec_pretty(&published)?)?;
+        crate::private_file::write_atomic(&marker, &serde_json::to_vec_pretty(&published)?)
+            .with_context(|| format!("保存服务配置快照清单失败：{}", marker.display()))?;
         Ok(())
     }
 }

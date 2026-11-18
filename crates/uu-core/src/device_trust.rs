@@ -16,7 +16,8 @@ use zeroize::Zeroizing;
 const MAX_FILE: u64 = 1024 * 1024;
 
 pub(crate) fn read_private(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
-    let meta = fs::symlink_metadata(path).context(uu_i18n::text("无法读取设备私有配置"))?;
+    let location = || format!("{}：{}", uu_i18n::text("无法读取设备私有配置"), path.display());
+    let meta = fs::symlink_metadata(path).with_context(location)?;
     ensure!(
         meta.is_file() && !meta.file_type().is_symlink() && meta.len() <= MAX_FILE,
         "{}", uu_i18n::format!("设备配置必须是有界普通文件，原文件已保留"));
@@ -28,9 +29,9 @@ pub(crate) fn read_private(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
             "{}", uu_i18n::format!("设备私有配置权限必须为 600"));
     }
     let mut bytes = Zeroizing::new(Vec::new());
-    fs::File::open(path)?
+    fs::File::open(path).with_context(location)?
         .take(MAX_FILE + 1)
-        .read_to_end(&mut bytes)?;
+        .read_to_end(&mut bytes).with_context(location)?;
     ensure!(bytes.len() <= MAX_FILE as usize, "{}", uu_i18n::format!("设备配置过大"));
     Ok(bytes)
 }
@@ -259,13 +260,14 @@ impl TrustStore {
     pub(crate) fn directory(&self)->&Path {&self.directory}
     pub fn open(directory: impl Into<PathBuf>) -> Result<Self> {
         let directory = directory.into();
-        fs::create_dir_all(&directory)?;
+        fs::create_dir_all(&directory).with_context(|| format!("创建设备信任目录失败：{}", directory.display()))?;
         let _lock = Self::lock_at(&directory)?;
         let path = directory.join("identity.pk8");
-        if !path.try_exists()? {
+        if !path.try_exists().with_context(|| format!("检查设备身份文件失败：{}", path.display()))? {
             let generated = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
                 .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("无法生成设备身份")))?;
-            crate::private_file::write_atomic(&path, generated.as_ref())?;
+            crate::private_file::write_atomic(&path, generated.as_ref())
+                .with_context(|| format!("保存设备身份失败：{}", path.display()))?;
         }
         let bytes = read_private(&path)?;
         let identity = Ed25519KeyPair::from_pkcs8(&bytes)
@@ -285,13 +287,14 @@ impl TrustStore {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let file = options.open(directory.join("store.lock"))?;
-        FileExt::lock_exclusive(&file)?;
+        let path = directory.join("store.lock");
+        let file = options.open(&path).with_context(|| format!("打开设备配置锁失败：{}", path.display()))?;
+        FileExt::lock_exclusive(&file).with_context(|| format!("取得设备配置锁失败：{}", path.display()))?;
         Ok(FileLock(file))
     }
     fn load(&self) -> Result<Book> {
         let path = self.directory.join("peers.json");
-        if !path.try_exists()? {
+        if !path.try_exists().with_context(|| format!("检查设备授权文件失败：{}", path.display()))? {
             return Ok(Book::default());
         }
         let book: Book = serde_json::from_slice(&read_private(&path)?)
@@ -408,6 +411,18 @@ impl TrustStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn opening_an_unusable_store_identifies_the_exact_lock_file() {
+        let root = std::env::temp_dir().join(format!("eclipse-store-error-{}", uuid::Uuid::new_v4()));
+        let path = root.join("store.lock");
+        fs::create_dir_all(&path).unwrap();
+        let error = TrustStore::open(&root).err().expect("a directory cannot be opened as the store lock");
+        assert!(format!("{error:#}").contains(path.to_str().unwrap()));
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        assert!(!root.join("identity.pk8").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn public_key_import_checks_ssh_binary_fields_and_does_not_accept_private_keys() {
         use base64::Engine;

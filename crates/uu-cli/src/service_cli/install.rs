@@ -114,7 +114,8 @@ fn verify_acl(path: &Path) -> Result<()> {
 }
 
 fn regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    let meta = fs::symlink_metadata(path)?;
+    let read = || format!("读取服务部署文件失败：{}", path.display());
+    let meta = fs::symlink_metadata(path).with_context(read)?;
     ensure!(
         meta.is_file()
             && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
@@ -122,19 +123,19 @@ fn regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
         "迁移源必须是有界普通文件"
     );
     let mut bytes = Vec::new();
-    fs::File::open(path)?
+    fs::File::open(path).with_context(read)?
         .take(limit + 1)
-        .read_to_end(&mut bytes)?;
+        .read_to_end(&mut bytes).with_context(read)?;
     ensure!(bytes.len() as u64 <= limit, "迁移源文件过大");
     Ok(bytes)
 }
 pub fn protect(path: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(path)?;
+    let meta = fs::symlink_metadata(path).with_context(|| format!("检查受保护服务路径失败：{}", path.display()))?;
     ensure!(
         meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
         "后台服务目录不能包含重解析点"
     );
-    verify_acl(path)?;
+    verify_acl(path).with_context(|| format!("核验服务路径权限失败：{}", path.display()))?;
     let descriptor = Descriptor::administrators()?;
     winok(unsafe {
         SetFileSecurityW(
@@ -145,29 +146,31 @@ pub fn protect(path: &Path) -> Result<()> {
                 | PROTECTED_DACL_SECURITY_INFORMATION,
             descriptor.0,
         )
-    })?;
+    }).with_context(|| format!("设置服务路径权限失败：{}", path.display()))?;
     Ok(())
 }
 pub fn directory(path: &Path) -> Result<()> {
-    if !path.exists() {
+    if !path.try_exists().with_context(|| format!("检查服务目录失败：{}", path.display()))? {
         let descriptor = Descriptor::administrators()?;
         let attributes = descriptor.attributes();
-        winok(unsafe { CreateDirectoryW(wide(path.as_os_str()).as_ptr(), &attributes) })?;
+        winok(unsafe { CreateDirectoryW(wide(path.as_os_str()).as_ptr(), &attributes) })
+            .with_context(|| format!("创建受保护服务目录失败：{}", path.display()))?;
     }
     protect(path)
 }
 fn protect_tree(path: &Path) -> Result<()> {
     protect(path)?;
     if path.is_dir() {
-        for item in fs::read_dir(path)? {
-            protect_tree(&item?.path())?;
+        let list = || format!("枚举受保护服务目录失败：{}", path.display());
+        for item in fs::read_dir(path).with_context(list)? {
+            protect_tree(&item.with_context(list)?.path())?;
         }
     }
     Ok(())
 }
 fn copy(source: &Path, destination: &Path) -> Result<()> {
     let bytes = regular(source, 1024 * 1024)?;
-    fs::write(destination, bytes)?;
+    fs::write(destination, bytes).with_context(|| format!("写入服务部署文件失败：{}", destination.display()))?;
     protect(destination)
 }
 pub fn install(source: PathBuf) -> Result<()> {
@@ -436,6 +439,15 @@ pub(super) fn relocate_profile(request: uu_core::config::ProfileRelocation, appl
     }
     Ok(())
 }
+fn require_host_profile_files(root: &Path) -> Result<()> {
+    for name in ["device-trust/identity.pk8", "device-trust/connections.json"] {
+        let path = root.join(name);
+        let meta = fs::metadata(&path)
+            .with_context(|| format!("检查服务配置必需文件失败：{}", path.display()))?;
+        ensure!(meta.is_file(), "服务配置需要普通文件：{}", path.display());
+    }
+    Ok(())
+}
 fn install_from_profile_locked(source: PathBuf, package: PathBuf, require_interactive: bool, independent: bool, defer_if_busy: bool) -> Result<bool> {
     let mut session = 0;
     winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) })?;
@@ -541,24 +553,20 @@ fn install_from_profile_locked(source: PathBuf, package: PathBuf, require_intera
     }
     for (name, bytes) in files {
         let path = destination.join(name);
-        if path.exists()
-            && hex::encode(Sha256::digest(regular(&path, 512 * 1024 * 1024)?))
-                == hashes[name].as_str().unwrap_or("")
-        {
+        if path.try_exists().with_context(|| format!("检查已部署的服务程序失败：{}", path.display()))? {
+            ensure!(
+                hex::encode(Sha256::digest(regular(&path, 512 * 1024 * 1024)?)) == hashes[name].as_str().unwrap_or(""),
+                "该版本的受保护程序已有不同内容，请保留原文件并重新获取有效安装包：{}", path.display()
+            );
             continue;
         }
-        ensure!(
-            !path.exists(),
-            "该版本的受保护程序已有不同内容，请保留原目录并重新获取有效安装包"
-        );
-        fs::write(&path, bytes)?;
+        fs::write(&path, bytes).with_context(|| format!("写入服务程序文件失败：{}", path.display()))?;
         protect(&path)?;
     }
-    fs::write(
-        destination.join("version.json"),
-        serde_json::to_vec(&manifest)?,
-    )?;
-    protect(&destination.join("version.json"))?;
+    let version_file = destination.join("version.json");
+    fs::write(&version_file, serde_json::to_vec(&manifest)?)
+        .with_context(|| format!("写入服务版本清单失败：{}", version_file.display()))?;
+    protect(&version_file)?;
     let reserve = needs_idle(previous_profile.as_ref().map(|p|p.info.id.as_str()), profile.as_ref().map(|p|p.info.id.as_str()), defer_if_busy);
     let mut idle = if before == Some(SERVICE_RUNNING) && reserve { Some(IdleReservation::acquire(previous_profile.as_ref())?) } else { None };
     directory(&paths.root.join("data"))?;
@@ -567,18 +575,19 @@ fn install_from_profile_locked(source: PathBuf, package: PathBuf, require_intera
     if let Some(profile) = &profile {
         let profile_root = paths.root.join("profiles").join(profile.storage_id());
         for dir in [paths.root.join("profiles"), profile_root.clone(), profile_root.join("data"), profile_root.join("state"), config.state_dir.clone()] { directory(&dir)?; }
-        if !config.data_dir.try_exists()? {
+        if !config.data_dir.try_exists().with_context(|| format!("检查受保护服务配置目录失败：{}", config.data_dir.display()))? {
             let legacy_seed = !independent && existing && previous_profile.is_none();
             let seed = if legacy_seed {
                 paths.config().data_dir
             } else { profile.source() };
-            ensure!(seed.join("device-trust/identity.pk8").is_file() && seed.join("device-trust/connections.json").is_file(),
-                "请先在对应程序目录准备服务配置，再启用此服务");
             let stage = profile_root.join("data").join(format!(".prepare-{}", uuid::Uuid::new_v4()));
             directory(&stage)?;
             let staged = (|| -> Result<()> {
-                let snapshot=if legacy_seed {uu_core::service_profile::DataSnapshot::capture(&seed)?}
-                    else {as_source_user(&installed.owner_sid,||uu_core::service_profile::DataSnapshot::capture(&seed))?};
+                let capture = || {
+                    require_host_profile_files(&seed).context("请先在对应程序目录准备服务配置，再启用此服务")?;
+                    uu_core::service_profile::DataSnapshot::capture(&seed)
+                };
+                let snapshot = if legacy_seed { capture()? } else { as_source_user(&installed.owner_sid, capture)? };
                 snapshot.publish(&stage)?;
                 protect_tree(&stage)?;
                 // Rebase owned absolute credentials to the final directory
@@ -593,13 +602,14 @@ fn install_from_profile_locked(source: PathBuf, package: PathBuf, require_intera
                     Ok(())
                 })?;
                 protect_tree(&stage)?;
-                fs::rename(&stage, &config.data_dir)?;
+                fs::rename(&stage, &config.data_dir)
+                    .with_context(|| format!("启用准备好的服务配置目录失败：{}", config.data_dir.display()))?;
                 Ok(())
             })();
             if stage.exists() { let _ = fs::remove_dir_all(&stage); }
             staged?;
         }
-        ensure!(config.at("device-trust/identity.pk8").is_file() && config.at("device-trust/connections.json").is_file(), "服务配置不完整，原数据已保留");
+        require_host_profile_files(&config.data_dir).context("核验服务配置失败，原数据已保留")?;
         uu_core::device_trust::TrustStore::open(config.at("device-trust"))?;
         uu_core::device_book::Store::open(config.at("device-trust"))?.read()?;
     } else {
@@ -894,7 +904,8 @@ fn import_plugins_locked(source: PathBuf) -> Result<()> {
     let package:serde_json::Value=serde_json::from_slice(&regular(&target_program.join("version.json"),1024*1024)?)?;
     ensure!(package["plugin_sdk_id"].as_str()==Some(uu_plugin_sdk::SDK_ID),"请先更新后台服务程序，再同步匹配的插件");
     let config=Config{data_dir:source.clone(),state_dir:source.join("state"),signaling_host:String::new()};
-    let preferences=uu_core::plugins::Preferences::load(&config)?;
+    let preferences=uu_core::plugins::Preferences::load(&config)
+        .with_context(|| format!("读取插件配置失败：{}", config.at(uu_core::plugins::Preferences::FILE).display()))?;
     let source_program=std::env::current_exe()?.parent().context("missing application directory")?.to_owned();
     // Disabled extensions do not participate in a service update. In
     // particular, an empty opt-in set must not surface SDK/discovery failures.
@@ -924,13 +935,23 @@ fn import_plugins_locked(source: PathBuf) -> Result<()> {
         writes.push((program.join("plugin.json"),serde_json::to_vec_pretty(&plugin.manifest)?));
         for relative in &plugin.manifest.data_files {
             let from=source.join("plugins").join(&plugin.manifest.id).join(relative);
-            if from.try_exists()? {let bytes=regular(&from,1024*1024)?;total+=bytes.len();ensure!(total<=512*1024*1024,"插件同步超过 512 MiB");writes.push((data.join(relative),bytes));}
+            if from.try_exists().with_context(|| format!("检查插件数据文件失败：{}", from.display()))? {
+                let bytes=regular(&from,1024*1024)?;
+                total+=bytes.len();
+                ensure!(total<=512*1024*1024,"插件同步超过 512 MiB");
+                writes.push((data.join(relative),bytes));
+            }
         }
     }
     writes.push((paths.runtime_config()?.at(uu_core::plugins::Preferences::FILE),serde_json::to_vec_pretty(&preferences)?));
     // Validate every source before stopping a running host. Preserve old files
     // so a failed synchronization can restore its exact previous contents.
-    let before=writes.iter().map(|(path,_)|Ok((path.clone(),if path.try_exists()? {Some(regular(path,256*1024*1024)?)}else{None}))).collect::<Result<Vec<_>>>()?;
+    let before = writes.iter().map(|(path, _)| {
+        let previous = if path.try_exists().with_context(|| format!("检查已部署的插件文件失败：{}", path.display()))? {
+            Some(regular(path,256*1024*1024)?)
+        } else { None };
+        Ok((path.clone(), previous))
+    }).collect::<Result<Vec<_>>>()?;
     if writes.iter().zip(&before).all(|((_,planned),(_,previous))|previous.as_ref()==Some(planned)) {
         return Ok(());
     }
@@ -940,7 +961,11 @@ fn import_plugins_locked(source: PathBuf) -> Result<()> {
     }
     let result = (|| -> Result<()> {
         for path in directories {directory(&path)?;}
-        for (path,bytes) in &writes {uu_core::plugin_backend::write_private_file(path,bytes)?;protect(path)?;}
+        for (path,bytes) in &writes {
+            uu_core::plugin_backend::write_private_file(path,bytes)
+                .with_context(|| format!("写入后台插件文件失败：{}", path.display()))?;
+            protect(path)?;
+        }
         Ok(())
     })();
     if result.is_err() {

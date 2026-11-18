@@ -11,8 +11,11 @@ pub(crate) fn snapshot(root: &Path) -> io::Result<BTreeMap<PathBuf, [u8; 32]>> {
 }
 
 fn snapshot_with_cache(root: &Path, include_cache: bool, excluded_subtree: Option<&Path>) -> io::Result<BTreeMap<PathBuf, [u8; 32]>> {
+    fn read_error(path: &Path, cause: io::Error) -> io::Error {
+        io::Error::new(cause.kind(), format!("读取配置快照失败（{}）：{cause}", path.display()))
+    }
     for ancestor in root.ancestors() {
-        let metadata = fs::symlink_metadata(ancestor)?;
+        let metadata = fs::symlink_metadata(ancestor).map_err(|e| read_error(ancestor, e))?;
         if metadata.file_type().is_symlink() { return Err(io::Error::other("configuration path contains a symbolic link")); }
         #[cfg(windows)] {
             use std::os::windows::fs::MetadataExt;
@@ -20,8 +23,8 @@ fn snapshot_with_cache(root: &Path, include_cache: bool, excluded_subtree: Optio
         }
     }
     fn walk(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, [u8; 32]>, total: &mut u64, include_cache: bool, excluded_subtree: Option<&Path>) -> io::Result<()> {
-        for entry in fs::read_dir(directory)? {
-            let entry = entry?;
+        for entry in fs::read_dir(directory).map_err(|e| read_error(directory, e))? {
+            let entry = entry.map_err(|e| read_error(directory, e))?;
             let path = entry.path();
             let relative = path.strip_prefix(root).map_err(io::Error::other)?;
             if Some(relative) == excluded_subtree { continue; }
@@ -31,7 +34,7 @@ fn snapshot_with_cache(root: &Path, include_cache: bool, excluded_subtree: Optio
             if (!include_cache && relative == Path::new("cache")) || relative == Path::new(".eclipse-snapshot.json") || name.ends_with(".lock")
                 || (relative.components().count() == 1 && (name.starts_with("native-stream-workspace-") || name.starts_with("stream-workspace-v3-")))
                 || (relative.parent() == Some(Path::new("device-trust")) && name.starts_with("launch-") && name.ends_with(".json")) { continue; }
-            let metadata = fs::symlink_metadata(&path)?;
+            let metadata = fs::symlink_metadata(&path).map_err(|e| read_error(&path, e))?;
             if metadata.file_type().is_symlink() {
                 return Err(io::Error::other("legacy configuration contains a symbolic link; original data was preserved"));
             }
@@ -43,12 +46,12 @@ fn snapshot_with_cache(root: &Path, include_cache: bool, excluded_subtree: Optio
             else if metadata.is_file() {
                 *total = total.saturating_add(metadata.len());
                 if files.len() >= MAX_FILES || *total > MAX_BYTES { return Err(io::Error::other("legacy configuration exceeds migration limits")); }
-                let mut file = fs::File::open(&path)?;
+                let mut file = fs::File::open(&path).map_err(|e| read_error(&path, e))?;
                 let mut digest = Sha256::new();
                 let mut buffer = [0u8; 16 * 1024];
                 let mut read = 0u64;
                 loop {
-                    let length = file.read(&mut buffer)?;
+                    let length = file.read(&mut buffer).map_err(|e| read_error(&path, e))?;
                     if length == 0 { break; }
                     read += length as u64;
                     if read > metadata.len() { return Err(io::Error::other("legacy configuration changed while reading")); }
