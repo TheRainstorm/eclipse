@@ -1,5 +1,5 @@
 use aes_gcm::aead::generic_array::GenericArray;
-use aes_gcm::aead::{Aead, Payload};
+use aes_gcm::aead::{Aead, AeadInPlace, Payload};
 use aes_gcm::{Aes128Gcm, KeyInit, Nonce};
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{Bytes, BytesMut};
@@ -32,24 +32,18 @@ impl Cipher for CipherAeadAesGcm {
         header: &rtp::header::Header,
         roc: u32,
     ) -> Result<Bytes> {
-        // Grow the given buffer to fit the output.
         let header_len = header.marshal_size();
+        if payload.len() < header_len {
+            return Err(Error::SrtpTooSmall(payload.len(), header_len));
+        }
         let mut writer = BytesMut::with_capacity(payload.len() + self.auth_tag_len());
-
-        // Copy header unencrypted.
-        writer.extend_from_slice(&payload[..header_len]);
-
+        writer.extend_from_slice(payload);
         let nonce = self.rtp_initialization_vector(header, roc);
-
-        let encrypted = self.srtp_cipher.encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: &payload[header_len..],
-                aad: &writer,
-            },
-        )?;
-
-        writer.extend(encrypted);
+        let (aad, body) = writer.split_at_mut(header_len);
+        let tag = self
+            .srtp_cipher
+            .encrypt_in_place_detached(Nonce::from_slice(&nonce), aad, body)?;
+        writer.extend_from_slice(&tag);
         Ok(writer.freeze())
     }
 
@@ -59,24 +53,20 @@ impl Cipher for CipherAeadAesGcm {
         header: &rtp::header::Header,
         roc: u32,
     ) -> Result<Bytes> {
-        if ciphertext.len() < self.auth_tag_len() {
+        let header_len = header.marshal_size();
+        if ciphertext.len() < header_len + self.auth_tag_len() {
             return Err(Error::ErrFailedToVerifyAuthTag);
         }
-
+        let (packet, tag) = ciphertext.split_at(ciphertext.len() - self.auth_tag_len());
+        let mut writer = BytesMut::from(packet);
+        let (aad, body) = writer.split_at_mut(header_len);
         let nonce = self.rtp_initialization_vector(header, roc);
-        let payload_offset = header.marshal_size();
-        let decrypted_msg: Vec<u8> = self.srtp_cipher.decrypt(
+        self.srtp_cipher.decrypt_in_place_detached(
             Nonce::from_slice(&nonce),
-            Payload {
-                msg: &ciphertext[payload_offset..],
-                aad: &ciphertext[..payload_offset],
-            },
+            aad,
+            body,
+            aes_gcm::Tag::from_slice(tag),
         )?;
-
-        let mut writer = BytesMut::with_capacity(payload_offset + decrypted_msg.len());
-        writer.extend_from_slice(&ciphertext[..payload_offset]);
-        writer.extend(decrypted_msg);
-
         Ok(writer.freeze())
     }
 
@@ -192,8 +182,8 @@ impl CipherAeadAesGcm {
         &self,
         header: &rtp::header::Header,
         roc: u32,
-    ) -> Vec<u8> {
-        let mut iv = vec![0u8; 12];
+    ) -> [u8; 12] {
+        let mut iv = [0u8; 12];
         BigEndian::write_u32(&mut iv[2..], header.ssrc);
         BigEndian::write_u32(&mut iv[6..], roc);
         BigEndian::write_u16(&mut iv[10..], header.sequence_number);

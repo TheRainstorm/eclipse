@@ -1,4 +1,4 @@
-# Local SRTP rollover patch
+# Local SRTP patches
 
 Base: crates.io `webrtc-srtp` 0.13.0, checksum `fbec5da43a62c228d321d93fb12cc9b4d9c03c9b736b0c215be89d8bd0774cfe`. Upstream MIT license is retained.
 
@@ -21,3 +21,7 @@ The option API and default session window remain unchanged. The application sepa
 Tests include both cipher profiles with a first late previous-cycle packet in the default 64-packet window, forged repairs, immediate replay rejection, non-power-of-two bitmap sizes, large jumps, multiple full sequence cycles and failed authentication checks that never advance the window. Original cipher and session vectors remain part of the standalone suite.
 
 Standalone verification now passes 31 tests (the original 25 plus six local regressions), including a 250,000-event deterministic comparison with a full-index reference model.
+
+## AES-GCM RTP packet buffers
+
+The RTP cipher copies each input packet into its output buffer once and runs AES-GCM in place on the payload. The unchanged header supplies the associated data, the 12-byte nonce lives on the stack, and decryption returns the output only after the tag verifies. This removes intermediate payload allocations and copies on both ends of every AES-GCM RTP stream.
