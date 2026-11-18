@@ -620,6 +620,12 @@ impl super::App {
                 Ok(value)=>value,
                 Err(error)=>{self.settings_storage_error=true;self.set_settings_notice(error);return;},
             };
+            // Reusing an existing profile loads its own preferences after restart;
+            // never merge this window's draft or change OS startup registration.
+            if matches!(destination.as_ref(), Some(super::storage_ui::Destination::Existing(_))) {
+                self.storage.begin(destination.unwrap(), ctx);
+                return;
+            }
             if let Err(error) = self.settings_draft.validate() {
                 self.settings_storage_error = true;
                 self.set_settings_notice(uu_i18n::format!("无法应用：{error:#}"));

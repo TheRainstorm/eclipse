@@ -233,7 +233,7 @@ impl StreamTarget {
         // Keep the parent's selected profile even if the portable marker is
         // moved while it is running or a helper executable lives elsewhere.
         if let Ok(config) = uu_core::Config::from_env() {
-            if let Some(root) = config.profile_dir() { command.env("ECLIPSE_PROFILE_DIR", root); }
+            config.apply_to_command(&mut command);
         }
         match self.connection.base() {
             ConnectionTarget::NativeLoopback => {command.arg("--self-stream");}

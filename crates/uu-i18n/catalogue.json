@@ -1,4 +1,8 @@
 {
+  "使用已有配置并重启": "Use existing configuration and restart",
+  "使用旧版用户配置": "Use legacy user configuration",
+  "重启后使用已有配置：{directory}": "Use existing configuration after restart: {directory}",
+  "只切换本程序的配置位置，不复制或合并数据，现有目录和后台服务配置均保留。": "Only change this application's configuration location. No data is copied or merged; existing folders and host service configuration are preserved.",
   "保存、迁移并重启": "Save, move and restart",
   "配置目录必须是完整的绝对路径": "Enter a complete absolute path for the profile folder.",
   "无法确定当前配置，未开始迁移": "The current configuration is unavailable. No move has started.",

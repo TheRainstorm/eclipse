@@ -9,10 +9,16 @@ use std::{
 };
 
 type Choice = Result<Option<PathBuf>, String>;
+#[derive(Clone)]
+pub(super) enum Destination {
+    Relocate(PathBuf),
+    Existing(uu_core::Config),
+}
 #[derive(Default)]
 pub(super) struct Storage {
     source: Option<uu_core::Config>,
     draft: String,
+    existing: Option<uu_core::Config>,
     picker: Option<mpsc::Receiver<Choice>>,
     helper: Option<mpsc::Receiver<Result<Prepared, String>>>,
     notice: String,
@@ -28,6 +34,11 @@ impl Storage {
         value
     }
     pub fn dirty(&self) -> bool {
+        if let Some(existing) = &self.existing {
+            return self.source.as_ref().is_none_or(|source| {
+                source.data_dir != existing.data_dir || source.state_dir != existing.state_dir
+            });
+        }
         let current = self.source.as_ref().and_then(|c| c.profile_dir());
         match current {
             Some(path) => Path::new(self.draft.trim()) != path,
@@ -38,7 +49,9 @@ impl Storage {
         self.picker.is_some() || self.helper.is_some() || self.restarting
     }
     pub fn saving_label(&self) -> &'static str {
-        uu_i18n::text(if self.dirty() {
+        uu_i18n::text(if self.existing.is_some() && self.dirty() {
+            "使用已有配置并重启"
+        } else if self.dirty() {
             "保存、迁移并重启"
         } else {
             "保存并应用"
@@ -48,6 +61,7 @@ impl Storage {
         if self.busy() {
             return;
         }
+        self.existing = None;
         self.draft = self
             .source
             .as_ref()
@@ -66,6 +80,7 @@ impl Storage {
             .and_then(|exe| uu_core::Config::default_profile_directory(&exe))
         {
             Ok(path) => {
+                self.existing = None;
                 self.draft = path.display().to_string();
                 self.notice.clear();
             }
@@ -74,17 +89,20 @@ impl Storage {
         #[cfg(not(windows))]
         self.discard();
     }
-    pub fn destination(&self) -> Result<Option<PathBuf>, String> {
+    pub fn destination(&self) -> Result<Option<Destination>, String> {
         if !self.dirty() {
             return Ok(None);
+        }
+        if let Some(existing) = &self.existing {
+            return Ok(Some(Destination::Existing(existing.clone())));
         }
         let path = PathBuf::from(self.draft.trim());
         if !path.is_absolute() {
             return Err(uu_i18n::text("配置目录必须是完整的绝对路径").into());
         }
-        Ok(Some(path))
+        Ok(Some(Destination::Relocate(path)))
     }
-    pub fn begin(&mut self, destination: PathBuf, ctx: &egui::Context) {
+    pub fn begin(&mut self, destination: Destination, ctx: &egui::Context) {
         if self.busy() {
             return;
         }
@@ -97,8 +115,15 @@ impl Storage {
         match std::thread::Builder::new()
             .name("eclipse-profile-prepare".into())
             .spawn(move || {
-                let result = super::storage_relocation::prepare(&source, &destination)
-                    .map_err(|e| format!("{e:#}"));
+                let result = match destination {
+                    Destination::Relocate(path) => {
+                        super::storage_relocation::prepare(&source, &path)
+                    }
+                    Destination::Existing(config) => {
+                        super::storage_relocation::prepare_selection(&source, &config)
+                    }
+                }
+                .map_err(|e| format!("{e:#}"));
                 let _ = tx.send(result);
                 context.request_repaint();
             }) {
@@ -116,6 +141,7 @@ impl Storage {
             self.picker = None;
             match result {
                 Ok(Some(path)) => {
+                    self.existing = None;
                     self.draft = path.display().to_string();
                     self.notice.clear();
                 }
@@ -192,11 +218,16 @@ impl Storage {
         ui.add_enabled_ui(!self.busy(), |ui| {
             ui.horizontal(|ui| {
                 let width = (ui.available_width() - 90.0).max(120.0);
-                ui.add(
-                    super::theme::Input::new(&mut self.draft)
-                        .desired_width(width)
-                        .hint_text(uu_i18n::text("选择绝对目录，内含 data 和 state")),
-                );
+                if ui
+                    .add(
+                        super::theme::Input::new(&mut self.draft)
+                            .desired_width(width)
+                            .hint_text(uu_i18n::text("选择绝对目录，内含 data 和 state")),
+                    )
+                    .changed()
+                {
+                    self.existing = None;
+                }
                 if ui
                     .add(super::theme::secondary_button(uu_i18n::text("浏览…")))
                     .clicked()
@@ -214,6 +245,22 @@ impl Storage {
                 {
                     self.reset();
                 }
+                #[cfg(windows)]
+                if ui
+                    .add(super::theme::secondary_button(uu_i18n::text(
+                        "使用旧版用户配置",
+                    )))
+                    .clicked()
+                {
+                    match uu_core::Config::legacy_user_profile() {
+                        Ok(config) => {
+                            self.draft = config.data_dir.display().to_string();
+                            self.existing = Some(config);
+                            self.notice.clear();
+                        }
+                        Err(error) => self.notice = format!("{error:#}"),
+                    }
+                }
                 if ui
                     .add(super::theme::secondary_button(uu_i18n::text(
                         "打开配置目录",
@@ -230,6 +277,21 @@ impl Storage {
         ui.add(egui::Label::new(uu_i18n::text("修改目录后，点击下方“保存、迁移并重启”。设置、设备配对、插件数据和日志会一起迁移，原目录保留。请先退出使用同一配置的其它串流窗口。")).wrap());
         #[cfg(windows)]
         ui.add(egui::Label::new(uu_i18n::text("默认目录为程序旁的 eclipse-data。后台服务正在使用时，须等待串流和显示器操作结束；迁移服务可能需要管理员确认，不会直接断开现有会话。")).wrap());
+        if let Some(existing) = &self.existing {
+            ui.add(
+                egui::Label::new(uu_i18n::format!(
+                    "重启后使用已有配置：{directory}",
+                    directory = existing.data_dir.display()
+                ))
+                .wrap(),
+            );
+            ui.add(
+                egui::Label::new(uu_i18n::text(
+                    "只切换本程序的配置位置，不复制或合并数据，现有目录和后台服务配置均保留。",
+                ))
+                .wrap(),
+            );
+        }
         if !self.notice.is_empty() {
             let color = if self.busy() {
                 super::theme::palette(ui.visuals()).muted
@@ -280,11 +342,13 @@ mod tests {
         let source = config();
         let mut state = Storage::new(Some(&source));
         assert!(!state.dirty());
-        assert_eq!(state.destination().unwrap(), None);
+        assert!(state.destination().unwrap().is_none());
         let destination = std::env::temp_dir().join("eclipse-storage-ui-new");
         state.draft = destination.display().to_string();
         assert!(state.dirty());
-        assert_eq!(state.destination().unwrap(), Some(destination));
+        assert!(
+            matches!(state.destination().unwrap(), Some(Destination::Relocate(path)) if path == destination)
+        );
         assert_eq!(state.source.as_ref().unwrap().data_dir, source.data_dir);
         state.discard();
         assert!(!state.dirty());
@@ -320,5 +384,27 @@ mod tests {
         assert!(!state.dirty());
         state.draft = "relative-profile".into();
         assert!(state.destination().is_err());
+    }
+    #[test]
+    fn existing_profile_choice_is_a_draft_and_cancel_never_migrates_or_changes_live_paths() {
+        let source = config();
+        let existing = uu_core::Config {
+            data_dir: std::env::temp_dir().join("eclipse-storage-ui-legacy"),
+            state_dir: std::env::temp_dir().join("eclipse-storage-ui-legacy/state"),
+            signaling_host: String::new(),
+        };
+        let mut state = Storage::new(Some(&source));
+        state.existing = Some(existing.clone());
+        state.draft = existing.data_dir.display().to_string();
+        assert!(state.dirty());
+        assert!(
+            matches!(state.destination().unwrap(), Some(Destination::Existing(value))
+            if value.data_dir == existing.data_dir && value.state_dir == existing.state_dir)
+        );
+        assert_eq!(state.source.as_ref().unwrap().data_dir, source.data_dir);
+        state.discard();
+        assert!(state.destination().unwrap().is_none());
+        assert!(state.existing.is_none());
+        assert_eq!(state.source.as_ref().unwrap().data_dir, source.data_dir);
     }
 }

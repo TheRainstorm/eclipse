@@ -16,8 +16,58 @@ static RESTART_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
-    relocation: ProfileRelocation,
+    change: Change,
     parent_pid: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum Change {
+    Relocate { request: ProfileRelocation },
+    Select { source: Config, destination: Config },
+}
+impl Change {
+    fn source(&self) -> &Config {
+        match self {
+            Self::Relocate { request } => &request.source,
+            Self::Select { source, .. } => source,
+        }
+    }
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Relocate { request } => request.validate(),
+            Self::Select {
+                source,
+                destination,
+            } => {
+                anyhow::ensure!(
+                    source.data_dir.is_absolute() && source.state_dir.is_absolute(),
+                    "当前配置路径无效"
+                );
+                let existing = Config::existing_flat_profile(&destination.data_dir)?;
+                anyhow::ensure!(
+                    existing.state_dir == destination.state_dir,
+                    "旧版配置状态目录不匹配"
+                );
+                Ok(())
+            }
+        }
+    }
+    fn execute(&self, executable: &std::path::Path) -> Result<Config> {
+        self.validate()?;
+        match self {
+            Self::Relocate { request } => request.execute(executable),
+            Self::Select {
+                source,
+                destination,
+            } => {
+                // No data is copied or merged. Retire the source launcher first,
+                // then publish only this installation's explicit selection.
+                source.select_existing_profile(executable, destination)?;
+                Ok(destination.clone())
+            }
+        }
+    }
 }
 
 /// Until the UI receives READY, dropping this guard cancels only its own helper.
@@ -39,9 +89,23 @@ impl Drop for Prepared {
 }
 
 pub(super) fn prepare(source: &Config, destination: &std::path::Path) -> Result<Prepared> {
-    let relocation = ProfileRelocation::prepare(source, destination)?;
+    prepare_change(Change::Relocate {
+        request: ProfileRelocation::prepare(source, destination)?,
+    })
+}
+
+pub(super) fn prepare_selection(source: &Config, destination: &Config) -> Result<Prepared> {
+    source.prepare_existing_selection()?;
+    prepare_change(Change::Select {
+        source: source.clone(),
+        destination: destination.clone(),
+    })
+}
+
+fn prepare_change(change: Change) -> Result<Prepared> {
+    change.validate()?;
     let payload = serde_json::to_vec(&Request {
-        relocation,
+        change,
         parent_pid: std::process::id(),
     })?;
     if payload.len() as u64 > REQUEST_LIMIT {
@@ -103,6 +167,7 @@ fn read_request(reader: impl Read) -> Result<Request> {
     if request.parent_pid == 0 || request.parent_pid == std::process::id() {
         bail!("配置迁移请求的原进程无效");
     }
+    request.change.validate()?;
     Ok(request)
 }
 
@@ -137,7 +202,7 @@ fn helper() -> Result<()> {
         return Ok(());
     }
     let mut command = Command::new(&executable);
-    match request.relocation.execute(&executable) {
+    match request.change.execute(&executable) {
         Ok(_) => {
             command
                 .env_remove("ECLIPSE_PROFILE_DIR")
@@ -145,7 +210,7 @@ fn helper() -> Result<()> {
                 .env_remove(ERROR_ENV);
         }
         Err(error) => {
-            request.relocation.source.apply_to_command(&mut command);
+            request.change.source().apply_to_command(&mut command);
             command.env(
                 ERROR_ENV,
                 format!("配置迁移未完成，已重新打开原配置：{error:#}"),
@@ -296,9 +361,11 @@ mod tests {
             signaling_host: String::new(),
         };
         let bytes = serde_json::to_vec(&Request {
-            relocation: ProfileRelocation {
-                source: config,
-                destination: "new".into(),
+            change: Change::Relocate {
+                request: ProfileRelocation {
+                    source: config,
+                    destination: "new".into(),
+                },
             },
             parent_pid: std::process::id(),
         })
@@ -309,5 +376,36 @@ mod tests {
     fn a_live_parent_handle_does_not_report_process_exit() {
         let parent = Parent::open(std::process::id()).unwrap();
         assert!(parent.wait(Duration::ZERO).is_err());
+    }
+    #[test]
+    fn existing_selection_rejects_a_mismatched_state_before_ready_or_publication() {
+        let root =
+            std::env::temp_dir().join(format!("eclipse-existing-choice-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("gui-settings.json"), b"existing").unwrap();
+        let destination = Config::existing_flat_profile(&root).unwrap();
+        let source = Config::in_profile(&root.join("portable"));
+        let request = Request {
+            change: Change::Select {
+                source: source.clone(),
+                destination: destination.clone(),
+            },
+            parent_pid: u32::MAX,
+        };
+        let valid = serde_json::to_vec(&request).unwrap();
+        assert!(read_request(valid.as_slice()).is_ok());
+        let mut wrong = destination;
+        wrong.state_dir = root.join("wrong-state");
+        let request = Request {
+            change: Change::Select {
+                source,
+                destination: wrong,
+            },
+            parent_pid: u32::MAX,
+        };
+        let invalid = serde_json::to_vec(&request).unwrap();
+        assert!(read_request(invalid.as_slice()).is_err());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

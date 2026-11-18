@@ -70,23 +70,21 @@ impl Config {
                 return config.with_process_lease();
             }
         }
-        static PROFILE: OnceLock<Result<Option<PathBuf>, String>> = OnceLock::new();
+        static PROFILE: OnceLock<Result<Option<Config>, String>> = OnceLock::new();
         let profile = PROFILE.get_or_init(|| {
             let selected = std::env::var_os("ECLIPSE_PROFILE_DIR");
             let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-            let root = if selected.is_none() {
-                read_profile_selection(&Self::profile_selection_file(&executable).map_err(|e|e.to_string())?)
-                    .map_err(|e|e.to_string())?
-            } else { None };
-            profile_directory(selected.as_deref().or_else(||root.as_deref().map(Path::as_os_str)), &executable).map_err(|e| match e {
-                CoreError::Config(message) => message,
-                other => other.to_string(),
-            })
+            selected_profile(
+                selected.as_deref(),
+                &executable,
+                &Self::profile_selection_file(&executable).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
         });
         match profile {
-            Ok(Some(root)) => return Self::in_profile(root).with_process_lease(),
+            Ok(Some(config)) => return config.clone().with_process_lease(),
             Err(error) => return Err(CoreError::Config(error.clone())),
-            Ok(None) => {},
+            Ok(None) => {}
         }
         let home = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
@@ -177,9 +175,76 @@ impl Config {
 
     pub fn save_profile_selection(executable: &Path, root: &Path) -> anyhow::Result<()> {
         anyhow::ensure!(root.is_absolute(), "profile directory must be absolute");
-        let bytes = serde_json::to_vec_pretty(&ProfileSelection { version: 1, directory: root.to_path_buf() })?;
-        crate::private_file::write_atomic(&Self::profile_selection_file(executable)?, &bytes)?;
-        Ok(())
+        save_selection(
+            &Self::profile_selection_file(executable)?,
+            &ProfileSelection {
+                version: 1,
+                directory: Some(root.to_path_buf()),
+                data_dir: None,
+                state_dir: None,
+            },
+        )
+    }
+
+    /// Explicitly reuse an existing layout without copying files or changing
+    /// the Windows host's directory-derived profile identity.
+    pub fn save_config_selection(executable: &Path, source: &Config) -> anyhow::Result<()> {
+        save_selection(
+            &Self::profile_selection_file(executable)?,
+            &ProfileSelection {
+                version: 2,
+                directory: None,
+                data_dir: Some(source.data_dir.clone()),
+                state_dir: Some(source.state_dir.clone()),
+            },
+        )
+    }
+
+    /// The old Windows user layout stores settings directly in this folder.
+    /// This is an explicit recovery choice, never a default-storage fallback.
+    pub fn existing_flat_profile(directory: &Path) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            directory.is_absolute() && directory.is_dir(),
+            "已有配置目录不存在或不是绝对目录"
+        );
+        anyhow::ensure!(
+            directory.join("gui-settings.json").is_file()
+                || directory.join("device-trust").is_dir(),
+            "所选目录中没有已有 Eclipse 配置"
+        );
+        Ok(Self {
+            data_dir: directory.to_path_buf(),
+            state_dir: directory.join("state"),
+            signaling_host: String::new(),
+        })
+    }
+
+    pub fn prepare_existing_selection(&self) -> anyhow::Result<()> {
+        crate::profile_storage::no_other_processes(&self.data_dir)
+    }
+
+    /// Called by the restart helper after the old launcher has actually exited.
+    pub fn select_existing_profile(
+        &self,
+        executable: &Path,
+        destination: &Config,
+    ) -> anyhow::Result<()> {
+        let existing = Self::existing_flat_profile(&destination.data_dir)?;
+        anyhow::ensure!(
+            existing.state_dir == destination.state_dir,
+            "旧版配置状态目录不匹配"
+        );
+        let _lease = crate::profile_storage::profile_lease(&self.data_dir, true)?;
+        Self::save_config_selection(executable, destination)
+    }
+
+    #[cfg(windows)]
+    pub fn legacy_user_profile() -> anyhow::Result<Self> {
+        let directory = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("无法确定旧版用户配置目录"))?
+            .join("Eclipse");
+        Self::existing_flat_profile(&directory)
     }
 
     /// None for legacy user storage and the protected Windows service store.
@@ -243,9 +308,57 @@ fn profile_directory(explicit: Option<&OsStr>, executable: &Path) -> Result<Opti
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProfileSelection { version: u32, directory: PathBuf }
+struct ProfileSelection {
+    version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    directory: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state_dir: Option<PathBuf>,
+}
+impl ProfileSelection {
+    fn config(&self) -> anyhow::Result<Config> {
+        let config = match (
+            self.version,
+            &self.directory,
+            &self.data_dir,
+            &self.state_dir,
+        ) {
+            (1, Some(root), None, None) if root.is_absolute() => Config::in_profile(root),
+            (2, None, Some(data), Some(state)) if data.is_absolute() && state.is_absolute() => {
+                Config {
+                    data_dir: data.clone(),
+                    state_dir: state.clone(),
+                    signaling_host: String::new(),
+                }
+            }
+            _ => anyhow::bail!("invalid profile selection"),
+        };
+        Ok(config)
+    }
+}
 
-fn read_profile_selection(path: &Path) -> anyhow::Result<Option<PathBuf>> {
+fn save_selection(path: &Path, selected: &ProfileSelection) -> anyhow::Result<()> {
+    selected.config()?;
+    crate::private_file::write_atomic(path, &serde_json::to_vec_pretty(selected)?)?;
+    Ok(())
+}
+
+fn selected_profile(
+    explicit: Option<&OsStr>,
+    executable: &Path,
+    selection_file: &Path,
+) -> anyhow::Result<Option<Config>> {
+    if explicit.is_none() {
+        if let Some(config) = read_profile_selection(selection_file)? {
+            return Ok(Some(config));
+        }
+    }
+    Ok(profile_directory(explicit, executable)?.map(|root| Config::in_profile(&root)))
+}
+
+fn read_profile_selection(path: &Path) -> anyhow::Result<Option<Config>> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -253,10 +366,12 @@ fn read_profile_selection(path: &Path) -> anyhow::Result<Option<PathBuf>> {
     };
     let mut bytes = Vec::new();
     file.take(16 * 1024 + 1).read_to_end(&mut bytes)?;
-    anyhow::ensure!(bytes.len() <= 16 * 1024, "profile selection file is too large");
+    anyhow::ensure!(
+        bytes.len() <= 16 * 1024,
+        "profile selection file is too large"
+    );
     let selected: ProfileSelection = serde_json::from_slice(&bytes)?;
-    anyhow::ensure!(selected.version == 1 && selected.directory.is_absolute(), "invalid profile selection");
-    Ok(Some(selected.directory))
+    Ok(Some(selected.config()?))
 }
 
 /// A relocation request is prepared while the GUI is alive and performed only
@@ -402,13 +517,111 @@ mod tests {
         let directory = Directory::new();
         let selection = directory.0.join("selection.json");
         let selected = directory.0.join("my profile");
-        assert_eq!(read_profile_selection(&selection).unwrap(), None);
-        std::fs::write(&selection, serde_json::to_vec(&ProfileSelection { version:1, directory:selected.clone() }).unwrap()).unwrap();
-        assert_eq!(read_profile_selection(&selection).unwrap(), Some(selected));
+        assert!(read_profile_selection(&selection).unwrap().is_none());
+        std::fs::write(&selection, serde_json::to_vec(&ProfileSelection { version:1, directory:Some(selected.clone()), data_dir:None, state_dir:None }).unwrap()).unwrap();
+        assert_eq!(read_profile_selection(&selection).unwrap().unwrap().profile_dir(), Some(selected.as_path()));
         std::fs::write(&selection, br#"{"version":1,"directory":"relative"}"#).unwrap();
         assert!(read_profile_selection(&selection).is_err());
         std::fs::write(&selection, vec![b' ';16*1024+1]).unwrap();
         assert!(read_profile_selection(&selection).is_err());
+    }
+
+    #[test]
+    fn exact_selection_preserves_flat_identity_and_never_imports_it_by_default() {
+        let directory = Directory::new();
+        let legacy = directory.0.join("legacy-user-data");
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::write(legacy.join("gui-settings.json"), b"existing settings").unwrap();
+        let existing = Config::existing_flat_profile(&legacy).unwrap();
+        let exe = directory.0.join("app/eclipse");
+        std::fs::create_dir_all(exe.parent().unwrap().join("eclipse-data")).unwrap();
+        let selector = exe.parent().unwrap().join("selection.json");
+        let fresh = selected_profile(None, &exe, &selector).unwrap().unwrap();
+        assert_ne!(
+            fresh.data_dir, legacy,
+            "an unrelated installation must not adopt user storage"
+        );
+        save_selection(
+            &selector,
+            &ProfileSelection {
+                version: 2,
+                directory: None,
+                data_dir: Some(existing.data_dir.clone()),
+                state_dir: Some(existing.state_dir.clone()),
+            },
+        )
+        .unwrap();
+        let reopened = selected_profile(None, &exe, &selector).unwrap().unwrap();
+        assert_eq!(reopened.data_dir, legacy);
+        assert_eq!(reopened.state_dir, legacy.join("state"));
+        assert!(reopened.profile_dir().is_none());
+        assert_eq!(
+            crate::service_profile::directory_key(&reopened.data_dir).unwrap(),
+            crate::service_profile::directory_key(&existing.data_dir).unwrap()
+        );
+        assert!(!legacy.join("data").exists());
+        assert_eq!(
+            std::fs::read(legacy.join("gui-settings.json")).unwrap(),
+            b"existing settings"
+        );
+        let other = directory.0.join("other/eclipse");
+        std::fs::create_dir_all(other.parent().unwrap().join("eclipse-data")).unwrap();
+        let separate = selected_profile(
+            None,
+            &other,
+            &other.parent().unwrap().join("selection.json"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_ne!(separate.data_dir, reopened.data_dir);
+    }
+
+    #[test]
+    fn explicit_root_overrides_even_a_broken_selector_and_mixed_layouts_are_rejected() {
+        let directory = Directory::new();
+        let selector = directory.0.join("selection.json");
+        std::fs::write(&selector, b"broken selection").unwrap();
+        let explicit = directory.0.join("isolated");
+        let selected = selected_profile(
+            Some(explicit.as_os_str()),
+            &directory.0.join("eclipse"),
+            &selector,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selected.profile_dir(), Some(explicit.as_path()));
+        assert!(selected_profile(None, &directory.0.join("eclipse"), &selector).is_err());
+        let mixed = ProfileSelection {
+            version: 2,
+            directory: Some(explicit.clone()),
+            data_dir: Some(explicit.clone()),
+            state_dir: Some(explicit.join("state")),
+        };
+        assert!(save_selection(&selector, &mixed).is_err());
+        assert_eq!(std::fs::read(&selector).unwrap(), b"broken selection");
+        assert!(Config::existing_flat_profile(&explicit).is_err());
+    }
+
+    #[test]
+    fn child_command_carries_the_exact_flat_source_instead_of_adding_a_data_folder() {
+        let directory = Directory::new();
+        let source = Config {
+            data_dir: directory.0.join("old-flat"),
+            state_dir: directory.0.join("old-flat/state"),
+            signaling_host: String::new(),
+        };
+        let mut command = std::process::Command::new("eclipse");
+        command.env("ECLIPSE_PROFILE_DIR", directory.0.join("inherited-root"));
+        source.apply_to_command(&mut command);
+        let vars: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(vars.get(OsStr::new("ECLIPSE_PROFILE_DIR")), Some(&None));
+        let payload = vars
+            .get(OsStr::new("ECLIPSE_CONFIG_SOURCE"))
+            .unwrap()
+            .unwrap();
+        let child: Config = serde_json::from_str(payload.to_str().unwrap()).unwrap();
+        assert_eq!(child.data_dir, source.data_dir);
+        assert_eq!(child.state_dir, source.state_dir);
     }
 
     #[tokio::test]
