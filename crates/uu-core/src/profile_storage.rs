@@ -7,10 +7,10 @@ const MAX_FILES: usize = 8192;
 const MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
 pub(crate) fn snapshot(root: &Path) -> io::Result<BTreeMap<PathBuf, [u8; 32]>> {
-    snapshot_with_cache(root, false)
+    snapshot_with_cache(root, false, None)
 }
 
-fn snapshot_with_cache(root: &Path, include_cache: bool) -> io::Result<BTreeMap<PathBuf, [u8; 32]>> {
+fn snapshot_with_cache(root: &Path, include_cache: bool, excluded_subtree: Option<&Path>) -> io::Result<BTreeMap<PathBuf, [u8; 32]>> {
     for ancestor in root.ancestors() {
         let metadata = fs::symlink_metadata(ancestor)?;
         if metadata.file_type().is_symlink() { return Err(io::Error::other("configuration path contains a symbolic link")); }
@@ -19,11 +19,12 @@ fn snapshot_with_cache(root: &Path, include_cache: bool) -> io::Result<BTreeMap<
             if metadata.file_attributes() & 0x400 != 0 { return Err(io::Error::other("configuration path contains a reparse point")); }
         }
     }
-    fn walk(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, [u8; 32]>, total: &mut u64, include_cache: bool) -> io::Result<()> {
+    fn walk(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, [u8; 32]>, total: &mut u64, include_cache: bool, excluded_subtree: Option<&Path>) -> io::Result<()> {
         for entry in fs::read_dir(directory)? {
             let entry = entry?;
             let path = entry.path();
             let relative = path.strip_prefix(root).map_err(io::Error::other)?;
+            if Some(relative) == excluded_subtree { continue; }
             let name = entry.file_name();
             let name = name.to_string_lossy();
             // Cache and IPC/lock state have process ownership, not profile ownership.
@@ -38,7 +39,7 @@ fn snapshot_with_cache(root: &Path, include_cache: bool) -> io::Result<BTreeMap<
             { use std::os::windows::fs::MetadataExt;
                 if metadata.file_attributes() & 0x400 != 0 { return Err(io::Error::other("legacy configuration contains a reparse point")); }
             }
-            if metadata.is_dir() { walk(root, &path, files, total, include_cache)?; }
+            if metadata.is_dir() { walk(root, &path, files, total, include_cache, excluded_subtree)?; }
             else if metadata.is_file() {
                 *total = total.saturating_add(metadata.len());
                 if files.len() >= MAX_FILES || *total > MAX_BYTES { return Err(io::Error::other("legacy configuration exceeds migration limits")); }
@@ -59,7 +60,7 @@ fn snapshot_with_cache(root: &Path, include_cache: bool) -> io::Result<BTreeMap<
         Ok(())
     }
     let mut files = BTreeMap::new();
-    walk(root, root, &mut files, &mut 0, include_cache)?;
+    walk(root, root, &mut files, &mut 0, include_cache, excluded_subtree)?;
     Ok(files)
 }
 
@@ -138,17 +139,24 @@ pub(crate) fn relocate(source: &crate::Config, destination: &Path) -> anyhow::Re
     let temporary = parent.join(format!(".eclipse-relocate-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&temporary)?;
     let result = (|| -> anyhow::Result<()> {
-        for (original, name) in [(&source.data_dir, "data"), (&source.state_dir, "state")] {
+        let data = absolute_path(&source.data_dir)?;
+        let state = absolute_path(&source.state_dir)?;
+        // A flat Windows profile owns its nested state tree separately. Walk it
+        // only as the state root, where the normal runtime exclusions apply.
+        for (original, name, nested) in [
+            (&source.data_dir, "data", state.strip_prefix(&data).ok()),
+            (&source.state_dir, "state", data.strip_prefix(&state).ok()),
+        ] {
             let copied = temporary.join(name);
             fs::create_dir(&copied)?;
             if !original.try_exists()? { continue; }
-            let files = snapshot_with_cache(original, true)?;
+            let files = snapshot_with_cache(original, true, nested)?;
             for (relative, expected) in &files {
                 let bytes = fs::read(original.join(relative))?;
                 anyhow::ensure!(<[u8;32]>::from(Sha256::digest(&bytes)) == *expected, "配置在复制期间发生变化，原目录已保留");
                 crate::private_file::write_atomic(&copied.join(relative), &bytes)?;
             }
-            anyhow::ensure!(snapshot_with_cache(original, true)? == files, "配置在复制期间发生变化，原目录已保留");
+            anyhow::ensure!(snapshot_with_cache(original, true, nested)? == files, "配置在复制期间发生变化，原目录已保留");
         }
         for suffix in [Path::new(""), Path::new("server")] {
             crate::service_profile::rebase_copied_connections(&source.data_dir.join(suffix), &temporary.join("data").join(suffix), &destination.join("data").join(suffix))?;
@@ -192,6 +200,28 @@ pub(crate) fn migrate(legacy: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn relocation_copies_flat_profiles_nested_state_only_as_state() {
+        let root = std::env::temp_dir().join(format!("eclipse-flat-profile-{}", uuid::Uuid::new_v4()));
+        let original = root.join("Eclipse");
+        let state = original.join("state");
+        let source = crate::Config { data_dir: original.clone(), state_dir: state.clone(), signaling_host: String::new() };
+        fs::create_dir_all(state.join("stream-workspace-v3-test")).unwrap();
+        fs::write(state.join("stream-workspace-v3-test/endpoint.json"), b"temporary").unwrap();
+        fs::write(state.join("log.jsonl"), b"state").unwrap();
+        fs::create_dir_all(original.join("plugin/state")).unwrap();
+        fs::write(original.join("plugin/state/settings.json"), b"persistent").unwrap();
+
+        let target = root.join("portable");
+        relocate(&source, &target).unwrap();
+        assert!(!target.join("data/state").exists());
+        assert!(!target.join("state/stream-workspace-v3-test").exists());
+        assert_eq!(fs::read(target.join("state/log.jsonl")).unwrap(), b"state");
+        assert_eq!(fs::read(target.join("data/plugin/state/settings.json")).unwrap(), b"persistent");
+        assert!(state.join("stream-workspace-v3-test/endpoint.json").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn migration_preserves_identity_original_and_existing_new_preferences() {
         let root = std::env::temp_dir().join(format!("eclipse-legacy-migration-{}", uuid::Uuid::new_v4()));
