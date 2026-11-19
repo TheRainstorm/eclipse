@@ -51,11 +51,13 @@ impl VaStreamInfo for &Rc<Sps> {
 
         match profile {
             Profile::Baseline => {
-                if self.constraint_set0_flag {
+                // H.264 Annex A: profile_idc 66 is Constrained Baseline when
+                // constraint_set1_flag is set; constraint_set0_flag may be either value.
+                if self.constraint_set1_flag {
                     Ok(libva::VAProfile::VAProfileH264ConstrainedBaseline)
                 } else {
                     Err(anyhow!(
-                        "Unsupported stream: profile_idc=66, but constraint_set0_flag is unset"
+                        "Unsupported stream: profile_idc=66, but constraint_set1_flag is unset"
                     ))
                 }
             }
@@ -550,6 +552,36 @@ impl<V: VideoFrame> StatelessDecoder<H264, VaapiBackend<V>> {
         blocking_mode: BlockingMode,
     ) -> Result<Self, NewStatelessDecoderError> {
         Self::new(VaapiBackend::new(display, false), blocking_mode)
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::VaStreamInfo;
+    use crate::codec::h264::parser::Sps;
+    use std::rc::Rc;
+
+    #[test]
+    fn profile_66_requires_constraint_set1_for_constrained_baseline() {
+        for set0 in [false, true] {
+            for set1 in [false, true] {
+                let sps = Rc::new(Sps {
+                    profile_idc: 66,
+                    constraint_set0_flag: set0,
+                    constraint_set1_flag: set1,
+                    ..Default::default()
+                });
+                let profile = (&sps).va_profile();
+                if set1 {
+                    assert_eq!(
+                        profile.unwrap(),
+                        libva::VAProfile::VAProfileH264ConstrainedBaseline
+                    );
+                } else {
+                    assert!(profile.is_err());
+                }
+            }
+        }
     }
 }
 

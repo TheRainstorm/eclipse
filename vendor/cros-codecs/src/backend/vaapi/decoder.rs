@@ -258,7 +258,7 @@ impl<V: VideoFrame> VaapiBackend<V> {
                     type_: libva::VAConfigAttribType::VAConfigAttribRTFormat,
                     value: libva::VA_RT_FORMAT_YUV420,
                 }],
-                stream_params.va_profile().map_err(|_| anyhow!("Could not get VAProfile!"))?,
+                stream_params.va_profile()?,
                 libva::VAEntrypoint::VAEntrypointVLD,
             )
             .map_err(|_| anyhow!("Could not create VAConfig!"))?;
