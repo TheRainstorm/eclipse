@@ -378,16 +378,19 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     let link_help=uu_i18n::text("实际选中直连路径的本机网卡接收/发送吞吐，包含这张网卡的其它应用流量；不是视频码率、网卡标称速率或可用带宽。每秒在后台读取字节计数，路径变化或样本不足时未知。");
     let ping_help=uu_i18n::text("对实际选中直连媒体端点的ICMP echo往返，每秒一次，超时200ms；区别于应用CONTROL RTT。受防火墙和系统权限影响，不支持或无回复时未知。Windows回执精度为1ms，小于1ms显示<1ms；中继路径不冒充对端ping。");
     let ping=m.link.and_then(|v|v.ping_ms).map_or_else(||"—".into(),|v|if v<1.{"<1 ms".into()}else{format!("{v:.1} ms")});
-    let mut network=vec![field("ICMP Ping",ping,ping_help),field(uu_i18n::text("链路吞吐"),format!("{} Mbps",number(m.throughput())),link_help),field("RX/TX",format!("{}/{} Mbps",number(m.link.and_then(|v|v.rx_mbps)),number(m.link.and_then(|v|v.tx_mbps))),link_help),field("RTT",m.rtt.map_or_else(||"—".into(),|v|format!("{}±{} ms",number(Some(v[0])),number(Some(v[1])))),uu_i18n::text("控制消息往返均值±标准差，最近32个样本。包含传输、排队和两端处理，不等于ICMP ping。")),field(uu_i18n::text("链路丢包"),pct(m.loss),uu_i18n::text("修复前的原始RTP缺包率。乱序宽限期后仍未到达的包计入，即使随后由FEC或RTX恢复也保留。它反映接收端看到的网络交付，不只代表物理线路。")),field(uu_i18n::text("修复后丢包"),pct(m.unrecovered_loss),uu_i18n::text("接收器超时后仍未恢复的RTP丢包率；FEC/重传成功会降低这个值。"))];
+    let original_loss = m.network.as_ref().and_then(|sample| {
+        let ppm = sample.loss_ppm?;
+        Some(format!("{:.2}% ({}/{})", ppm as f32 / 10_000., sample.window_lost, sample.window_expected))
+    }).unwrap_or_else(|| "—".into());
+    let mut network=vec![field("ICMP Ping",ping,ping_help),field(uu_i18n::text("链路吞吐"),format!("{} Mbps",number(m.throughput())),link_help),field("RX/TX",format!("{}/{} Mbps",number(m.link.and_then(|v|v.rx_mbps)),number(m.link.and_then(|v|v.tx_mbps))),link_help),field("RTT",m.rtt.map_or_else(||"—".into(),|v|format!("{}±{} ms",number(Some(v[0])),number(Some(v[1])))),uu_i18n::text("控制消息往返均值±标准差，最近32个样本。包含传输、排队和两端处理，不等于ICMP ping。")),field(uu_i18n::text("视频原包缺失"),original_loss,uu_i18n::text("当前视频轨每约 0.5 秒统计一次。括号内是同一窗口的缺包数/应到数。超过乱序宽限才计为缺失，随后重传或纠错成功仍保留。网络和本机接收丢包都可能导致该值升高。")),field(uu_i18n::text("修复后丢包"),pct(m.unrecovered_loss),uu_i18n::text("接收器超时后仍未恢复的RTP丢包率；FEC/重传成功会降低这个值。"))];
     if let Some(v)=m.rtt_distribution {network.push(field(uu_i18n::text("末/低/中/P95/高"),format!("{:.1}/{:.1}/{:.1}/{:.1}/{:.1} ms",v[0],v[1],v[2],v[3],v[4]),uu_i18n::text("最近一分钟内RTT的末值、最小值、中位数、95分位和最大值，用于观察波动。")));}
     if let Some(sample) = m.udp_receive {
         let help = uu_i18n::text("Linux 每 5 秒采样本次连接的 UDP 套接字，包含音视频、控制及 ICE 流量。丢包为该套接字自创建起的内核累计计数，缓冲为采样时已分配内存与接收上限。");
-        network.push(field(uu_i18n::text("本地 UDP 丢包"), sample.drops, help));
+        network.push(field(uu_i18n::text("本地 UDP 丢包（累计）"), sample.drops, help));
         network.push(field(uu_i18n::text("接收缓冲"), format!("{:.0}/{:.0} KiB", sample.allocated_bytes as f64 / 1024., sample.capacity_bytes as f64 / 1024.), help));
     }
     let mut receive=vec![];
     if let Some(n)=&m.network {
-        receive.push(field(uu_i18n::text("窗口缺/应"),format!("{}/{}",n.window_lost,n.window_expected),uu_i18n::text("当前原始包窗口中的缺失数与期望数，二者用于计算链路丢包率。")));
         receive.push(field(uu_i18n::text("累计收/缺"),format!("{}/{}",n.original_received,n.original_lost),uu_i18n::text("会话内收到的原始RTP包与在宽限期后认定缺失的原始包。")));
         receive.push(field(uu_i18n::text("乱/重/迟/重置"),format!("{}/{}/{}/{}",n.reordered,n.duplicates,n.late,n.resyncs),uu_i18n::text("原始包乱序、重复、超宽限期迟到和无法解释序号跳变后的统计重置次数。")));
     }else {receive.push(field(uu_i18n::text("原始包统计"),"—",uu_i18n::text("当前还没有新鲜、可解释的原始包窗口；不会伪造零丢包。")));}
@@ -994,9 +997,28 @@ mod tests {
         frame(&mut card,vec![],false);assert!(!card.keyboard_owned());assert!(card.bounds.is_none());
     }
     #[test]
+    fn original_video_loss_uses_one_valid_rtp_window() {
+        let label = uu_i18n::text("视频原包缺失");
+        let mut metrics = Metrics { loss: Some(2.), ..Default::default() };
+        assert!(metrics.diagnostic_text(0).contains(&format!("{label} —")));
+        metrics.network = Some(uu_core::network_loss::Snapshot {
+            loss_ppm: Some(617688), window_expected: 2872, window_lost: 1774,
+            original_received: 6873, original_lost: 8020, reordered: 0,
+            duplicates: 0, late: 0, resyncs: 0, grace_ms: 60, sampled_at: std::time::Instant::now(),
+        });
+        for window in 0..WINDOWS.len() {
+            assert!(metrics.diagnostic_text(window).contains(&format!("{label} 61.77% (1774/2872)")));
+        }
+        metrics.network.as_mut().unwrap().loss_ppm = None;
+        let unknown = metrics.diagnostic_text(0);
+        assert!(unknown.contains(&format!("{label} —")));
+        assert!(!unknown.contains("1774/2872"));
+    }
+
+    #[test]
     fn diagnostic_text_includes_only_observed_kernel_socket_counts() {
         let mut metrics = Metrics::default();
-        let drops = uu_i18n::text("本地 UDP 丢包");
+        let drops = uu_i18n::text("本地 UDP 丢包（累计）");
         assert!(!metrics.diagnostic_text(0).contains(drops));
         metrics.udp_receive = Some(uu_core::media::UdpReceiveMemory {
             family: "ipv6", allocated_bytes: 2048, capacity_bytes: 8192, drops: 17,
