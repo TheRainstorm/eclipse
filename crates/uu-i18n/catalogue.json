@@ -286,6 +286,7 @@
   "暂时离线": "Currently offline",
   "在线状态待检查": "Status not checked",
   "开始串流": "Start streaming",
+  "串流": "Stream",
   "对方电脑 IP 地址": "Other computer IP address",
   "例如 192.168.1.100": "For example, 192.168.1.100",
   "同一局域网可在对方的“服务管理”查看地址。使用自定义端口时，在地址后加 :端口。": "On the same network, find the address in Service management on the other PC. For a custom port, append :port.",

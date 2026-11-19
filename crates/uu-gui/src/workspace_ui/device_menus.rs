@@ -90,7 +90,7 @@ impl Workspace {
                 let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
                 let (select, start) = ui.push_id(&id, |ui| {
                     ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let button = theme::secondary_button(uu_i18n::text("连接")).small();
+                        let button = theme::secondary_button(uu_i18n::text("串流")).small();
                         let start = ui.add_enabled(connectable, button).clicked();
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                         let select = theme::selectable_label(ui, profile.selected_client == id, name).on_hover_text(name).clicked();

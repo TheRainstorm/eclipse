@@ -518,7 +518,7 @@ mod tests {
         for (label, expected) in [("Game",LaunchConfig::Named(named.id.clone())),("默认配置",LaunchConfig::GlobalDefault)] {
             open(&mut h); h.submenu("串流配置");
             let (_,name)=h.texts.iter().find(|(text,_)|text==label).unwrap();
-            let (_,button)=h.texts.iter().find(|(text,pos)|text=="连接" && pos.x>name.x && (pos.y-name.y).abs()<5.).unwrap();
+            let (_,button)=h.texts.iter().find(|(text,pos)|text=="串流" && pos.x>name.x && (pos.y-name.y).abs()<5.).unwrap();
             assert!(matches!(&h.click_at(*button)[..],[Action::Open(id,config)] if id==&profile.id && config==&expected));
             assert_eq!(h.workspace.store.as_ref().unwrap().read().unwrap().device(&profile.id).unwrap().selected_client,None);
         }
