@@ -91,6 +91,26 @@ fn fixture(settings: Settings, index: u32, format: PixelFormat, motion: bool, ti
         format: PixelFormat::Bgra8, data: pixels.into(), gpu: false, dma_buf: None, d3d11: None,
     }
 }
+/// Reveal a desktop image after a blank lead-in, scroll it, then hold it. A
+/// lossless reference for each input frame can be reconstructed independently.
+fn scrolling_bgra(settings: Settings, index: u32, source: &[u8]) -> RawFrame {
+    let stride = settings.width as usize * 4;
+    let scroll = (index.clamp(25, 55) - 25) * 3;
+    let offset = (scroll % settings.height) as usize * stride;
+    let mut data = Vec::with_capacity(source.len());
+    if index < 15 {
+        data.resize(source.len(), 0);
+    } else {
+        data.extend_from_slice(&source[offset..]);
+        data.extend_from_slice(&source[..offset]);
+    }
+    RawFrame {
+        width: settings.width, height: settings.height, stride: stride as u32,
+        pts: Timestamp(u64::from(index) * 1_000_000 / u64::from(settings.fps)),
+        format: PixelFormat::Bgra8, data: data.into(), gpu: false, dma_buf: None, d3d11: None,
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let mut settings = Settings {
         hdr:false,source_hdr:None,tuning:Default::default(), codec:uu_proto::media::VideoCodec::H264,rate_control:encoder::RateControl::Cbr,
@@ -108,6 +128,7 @@ fn main() -> anyhow::Result<()> {
     let mut motion=false;
     let mut tile_size=8usize;
     let mut steady=false;
+    let mut bgra_path = None;
     let mut capture_device=true;
     let mut capture_copy=None;
     let mut source_scale=1u32;
@@ -154,6 +175,7 @@ fn main() -> anyhow::Result<()> {
             "--amd-aq" => settings.tuning.amd_adaptive_quantization=Some(value.parse()?),
             "--tile-size" => tile_size=value.parse()?,
             "--motion" => motion=value.parse()?,
+            "--scroll-bgra" => bgra_path = Some(std::path::PathBuf::from(value)),
             "--steady" => steady=value.parse()?,
             "--output"=>output_path=Some(std::path::PathBuf::from(value)),
             "--frames" => frames = value.parse()?,
@@ -202,6 +224,19 @@ fn main() -> anyhow::Result<()> {
     ensure!(capture_copy.is_none() || gpu_generated,"capture-copy requires a generated GPU source");
     ensure!((1..=4).contains(&source_scale) && (gpu_input || source_scale==1)
         && settings.width*source_scale<=8192 && settings.height*source_scale<=8192,"source scale requires valid GPU capture geometry");
+    let bgra = if let Some(path) = bgra_path {
+        ensure!(format == PixelFormat::Bgra8 && source_scale == 1 && !gpu_generated && !motion,
+            "--scroll-bgra needs bgra or gpu input at native size");
+        let expected = u64::from(settings.width) * u64::from(settings.height) * 4;
+        ensure!(std::fs::metadata(&path)?.len() == expected, "fixture needs one tightly packed BGRA frame");
+        let bytes = std::fs::read(path)?;
+        ensure!(bytes.len() as u64 == expected, "fixture changed while reading");
+        Some(bytes)
+    } else { None };
+    let source_frame = |size, index, format| match bgra.as_deref() {
+        Some(bytes) => scrolling_bgra(size, index, bytes),
+        None => fixture(size, index, format, motion, tile_size),
+    };
     #[cfg(windows)]
     let gpu=if gpu_input {
         let mut gpu=gpu_encoder_input::Upload::new()?;
@@ -287,11 +322,11 @@ fn main() -> anyhow::Result<()> {
             let source=Settings{width:settings.width*source_scale,height:settings.height*source_scale,..settings};
             let pts=Timestamp(u64::from(index)*1_000_000/u64::from(settings.fps));
             let frame=if gpu_generated {gpu.generated_with_copy(source.width,source.height,index*source_scale,pts,capture_copy)?}
-                else {let mut pixels=fixture(source,index*source_scale,PixelFormat::Bgra8,motion,tile_size);pixels.pts=pts;gpu.frame(&pixels)?};
+                else {let mut pixels=source_frame(source,index*source_scale,PixelFormat::Bgra8);pixels.pts=pts;gpu.frame(&pixels)?};
             RawFrame{width:settings.width,height:settings.height,stride:settings.width*4,..frame}
-        }else{fixture(settings,index,format,motion,tile_size)};
+        }else{source_frame(settings,index,format)};
         #[cfg(not(windows))]
-        let input=fixture(settings,index,format,motion,tile_size);
+        let input=source_frame(settings,index,format);
         let capture_ms=capture_started.elapsed().as_secs_f64()*1000.0;
         capture_times.push(capture_ms);
         let started = std::time::Instant::now();
@@ -347,7 +382,7 @@ fn main() -> anyhow::Result<()> {
                 decoded += 1;
                 gpu_decoded += u32::from(output.gpu);
                 if output_index % verify_every != 0 {continue;}
-                let expected = uu_media::convert::frame_to_rgba(&fixture(settings, output_index, format, motion, tile_size));
+                let expected = uu_media::convert::frame_to_rgba(&source_frame(settings, output_index, format));
                 #[cfg(windows)]
                 let actual=if let Some(surface)=&output.d3d11 {
                     if !gpu_verifier.as_ref().is_some_and(|converter|converter.matches(surface)) {
@@ -407,7 +442,7 @@ fn main() -> anyhow::Result<()> {
         "plus_encode_ms_mean":capture_encode_times.iter().sum::<f64>()/capture_encode_times.len() as f64,
         "plus_encode_ms_p50":capture_encode_times[capture_encode_times.len()/2],
         "plus_encode_ms_p95":capture_encode_times[capture_encode_times.len()*95/100]});
-    report["workload"]=serde_json::json!({"motion":motion,"tile_size":tile_size,"steady":steady,"tuning":settings.tuning,
+    report["workload"]=serde_json::json!({"motion":motion,"scroll_bgra":bgra.is_some(),"tile_size":tile_size,"steady":steady,"tuning":settings.tuning,
         "achieved_fps":f64::from(frames)/elapsed_s,"encoded_mbps":bytes as f64*8.0/elapsed_s/1e6,
         "frame_bytes_p95":frame_bytes[frame_bytes.len()*95/100],"frame_bytes_max":frame_bytes.last()});
     println!("{report}");
