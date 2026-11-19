@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 use uu_core::{
-    device_book::{Book, Destination, Encoding, Profile, Route, Service, Sharing, Store},
+    device_book::{Book, Destination, Encoding, LaunchConfig, Profile, Route, Service, Sharing, Store},
     device_trust::TrustStore,
     native::{CaptureMonitor, HostStatus},
 };
@@ -52,7 +52,7 @@ pub(super) struct HomeRoute {
 }
 pub(super) enum Action {
     DevicesHidden(bool),
-    Open(String),
+    Open(String, LaunchConfig),
     OpenPrepared(crate::sessions::StreamTarget),
     OpenConnectionServices,
     NextWallpaper,
@@ -438,7 +438,7 @@ mod tests {
         h.workspace.book.devices.push(profile);
         h.workspace.pairing_password_configured = Some(false);
         let actions = h.click("Generated desktop");
-        assert!(matches!(&actions[..], [Action::Open(found)] if found == &id));
+        assert!(matches!(&actions[..], [Action::Open(found, LaunchConfig::Selected)] if found == &id));
         assert!(!h.workspace.host.running());
         for hidden in ["让其它电脑安全连接本机", "设置安全连接密码", "192.0.2.10:48998", "在线", "暂时离线", "在线状态待检查", "开始串流"] {
             assert!(!h.texts.iter().any(|(text, _)| text == hidden), "extra device-list content: {hidden}");
@@ -498,6 +498,8 @@ mod tests {
         let profile=Profile::new("Selected host",Destination::Ip{address:"192.0.2.10:48998".into(),legacy_device:None});
         let other=Profile::new("Other host",Destination::Ip{address:"192.0.2.11:48998".into(),legacy_device:None});
         for value in [&profile,&other] {h.workspace.store.as_ref().unwrap().save_device(value.clone()).unwrap();}
+        let named=uu_core::client_settings::NamedClientSettings::new("Game",Default::default());
+        h.workspace.store.as_ref().unwrap().save_client_config(&profile.id,named.clone()).unwrap();
         h.workspace.refresh();
         let open=|h:&mut Harness| {
             h.frame(Vec::new());
@@ -512,7 +514,14 @@ mod tests {
         for label in ["隐藏设备列表","批量管理设备…","配置选择","配置编辑","壁纸"] {
             assert!(!h.texts.iter().any(|(text,_)|text==label),"library action leaked: {label}");
         }
-        assert!(matches!(&h.click("连接此设备")[..],[Action::Open(id)] if id==&profile.id));
+        assert!(matches!(&h.click("连接此设备")[..],[Action::Open(id, LaunchConfig::Selected)] if id==&profile.id));
+        for (label, expected) in [("Game",LaunchConfig::Named(named.id.clone())),("默认配置",LaunchConfig::GlobalDefault)] {
+            open(&mut h); h.submenu("串流配置");
+            let (_,name)=h.texts.iter().find(|(text,_)|text==label).unwrap();
+            let (_,button)=h.texts.iter().find(|(text,pos)|text=="连接" && pos.x>name.x && (pos.y-name.y).abs()<5.).unwrap();
+            assert!(matches!(&h.click_at(*button)[..],[Action::Open(id,config)] if id==&profile.id && config==&expected));
+            assert_eq!(h.workspace.store.as_ref().unwrap().read().unwrap().device(&profile.id).unwrap().selected_client,None);
+        }
         open(&mut h);h.click("移除此设备…");h.click("取消");
         assert_eq!(h.workspace.store.as_ref().unwrap().read().unwrap().devices.len(),2);
         open(&mut h);h.click("移除此设备…");h.click("确认移除");
@@ -665,7 +674,7 @@ mod tests {
         editor.device = "other-host".into();
         h.workspace.device_picker.seed(&service, vec![uu_core::internet::self_hosted::Device { device: "other-host".into(), name: "Other host".into() }], &mut editor.device);
         let actions = h.click("保存并连接");
-        assert!(matches!(&actions[..],[Action::Open(opened)] if opened==&id));
+        assert!(matches!(&actions[..],[Action::Open(opened, LaunchConfig::Selected)] if opened==&id));
         assert_eq!(h.workspace.book.device(&id).unwrap().routes.len(), 3);
         assert!(!h
             .texts
@@ -1529,7 +1538,7 @@ impl Workspace {
             if response.clicked(){
                 if self.management.active {
                     if !self.management.selected.remove(&profile.id) {self.management.selected.insert(profile.id.clone());}
-                }else{actions.push(Action::Open(profile.id.clone()));}
+                }else{actions.push(Action::Open(profile.id.clone(), LaunchConfig::Selected));}
             }
             response.context_menu(|ui| self.device_menu(ui, profile, actions));
             response
@@ -2209,7 +2218,7 @@ impl Workspace {
                 actions.push(Action::OpenConnectionServices);
             } else if save {
                 match self.save_device(editor.clone()) {
-                    Ok(id) => { if connect { actions.push(Action::Open(id)); } self.device_picker.reset(); },
+                    Ok(id) => { if connect { actions.push(Action::Open(id, LaunchConfig::Selected)); } self.device_picker.reset(); },
                     Err(e) => { editor.error = uu_i18n::format!("无法保存设备：{e:#}"); self.editor = Some(editor); },
                 }
             } else if open && !cancel { self.editor = Some(editor); }
@@ -2317,7 +2326,7 @@ impl super::App {
                     #[cfg(not(windows))] self.workspace.servers.join_mut().open();
                     ctx.request_repaint();
                 }
-                Action::Open(id) => self.open_device_profile(&id),
+                Action::Open(id, config) => self.open_device_profile(&id, &config),
                 Action::OpenPrepared(target) => {
                     if let Err(error) = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target, self.platform.origin())) {
                         self.workspace.feedback.error(super::ui_feedback::Scope::Devices, error.to_string());
@@ -2379,22 +2388,24 @@ impl super::App {
             }
         }
     }
-    fn open_device_profile(&mut self, id: &str) {
+    fn open_device_profile(&mut self, id: &str, config: &LaunchConfig) {
         let result = (|| -> anyhow::Result<()> {
             let store = self
                 .workspace
                 .store
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))?;
-            let launch = store.launch(id)?;
+            let launch = store.launch_with_config(id, config)?;
             if let Destination::Plugin{plugin,..}=&launch.route.destination {anyhow::ensure!(self.plugins.enabled(plugin),"请先安装并启用此连接方式的插件");}
-            let snapshot = store.publish_launch_with_defaults(id,&self.preferences.client)?;
+            let device = launch.profile.clone();
+            let alias = launch.name.clone();
+            let snapshot = store.publish_prepared_launch(launch,&self.preferences.client)?;
             let target = super::sessions::StreamTarget {
                 connection: super::sessions::ConnectionTarget::NativeProfile {
-                    id: launch.profile,
+                    id: device,
                     snapshot,
                 },
-                alias: launch.name,
+                alias,
                 view_only: false,
             };
             self.sessions

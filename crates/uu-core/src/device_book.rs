@@ -430,6 +430,14 @@ impl Book {
     }
 }
 
+/// Choose settings for one launch without changing the saved device selection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LaunchConfig {
+    Selected,
+    GlobalDefault,
+    Named(String),
+}
+
 /// Immutable target snapshot for one stream window. Profile edits cannot
 /// redirect an existing window's reconnect to another device.
 #[derive(Clone, Serialize, Deserialize)]
@@ -551,8 +559,20 @@ impl Store {
         Ok(path)
     }
     pub fn launch(&self, id: &str) -> Result<Launch> {
+        self.launch_with_config(id, &LaunchConfig::Selected)
+    }
+    pub fn launch_with_config(&self, id: &str, config: &LaunchConfig) -> Result<Launch> {
         let book = self.read()?;
         let profile = book.device(id)?;
+        let config_id = match config {
+            LaunchConfig::Selected => profile.selected_client.as_deref(),
+            LaunchConfig::GlobalDefault => None,
+            LaunchConfig::Named(id) => Some(id.as_str()),
+        };
+        let client = config_id.map(|id| {
+            profile.client_configs.iter().find(|c| c.id == id).map(|c| c.settings.clone())
+                .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::text("请选择有效的客户端配置")))
+        }).transpose()?;
         let route = profile.route()?.clone();
         let service = match &route.destination {
             Destination::Vps { service, .. } => Some(book.service(service)?.clone()),
@@ -565,7 +585,7 @@ impl Store {
             expected_peer: profile.peer.clone(),
             route,
             service,
-            client:profile.selected_client.as_ref().and_then(|id|profile.client_configs.iter().find(|c|&c.id==id)).map(|c|c.settings.clone()),
+            client,
         })
     }
     pub fn publish_launch(&self, id: &str) -> Result<PathBuf> {
@@ -573,7 +593,10 @@ impl Store {
         self.publish_snapshot(launch)
     }
     pub fn publish_launch_with_defaults(&self,id:&str,defaults:&crate::client_settings::ClientSettings) -> Result<PathBuf> {
-        let mut launch=self.launch(id)?;
+        self.publish_prepared_launch(self.launch(id)?, defaults)
+    }
+    /// Freeze the same route, identity and settings which the launcher inspected.
+    pub fn publish_prepared_launch(&self, mut launch:Launch, defaults:&crate::client_settings::ClientSettings) -> Result<PathBuf> {
         if launch.client.is_none() {launch.client=Some(defaults.clone());}
         self.publish_snapshot(launch)
     }
@@ -1329,6 +1352,16 @@ mod tests {
         assert_eq!(Launch::read(&inherited).unwrap().client.unwrap().fps,60);
         let mut named=NamedClientSettings::new("Fast",ClientSettings{fps:120,..Default::default()});
         store.save_client_config(&profile.id,named.clone()).unwrap();store.select_client_config(&profile.id,Some(named.id.clone())).unwrap();
+        let alternate=NamedClientSettings::new("Office", ClientSettings{fps:30,..Default::default()});
+        store.save_client_config(&profile.id,alternate.clone()).unwrap();
+        let saved=std::fs::read(root.join("connections.json")).unwrap();
+        for (config,fps) in [(LaunchConfig::GlobalDefault,90),(LaunchConfig::Named(alternate.id.clone()),30)] {
+            let launch=store.launch_with_config(&profile.id,&config).unwrap();
+            let path=store.publish_prepared_launch(launch,&defaults).unwrap();
+            assert_eq!(Launch::read(&path).unwrap().client.unwrap().fps,fps);
+        }
+        assert!(store.launch_with_config(&profile.id,&LaunchConfig::Named("missing".into())).is_err());
+        assert_eq!(std::fs::read(root.join("connections.json")).unwrap(),saved);
         let frozen=store.publish_launch_with_defaults(&profile.id,&defaults).unwrap();
         named.settings.fps=30;store.save_client_config(&profile.id,named.clone()).unwrap();
         profile.name="Updated host".into();store.save_device(profile.clone()).unwrap();

@@ -1,7 +1,7 @@
 //! Device actions and library actions have separate menus and share saved state.
 use super::{compact_context_menu, muted, theme, Action, DeviceView, Info, Profile, Workspace};
 use eframe::egui;
-use uu_core::device_book::Destination;
+use uu_core::device_book::{Destination, LaunchConfig};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -65,7 +65,7 @@ impl Workspace {
         let routes: Vec<_> = profile.routes.iter().filter(|route| self.route_visible(route)).collect();
         let connectable = routes.iter().any(|route| route.id == profile.selected_route);
         if theme::menu_action(ui, connectable, uu_i18n::text("连接此设备")).clicked() {
-            actions.push(Action::Open(profile.id.clone())); ui.close_menu();
+            actions.push(Action::Open(profile.id.clone(), LaunchConfig::Selected)); ui.close_menu();
         }
         ui.add_enabled_ui(!routes.is_empty(), |ui| {
             ui.menu_button(uu_i18n::text("连接方式"), |ui| {
@@ -84,9 +84,24 @@ impl Workspace {
         });
         ui.separator();
         ui.menu_button(uu_i18n::text("串流配置"), |ui| {
+            compact_context_menu(ui);
             for (id, name) in std::iter::once((None, uu_i18n::text("默认配置")))
                 .chain(profile.client_configs.iter().map(|value| (Some(value.id.clone()), value.name.as_str()))) {
-                if theme::selectable_label(ui, profile.selected_client == id, name).clicked() {
+                let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+                let (select, start) = ui.push_id(&id, |ui| {
+                    ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let button = theme::secondary_button(uu_i18n::text("连接")).small();
+                        let start = ui.add_enabled(connectable, button).clicked();
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                        let select = theme::selectable_label(ui, profile.selected_client == id, name).on_hover_text(name).clicked();
+                        (select, start)
+                    }).inner
+                }).inner;
+                if start {
+                    let config = id.map_or(LaunchConfig::GlobalDefault, LaunchConfig::Named);
+                    actions.push(Action::Open(profile.id.clone(), config));
+                    ui.close_menu();
+                } else if select {
                     if let Some(store) = &self.store {
                         if let Err(error) = store.select_client_config(&profile.id, id) {
                             self.feedback.error(self.device_scope(), uu_i18n::format!("无法选择配置：{e:#}", e=error));

@@ -66,7 +66,7 @@ impl Workspace {
     fn device_summary(&mut self,ui:&mut egui::Ui,profile:&Profile,actions:&mut Vec<Action>) {
         ui.horizontal_wrapped(|ui| {
             ui.heading(&profile.name);
-            if primary(ui,uu_i18n::text("连接此设备")).clicked(){actions.push(Action::Open(profile.id.clone()));}
+            if primary(ui,uu_i18n::text("连接此设备")).clicked(){actions.push(Action::Open(profile.id.clone(), super::LaunchConfig::Selected));}
         });
         ui.add_space(6.);
         ui.horizontal_wrapped(|ui| {
