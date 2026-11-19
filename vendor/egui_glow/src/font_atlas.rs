@@ -11,6 +11,19 @@ struct Atlas<T> {
     options: TextureOptions,
 }
 
+impl<T> Atlas<T> {
+    fn matches(&self, image: &FontImage, options: TextureOptions) -> bool {
+        self.options == options
+            && self.image.as_ref().is_some_and(|old| {
+                // Equal coverage bits yield identical uploaded texels, including NaNs.
+                // Two encodings of zero may conservatively cause another upload.
+                old.size == image.size
+                    && bytemuck::cast_slice::<f32, u8>(&old.pixels)
+                        == bytemuck::cast_slice::<f32, u8>(&image.pixels)
+            })
+    }
+}
+
 pub(super) struct FontAtlases<T> {
     // Least recently used first. Four scales bound retained CPU/GPU images.
     entries: Vec<Atlas<T>>,
@@ -44,7 +57,7 @@ impl<T: Copy> FontAtlases<T> {
     pub fn unchanged(&self, image: &FontImage, options: TextureOptions) -> bool {
         self.active
             .and_then(|scale| self.entries.iter().find(|e| e.scale == scale))
-            .is_some_and(|e| e.options == options && e.image.as_ref() == Some(image))
+            .is_some_and(|e| e.matches(image, options))
     }
 
     /// Prove that a pending delta cannot change a retained UI image. Inspect
@@ -62,7 +75,7 @@ impl<T: Copy> FontAtlases<T> {
                 self.entries
                     .iter()
                     .find(|e| e.scale == pixels_per_point.to_bits())
-                    .is_some_and(|e| e.options == update.options && e.image.as_ref() == Some(image))
+                    .is_some_and(|e| e.matches(image, update.options))
             })
     }
 
@@ -153,6 +166,27 @@ mod tests {
         }
         cache.select(2.);
         assert_eq!(cache.texture(), None);
+    }
+
+    #[test]
+    fn retained_font_image_requires_identical_dimensions_and_texel_bits() {
+        let mut cache = FontAtlases::new();
+        let mut image = FontImage::new([2, 2]);
+        image.pixels[0] = f32::from_bits(0x7fc00001);
+        cache.uploaded(1., 10, &image, None, LINEAR);
+        cache.select(1.);
+        let same_bits = image.clone();
+        assert!(cache.unchanged(&same_bits, LINEAR));
+        assert!(image.srgba_pixels(None).eq(same_bits.srgba_pixels(None)));
+        let mut changed = image.clone();
+        changed.size = [1, 4];
+        assert!(!cache.unchanged(&changed, LINEAR));
+        changed = image.clone();
+        changed.pixels[3] = 1.;
+        assert!(!cache.unchanged(&changed, LINEAR));
+        changed.pixels[3] = -0.;
+        assert!(!cache.unchanged(&changed, LINEAR));
+        assert!(image.srgba_pixels(None).eq(changed.srgba_pixels(None)));
     }
 
     #[test]
