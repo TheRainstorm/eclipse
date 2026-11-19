@@ -203,13 +203,12 @@ fn copy_plane(
         return Ok(());
     }
 
-    // Each Intel Y column stores 32 consecutive 16-byte row segments.
-    // Read eight of them together while the destination rows still fit in cache.
-    const BAND_ROWS: usize = 8;
+    // Read all 32 row segments of an Intel Y column before moving to the next
+    // column. The last group can have fewer visible rows than a complete tile.
+    const TILE_ROWS: usize = 32;
     let whole = w / 16 * 16;
-    for (band, rows) in destination.chunks_mut(w * BAND_ROWS).enumerate() {
-        let y = band * BAND_ROWS;
-        let base = offset + (y / 32) * pitch * 32 + (y % 32) * 16;
+    for (band, rows) in destination.chunks_mut(w * TILE_ROWS).enumerate() {
+        let base = offset + band * pitch * TILE_ROWS;
         for x in (0..whole).step_by(16) {
             let column = base + x / 16 * 512;
             for (dy, row) in rows.chunks_exact_mut(w).enumerate() {
