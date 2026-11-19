@@ -1,6 +1,6 @@
 # 原生视频编码后端
 
-此接口用于 Eclipse 原生主机，不影响 UU 兼容模式远端选择的编码器。Linux 使用 VA-API；Windows 自动模式在默认 AMD 适配器上优先使用原生 AMF，其它平台硬件使用显卡驱动注册的 Media Foundation 编码器；显式 Intel 使用 VPL。硬件格式支持 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit，以实际驱动初始化结果为准。
+此接口用于 Eclipse 原生主机，不影响 UU 兼容模式远端选择的编码器。Linux 使用 VA-API；Windows 自动模式在兼容 Intel 采集设备的 SDR 串流上优先使用 oneVPL 显存输入，AMD 适配器优先使用原生 AMF，其它适配器或纹理初始化失败时可使用驱动注册的 Media Foundation 编码器；显式 Intel 使用 VPL。硬件格式支持 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit，以实际驱动初始化结果为准。
 
 在被控端打开服务端设置的编码页即可选择编码器。图形界面默认自动选择硬件。命令行的 `native-host`、`lan host` 和 `internet host` 默认使用软件编码，支持 `--encoder software|auto|hardware|vaapi|intel|amd|nvidia`。`hardware` 要求硬编成功，`vaapi` 用于 Linux。
 
@@ -14,7 +14,7 @@ H.264 CBR 自动模式在硬件初始化失败时可回退 OpenH264，CPU 输入
 | --- | --- | --- |
 | 硬件关键帧间隔，1–60 秒 | MFT、oneVPL、AMF、VA-API | 较长间隔减少周期性大帧，较短间隔提供更多独立恢复点。默认 MFT、oneVPL 和 VA-API 为 2 秒，AMF 按需发关键帧。首帧和丢包恢复可提前请求关键帧。 |
 | 画质 / 速度，0–100 | Windows Intel MFT、NVIDIA MFT | 0 偏向速度，100 偏向画质。默认尽量申请 0。显式设置会核验驱动回读。Intel 在自动或硬件模式下可以保留 D3D11 输入。 |
-| Target Usage、低功耗引擎、初始 VBV | Intel oneVPL | Target Usage 为 1–7，7 偏向速度。显式 Intel 或修改 oneVPL 参数时使用该后端。默认尝试固定功能引擎和 3 帧 VBV。初始 VBV 可设 1–5 帧，驱动可能有更高的下限。Windows 可开启「优先使用 D3D11 纹理输入」。同一块 Intel GPU 上完成采集画面的颜色转换和编码，诊断显示 `D3D11 input`。其它情况显示 `system memory`。 |
+| Target Usage、低功耗引擎、初始 VBV | Intel oneVPL | Target Usage 为 1–7，7 偏向速度。显式 Intel 或修改 oneVPL 参数时使用该后端。Windows 上的 AV1 CBR 默认让驱动决定 VBV，串流诊断显示驱动返回的 kB。过小的 VBV 会导致静止文字在周期关键帧后逐渐变糊。其它组合默认尝试 3 帧 VBV。显式指定 1–5 帧会覆盖默认值。Windows 默认开启「优先使用 D3D11 纹理输入」。同一块 Intel GPU 上完成采集画面的颜色转换和编码，诊断显示 `D3D11 input`。其它情况显示 `system memory`。 |
 | 质量预设、输入队列容量、初始 VBV | Windows AMD AMF | 支持速度、均衡、画质。输入队列可设 1–16 帧，VBV 可设 1–5 帧。两者默认交给驱动。队列容量表示驱动允许接收的上限，实际在途帧数取决于提交和输出。 |
 | 空间自适应量化 | Windows AMD AMF | 支持自动、启用、停用。H.264 和 HEVC 使用 VBAQ，AV1 使用 CAQ。它会改变同一帧内的码率分配。 |
 
@@ -30,6 +30,18 @@ VBV 约束编码器允许的码流突发。以 48 Mbps、60 FPS 的 CBR 为例�
 | 3840×2160 | 24.28–27.83 ms | 14.46–14.71 ms | 32.6–39.8 → 60.0 |
 
 4K 时 MFT 实际输出 26.5–32.4 Mbps，oneVPL 输出 49.2 Mbps。较慢的一组也使用相同的目标码率。数据可以复现该显卡编码环节的收益，采集、网络、客户端呈现和显示器扫描需单独测量。
+
+#### 跨关键帧检查 AV1 CBR 文字清晰度
+
+一次 90 帧的色条测试只覆盖约 1.5 秒。检查静止文字时，需要跨过多个周期关键帧。将清晰的桌面文字测试图导出为 1920×1080 的紧密排列 BGRA 文件，运行下面的离屏探针。它先显示空画面，随后显示、滚动并停住同一页文字。每次校验都从实际解码表面取回像素，并与该帧的输入比较。
+
+```sh
+encoder_probe --encoder auto --codec av1 --rate-control cbr --fps 60 \
+  --bitrate-kbps 30000 --width 1920 --height 1080 --frames 720 --steady true \
+  --input gpu --scroll-bgra text.bgra --decoder hw --verify-every 8
+```
+
+在 Intel Arc B390 上，旧的三帧 VBV 会使周期关键帧的量化逐步加重。驱动自行选择 VBV 后，仍使用硬件 CBR、单帧异步深度和同设备表面；在线改码率及请求恢复关键帧沿用同一套接口。
 
 ### 与 Foundation Sunshine 的参数对照
 
@@ -88,7 +100,7 @@ AV1 时序头包含标准的 32-bit 无符号字段。公共位读取器支持�
 
 Windows 编码初始化先按实际 Intel 适配器使用 dispatcher 的快速硬件会话路径，再通过编码查询、初始化和参数读回确认所选格式与画质。这样无需为一次失败的格式尝试扫描所有运行库的完整能力；适配器或运行库不支持该初始化路径时仍使用完整搜索。明确指定的编码格式继续实际尝试，失败不会被静默改成其它格式。快速路径依据随包固定的 [Intel dispatcher 实现](https://github.com/intel/libvpl/blob/674d015bcb294bc39fa276e99a652ea045423e82/libvpl/src/mfx_dispatcher_vpl_config.cpp)。
 
-编码库还提供 Intel VPL 硬件后端，支持驱动实际具备的 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit 编码，以及 CBR / VBR。Windows 自动模式先按适配器与格式选择 AMF / MFT，缺少对应 MFT 时可尝试同格式 VPL；Linux H.264 CBR 优先使用 VA-API；显式 Intel 以及 Linux HEVC / AV1 / VBR 使用 VPL。在服务端设置中配置默认编码、允许的格式、码率模式和 VBR 峰值；IP、UU 连接服务、自建连接服务共用这些设置。控制端仅在生成测试流实际解码成功后通过 SDP 声明 HEVC / AV1 支持。双方都自动时按 **AV1 > HEVC > H.264** 顺序尝试主机允许且两端共同支持的格式；服务器默认编码可以选择自动。客户端明确选择的格式优先于服务器默认值，但仍须在服务器允许列表内；客户端自动时才使用服务器的明确默认格式；只有双方自动才按格式优先级回退。首个 Answer 不额外初始化未选用的编码器。显式格式初始化失败会报告原因，不静默换成 H.264。既有配置的明确格式保留，新配置默认为自动。明确请求的格式不受支持或驱动不满足请求时，连接显示准备失败原因；UU 兼容模式的主机编码选择仍由其服务端决定。
+编码库还提供 Intel VPL 硬件后端，支持驱动实际具备的 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit 编码，以及 CBR / VBR。Windows 自动模式在兼容 Intel SDR 采集设备上优先尝试 oneVPL 纹理输入，随后可按适配器与格式尝试 AMF、MFT 或系统内存 VPL；Linux H.264 CBR 优先使用 VA-API；显式 Intel 以及 Linux HEVC / AV1 / VBR 使用 VPL。在服务端设置中配置默认编码、允许的格式、码率模式和 VBR 峰值；IP、UU 连接服务、自建连接服务共用这些设置。控制端仅在生成测试流实际解码成功后通过 SDP 声明 HEVC / AV1 支持。双方都自动时按 **AV1 > HEVC > H.264** 顺序尝试主机允许且两端共同支持的格式；服务器默认编码可以选择自动。客户端明确选择的格式优先于服务器默认值，但仍须在服务器允许列表内；客户端自动时才使用服务器的明确默认格式；只有双方自动才按格式优先级回退。首个 Answer 不额外初始化未选用的编码器。显式格式初始化失败会报告原因，不静默换成 H.264。既有配置的明确格式保留，新配置默认为自动。明确请求的格式不受支持或驱动不满足请求时，连接显示准备失败原因；UU 兼容模式的主机编码选择仍由其服务端决定。
 
 VPL 使用单帧异步深度、无 B 帧、速度优先和有限 VBV；低延迟 BRC 等额外调优由驱动能力决定。初始化后再次读取实际配置，若驱动把帧率、尺寸、编码或码率模式改成不符合请求的值，直接拒绝。仅接受硬件实现，拒绝部分软件加速。恢复关键帧携带实际编码器的参数集，重新设码率后请求新的关键帧；不会伪造参数或把 HEVC / AV1 失败伪装成软件 H.264 成功。
 

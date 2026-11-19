@@ -35,6 +35,7 @@ extern "C" {
     fn eclipse_vpl_encoder_release_texture(encoder: *mut c_void);
     fn eclipse_vpl_encoder_close(encoder: *mut c_void);
     fn eclipse_vpl_encoder_low_power(encoder: *mut c_void) -> i32;
+    fn eclipse_vpl_encoder_vbv_kb(encoder: *mut c_void) -> u32;
     fn eclipse_vpl_encoder_input(
         encoder: *mut c_void,
         data: *mut *mut u8,
@@ -162,6 +163,13 @@ impl Driver {
         }
         let encoder = NonNull::new(encoder).ok_or("Intel runtime returned no encoder")?;
         let low_power = unsafe { eclipse_vpl_encoder_low_power(encoder.as_ptr()) } != 0;
+        let mut applied = controls(settings);
+        if cfg!(windows) && settings.codec == uu_proto::media::VideoCodec::Av1
+            && !vbr && settings.tuning.intel_vbv_frames.is_none()
+        {
+            let kb = unsafe { eclipse_vpl_encoder_vbv_kb(encoder.as_ptr()) };
+            applied.push_str(&format!(", driver VBV={kb} kB"));
+        }
         Ok(Self {
             encoder,
             settings,
@@ -169,7 +177,7 @@ impl Driver {
                 "intel-vpl ({:?} hw, {}, {} engine, TU{}{}, {})",
                 settings.codec,
                 if vbr { "VBR" } else { "CBR" },
-                if low_power { "low power" } else { "general" }, settings.tuning.intel_target_usage, controls(settings),
+                if low_power { "low power" } else { "general" }, settings.tuning.intel_target_usage, applied,
                 if device.is_null() { "system memory" } else { "D3D11 input" }
             ),
             #[cfg(all(windows, feature="mf-encode"))]

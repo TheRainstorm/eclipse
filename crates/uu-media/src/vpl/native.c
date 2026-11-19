@@ -294,7 +294,14 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
             /* VPL uses decimal KB in units of BRCParamMultiplier. Its Reset
              * preserves the initialized capacity across live bitrate changes. */
             uint32_t multiplier=e->params.mfx.BRCParamMultiplier;
-            uint32_t kb=((vbr?peak:target)*(vbv_frames?vbv_frames:3)+fps*8-1)/(fps*8);
+            uint32_t reservoir_frames=vbv_frames?vbv_frames:3;
+#ifdef _WIN32
+            /* On AV1 CBR a three-frame reservoir drives keyframe quantization
+             * progressively higher even on stationary text. Zero lets oneVPL
+             * size its rate-control reservoir; AsyncDepth stays at one. */
+            if(id==MFX_CODEC_AV1 && !vbr && !vbv_frames) reservoir_frames=0;
+#endif
+            uint32_t kb=((vbr?peak:target)*reservoir_frames+fps*8-1)/(fps*8);
             e->params.mfx.BufferSizeInKB=(mfxU16)((kb+multiplier-1)/multiplier);
             uint32_t requested_kb=vbv_frames?vbv_kb(&e->params):0;
             memset(&e->coding1,0,sizeof(e->coding1));e->coding1.Header.BufferId=MFX_EXTBUFF_CODING_OPTION;e->coding1.Header.BufferSz=sizeof(e->coding1);
@@ -343,7 +350,14 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
         memset(e->pixels,16,(size_t)pitch*rows);memset(e->pixels+(size_t)pitch*rows,128,(size_t)pitch*rows/2);
         e->surface.Data.Pitch=(mfxU16)pitch;e->surface.Data.Y=e->pixels;e->surface.Data.U=e->pixels+(size_t)pitch*rows;e->surface.Data.V=e->surface.Data.U+1;
     }
-    e->bit_size=(size_t)width*height*3/2+65536;if(e->bit_size>64*1024*1024)e->bit_size=64*1024*1024;
+    /* oneVPL specifies the required output buffer via GetVideoParam in decimal
+     * KB. It can exceed a raw picture when the driver chooses the reservoir. */
+    const size_t limit=64*1024*1024;
+    uint64_t suggested=(uint64_t)vbv_kb(&e->params)*1000;
+    if(suggested>limit){eclipse_vpl_encoder_close(e);return failed(error,capacity,"coded buffer exceeds 64 MiB",MFX_ERR_NOT_ENOUGH_BUFFER);}
+    e->bit_size=(size_t)width*height*3/2+65536;
+    if(e->bit_size>limit)e->bit_size=limit;
+    if(e->bit_size<suggested)e->bit_size=(size_t)suggested;
     e->bits=(uint8_t *)malloc(e->bit_size);
     if(!e->bits){eclipse_vpl_encoder_close(e);return failed(error,capacity,"bitstream allocation",MFX_ERR_MEMORY_ALLOC);}
 #ifdef _WIN32
@@ -351,6 +365,7 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
 #endif
     *out=e;return 0;
 }
+uint32_t eclipse_vpl_encoder_vbv_kb(Encoder *e){return e?vbv_kb(&e->params):0;}
 int eclipse_vpl_encoder_low_power(Encoder *e){return e && e->params.mfx.LowPower==MFX_CODINGOPTION_ON;}
 int eclipse_vpl_encoder_input(Encoder *e,uint8_t **data,size_t *length,uint32_t *pitch,uint32_t *rows){
     if(!e || !e->pixels || e->surface.Data.Locked)return -1;

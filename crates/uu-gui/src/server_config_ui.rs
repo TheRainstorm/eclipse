@@ -88,8 +88,11 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
                 });
                 optional_slider(ui, "自定义初始 VBV 缓冲", &mut tuning.intel_vbv_frames, 3, 1..=5, " 帧");
                 if cfg!(windows) {
+                    if tuning.intel_vbv_frames.is_some() {
+                        ui.weak(uu_i18n::text("Intel AV1 使用 CBR 时，建议关闭自定义 VBV。过小的缓冲会让静止文字逐渐变糊。"));
+                    }
                     crate::theme::switch(ui, &mut tuning.intel_gpu_input, uu_i18n::text("优先使用 D3D11 纹理输入"));
-                    ui.weak(uu_i18n::text("在同一块 Intel 显卡上转换和编码画面。驱动无法接收纹理时使用系统内存。"));
+                    ui.weak(uu_i18n::text("默认优先在同一块 Intel 显卡上转换和编码 SDR 画面。"));
                 }
                 ui.weak(uu_i18n::text("更改 oneVPL 参数会在 Intel 上选择该后端。串流诊断中可查看实际输入方式。"));
             });
