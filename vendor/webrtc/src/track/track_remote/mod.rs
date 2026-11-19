@@ -268,6 +268,11 @@ impl TrackRemote {
         Ok(())
     }
 
+    /// Buffer size configured for reads from this track, in bytes.
+    pub fn receive_mtu(&self) -> usize {
+        self.receive_mtu
+    }
+
     /// read_rtp is a convenience method that wraps Read and unmarshals for you.
     pub async fn read_rtp(&self) -> Result<(rtp::packet::Packet, Attributes)> {
         let mut b = vec![0u8; self.receive_mtu];

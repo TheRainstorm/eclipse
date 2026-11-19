@@ -609,19 +609,26 @@ pub(crate) async fn receive_video(
     let mut cadence = crate::frame_cadence::Cadence::default();
     let mut tick_late = crate::frame_cadence::Samples::default();
     let mut window = Instant::now();
-    // TrackRemote::read_rtp is not cancellation safe. Preserve the pending
-    // read across repair/timer events instead of dropping it every 5 ms.
-    let packet_read=track.read_rtp();
+    // TrackRemote::read is not cancellation safe. Keep the pending read
+    // across repair/timer events, then reuse its buffer for the next packet.
+    let read_packet = |mut scratch: Vec<u8>| {
+        let track = &track;
+        async move {
+            let result = track.read(&mut scratch).await;
+            (result, scratch)
+        }
+    };
+    let packet_read = read_packet(vec![0; track.receive_mtu()]);
     tokio::pin!(packet_read);
     let mut active_payload_type = track.payload_type();
     if let Some(fec) = &fec { fec.source(track.ssrc(), active_payload_type); }
     let mut latest_primary: Option<u16> = None;
     loop {
         let packet = tokio::select! {
-            result=&mut packet_read=>{
+            (result, scratch) = &mut packet_read => {
                 let Ok((packet,_))=result else {break};
                 if let Some(s)=&stats{if let Some(trace)=&socket_trace{let at=Instant::now();trace.primary(trace_epoch,track_idx,&packet.header,at,s.pipeline_trace.clock_offset(at));}}
-                packet_read.set(track.read_rtp());
+                packet_read.set(read_packet(scratch));
                 Some((packet, true))
             }
             Some(packet)=repair_rx.recv()=>Some((packet, false)),
