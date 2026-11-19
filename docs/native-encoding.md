@@ -14,13 +14,33 @@ H.264 CBR 自动模式在硬件初始化失败时可回退 OpenH264，CPU 输入
 | --- | --- | --- |
 | 硬件关键帧间隔，1–60 秒 | MFT、oneVPL、AMF、VA-API | 较长间隔减少周期性大帧，较短间隔提供更多独立恢复点。默认 MFT、oneVPL 和 VA-API 为 2 秒，AMF 按需发关键帧。首帧和丢包恢复可提前请求关键帧。 |
 | 画质 / 速度，0–100 | Windows Intel MFT、NVIDIA MFT | 0 偏向速度，100 偏向画质。默认尽量申请 0。显式设置会核验驱动回读。Intel 在自动或硬件模式下可以保留 D3D11 输入。 |
-| Target Usage、低功耗引擎、初始 VBV | Intel oneVPL | Target Usage 为 1–7，7 偏向速度。显式 Intel 或修改 oneVPL 参数时使用该后端。默认尝试固定功能引擎和 3 帧 VBV。初始 VBV 可设 1–5 帧，驱动可能有更高的下限。该路径目前经系统内存输入。 |
+| Target Usage、低功耗引擎、初始 VBV | Intel oneVPL | Target Usage 为 1–7，7 偏向速度。显式 Intel 或修改 oneVPL 参数时使用该后端。默认尝试固定功能引擎和 3 帧 VBV。初始 VBV 可设 1–5 帧，驱动可能有更高的下限。Windows 可开启「优先使用 D3D11 纹理输入」。同一块 Intel GPU 上完成采集画面的颜色转换和编码，诊断显示 `D3D11 input`。其它情况显示 `system memory`。 |
 | 质量预设、输入队列容量、初始 VBV | Windows AMD AMF | 支持速度、均衡、画质。输入队列可设 1–16 帧，VBV 可设 1–5 帧。两者默认交给驱动。队列容量表示驱动允许接收的上限，实际在途帧数取决于提交和输出。 |
 | 空间自适应量化 | Windows AMD AMF | 支持自动、启用、停用。H.264 和 HEVC 使用 VBAQ，AV1 使用 CAQ。它会改变同一帧内的码率分配。 |
 
 VBV 约束编码器允许的码流突发。以 48 Mbps、60 FPS 的 CBR 为例，一帧预算是 800,000 位，约 100 kB。VBR 按初始峰值计算，oneVPL 按驱动的 kB 单位向上取整。同一编码会话中调整目标码率会保留初始缓冲容量。较小的预算可能降低复杂场景或关键帧的画质。MFT 的缓冲属性随编码格式使用不同单位，因此界面只在 oneVPL 和 AMF 下提供这项设置。[微软缓冲属性](https://learn.microsoft.com/en-us/windows/win32/codecapi/avenccommonbuffersize-property) · [AMD 编码属性对照](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/wiki/Recommended%20FFmpeg%20Encoder%20Settings)
 
-Foundation Sunshine 的 QSV 路径采用单帧异步深度、低延迟码率控制和快速预设。其 NVIDIA 原生接口还支持 P1–P7、空间 AQ 和多遍编码，软件路径提供各自编码库的预设。Eclipse 的 NVIDIA 路径通过 MFT 调节，软件路径使用 OpenH264。涉及后续帧的 lookahead 和 B 帧会改变当前逐输入帧返回编码结果的约定。H.264 CABAC 还需协商 Main 或 High Profile，当前硬编会话使用 Baseline 系列。[Foundation Sunshine 编码配置](https://github.com/AlkaidLab/foundation-sunshine/blob/07d8ae13c658128d267c357196a610fb8b2667f3/src/video.cpp) · [原生 AMF](https://github.com/AlkaidLab/foundation-sunshine/blob/07d8ae13c658128d267c357196a610fb8b2667f3/src/amf/amf_d3d11.cpp) · [Intel VPL 编码参数](https://intel.github.io/libvpl/latest/API_ref/VPL_structs_encode.html) · [微软画质与速度属性](https://learn.microsoft.com/en-us/windows/win32/codecapi/avenccommonqualityvsspeed-property)
+### Intel AV1 离屏实测
+
+在一台 Windows Intel Arc B390 上，使用相同的动态纹理、SDR、AV1 CBR 48 Mbps 和 60 FPS 目标。每档按 MFT、oneVPL、oneVPL、MFT 的顺序各编码 240 帧。两条路径都从 GPU 上的 BGRA 开始，计时包含颜色转换、提交和等待本帧编码返回。
+
+| 分辨率 | Intel MFT 编码 P95 | oneVPL D3D11 编码 P95 | 每秒编码帧数，MFT → oneVPL |
+| --- | --- | --- | --- |
+| 1920×1080 | 9.66–11.19 ms | 5.39–5.52 ms | 60.1 → 60.2 |
+| 3840×2160 | 24.28–27.83 ms | 14.46–14.71 ms | 32.6–39.8 → 60.0 |
+
+4K 时 MFT 实际输出 26.5–32.4 Mbps，oneVPL 输出 49.2 Mbps。较慢的一组也使用相同的目标码率。数据可以复现该显卡编码环节的收益，采集、网络、客户端呈现和显示器扫描需单独测量。
+
+### 与 Foundation Sunshine 的参数对照
+
+| Sunshine 编码器 | 源码提供的主要调节 | Eclipse 对应能力 |
+| --- | --- | --- |
+| Intel QSV | 编码速度预设、低功耗 HEVC 引擎、H.264 熵编码选择。实时路径使用单帧异步深度。 | oneVPL 可选 Target Usage、低功耗引擎、VBV 和 Windows 同设备 GPU 输入。H.264 目前协商 Baseline，使用 CAVLC。 |
+| AMD AMF | 质量预设、用途、码率控制、预分析、自适应量化、HRD、参考帧与切片数量。 | 支持速度 / 均衡 / 画质、CBR / VBR、GOP、初始 VBV、输入队列和空间自适应量化。采用超低延迟用途。 |
+| NVIDIA NVENC | P1–P7、单遍 / 双遍、空间 AQ、VBV、lookahead、时间滤波、分帧编码、帧预算保护。 | 当前 Windows 路径是 NVIDIA MFT，可调画质 / 速度和 GOP。P1–P7、双遍与分帧编码需要原生 NVENC 接口。 |
+| 软件编码 | `sw_preset`、`sw_tune` 可选择编码库提供的速度与延迟策略。 | 软件 H.264 使用 OpenH264，编码器参数取自该库。 |
+
+涉及后续帧的预分析会延后当前帧输出。Eclipse 的实时采编路径按输入帧取得对应编码结果，保留首帧和丢包恢复时的关键帧请求。[Foundation Sunshine 配置解析](https://github.com/AlkaidLab/foundation-sunshine/blob/07d8ae13c658128d267c357196a610fb8b2667f3/src/config.cpp) · [Sunshine 视频后端](https://github.com/AlkaidLab/foundation-sunshine/blob/07d8ae13c658128d267c357196a610fb8b2667f3/src/video.cpp) · [Sunshine 原生 AMF](https://github.com/AlkaidLab/foundation-sunshine/blob/07d8ae13c658128d267c357196a610fb8b2667f3/src/amf/amf_d3d11.cpp) · [Intel VPL 编码参数](https://intel.github.io/libvpl/latest/API_ref/VPL_structs_encode.html) · [微软画质与速度属性](https://learn.microsoft.com/en-us/windows/win32/codecapi/avenccommonqualityvsspeed-property)
 
 三个主机 CLI 入口均支持 `--encoder-tuning`，参数采用与服务端配置相同的 JSON 对象。例如在 Bash 中使用 `--encoder hardware --encoder-tuning '{"hardware_gop_seconds":10,"intel_mf_quality_vs_speed":0}'`。手动还原时关闭对应开关，即可沿用该后端的默认策略。
 
@@ -48,7 +68,7 @@ AMD 使用安装在系统目录的 AMF 驱动运行时，通过 `InitDX11` 和 `
 
 捕获快照池的4K原生对照按“新分配 / 复用 / 新分配 / 复用”执行，每组600帧。采集复制加编码的中位耗时：H.264 9.80/9.90→8.29/8.26ms，HEVC 9.71/9.80→8.24/8.29ms，AV1 8.87/8.83→7.29/7.31ms；每种格式四轮的输出哈希一致。输入为GPU直接生成图案，不采集桌面，不包含网络与显示；池不复用仍被异步编码器持有的 NV12 sample。
 
-AMF 三种格式将 GOP 周期设为0，并在初始化后核对驱动实际值。公共编码线程仅在首帧、编码器重建和显式恢复请求时要求关键帧；AMF 在线目标码率调整保留参考链，不额外请求 IDR；需要重建编码器的模式、VBR峰值等参数变更仍以新关键帧开始。需要重建参考链的其它后端仍可要求关键帧，不能把这条策略当成所有后端的无限 GOP 保证。
+AMF 三种格式的默认 GOP 周期为 0。启用自定义关键帧间隔时，Eclipse 按串流帧率换算成帧数，在初始化后核对驱动实际值。公共编码线程仅在首帧、编码器重建和显式恢复请求时要求关键帧；AMF 在线目标码率调整保留参考链，不额外请求 IDR；需要重建编码器的模式、VBR峰值等参数变更仍以新关键帧开始。需要重建参考链的其它后端仍可要求关键帧，不能把这条策略当成所有后端的无限 GOP 保证。
 
 在一台 AMD GPU 上，同为 3840×2160、60 FPS 设置、14 Mbps、60 帧生成色条的测试中，MFT CPU 输入均值约 43.4 ms，MFT GPU 输入约 45.6–45.8 ms；原生 AMF CPU 输入约 13.7 ms，AMF GPU 输入两次约 8.9 / 9.1 ms，中位约 8.0 ms。AMF HEVC GPU 输入约 9.0–9.2 ms。结果包含编码调用的转换、提交与驱动等待；生成纹理的初始 CPU 上传在计时外，真实桌面采集、传输和呈现也不在该计时内。测试核验颜色、冷关键帧、降码率及恢复，不能等同于真实桌面总延迟验收或所有显卡的性能保证。
 
@@ -74,7 +94,7 @@ VPL 使用单帧异步深度、无 B 帧、速度优先和有限 VBV；低延迟
 
 VBR 设置目标和峰值码率，峰值必须不小于目标。CBR 是编码器速率预算，不能保证每一帧、每一秒或加上网络协议后的线上字节数完全恒定。软件 OpenH264 路径保留平均码率控制，不提供这个 VBR 后端。
 
-构建只使用固定版本的 MIT Intel 公共头文件和 C 编译器。运行时需要 Intel GPU 对相应编码的硬件支持及驱动：Linux 安装 Intel VPL dispatcher（`libvpl.so.2`）和 GPU runtime；Windows 正式包随带 MIT 许可的标准 `libvpl.dll` dispatcher，仍需系统 Intel GPU runtime；直接 Cargo 构建时需自行提供 dispatcher。硬件实现由标准 VPL dispatcher 查找，应用不自行扫描驱动目录或直接加载私有实现 DLL。不要求链接 FFmpeg 或启动编码子进程。CPU NV12 转换与上传仍存在，不宣称零拷贝。API 依据 [Intel VPL 低延迟说明](https://intel.github.io/libvpl/latest/appendix/VPL_apnds_c.html) 和 [编码过程](https://intel.github.io/libvpl/v2.10/programming_guide/VPL_prg_encoding.html)，公共头文件来源和固定提交见 `vendor/libvpl-api/UPSTREAM.md`。
+构建只使用固定版本的 MIT Intel 公共头文件和 C 编译器。运行时需要 Intel GPU 对相应编码的硬件支持及驱动：Linux 安装 Intel VPL dispatcher（`libvpl.so.2`）和 GPU runtime；Windows 正式包随带 MIT 许可的标准 `libvpl.dll` dispatcher，仍需系统 Intel GPU runtime；直接 Cargo 构建时需自行提供 dispatcher。硬件实现由标准 VPL dispatcher 查找，应用不自行扫描驱动目录或直接加载私有实现 DLL。不要求链接 FFmpeg 或启动编码子进程。系统内存输入使用 CPU 转 NV12 并上传。Windows 开启 D3D11 输入后，采集纹理在同一设备上转换并复制到 oneVPL 自有表面。API 依据 [Intel VPL 低延迟说明](https://intel.github.io/libvpl/latest/appendix/VPL_apnds_c.html) 和 [编码过程](https://intel.github.io/libvpl/v2.10/programming_guide/VPL_prg_encoding.html)，公共头文件来源和固定提交见 `vendor/libvpl-api/UPSTREAM.md`。
 
 AV1 解码库在 Linux 复用 VA-API 表面池、DMA-BUF 租约与下载路径；Windows 可通过 Intel VPL 硬解为 CPU NV12 输出，之后仍有像素复制。H.264 / HEVC 的既有 D3D11 共享呈现路径保留。`av1_decode_probe` 使用生成的 I/P 时间单元，检查冷启动、连续解码、时间戳和可选 GPU 租约；仍需在目标驱动上实测。
 
@@ -96,7 +116,7 @@ cargo run --release -p uu-media --example encoder_probe --features vaapi -- \
   --encoder vaapi --frames 180 --width 1920 --height 1080
 ```
 
-探针只生成色条，检查范围/矩阵、尺寸裁剪、恢复IDR、码率调整和逐帧解码，不打开屏幕、声音或输入设备。Windows 使用 `--encoder hardware` 要求真正硬编；Linux 可用 `--encoder vaapi`。`--decoder hw` 同时要求硬件解码，不以自动软件回退代替硬件互通验证。使用 `--encoder software` 或 `auto` 检查其它选择；缺少硬件后端的构建保留软件路径。
+探针默认生成色条，可检查颜色、尺寸裁剪、恢复关键帧、码率调整和逐帧解码。性能对照可用固定种子的动态块和固定节拍，全程使用生成画面。Windows 使用 `--encoder hardware` 要求真正硬编；Linux 可用 `--encoder vaapi`。`--decoder hw` 同时要求硬件解码，不以自动软件回退代替硬件互通验证。使用 `--encoder software` 或 `auto` 检查其它选择；缺少硬件后端的构建保留软件路径。
 
 单台支持VA-API的Linux设备上，720p、1080p、1080×1920竖屏与3840×2160均完成恢复和色彩检查。合成色条的720p调用均值约为软件11.2 ms、复制上传VA-API4.4 ms、映射上传VA-API3.4 ms；4K映射上传约23 ms。这些是编码调用时间，包括转换、上传与等待，不是端到端延迟，也不是帧率保证；4K的该测量尚不足以持续60 FPS。不同码率控制会产生不同的实际字节数，不能将目标码率相同当作输出完全等价。
 

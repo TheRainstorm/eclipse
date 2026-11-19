@@ -6,8 +6,8 @@ use std::time::Instant;
 use std::mem::ManuallyDrop;
 use windows::{core::Interface,Win32::{Foundation::RECT,Graphics::{Direct3D11::*,Dxgi::Common::*},Media::MediaFoundation::*}};
 
-/// Conversion-specific resources share the AMF pool's output/release contract.
-pub(super) enum AmfTarget {
+/// The caller may reuse a target only after its previous GPU read is ordered or released.
+pub(super) enum ConversionTarget {
     ColorConverter(crate::d3d11_color::EncodeTarget),
     VideoProcessor(VideoTarget),
 }
@@ -43,20 +43,20 @@ pub(super) struct Input {
     color:Option<crate::d3d11_color::Converter>,
 }
 impl Input {
-    pub fn amf_path(&self)->&'static str {if self.color.is_some(){"color-converter"}else{"video-processor"}}
-    pub fn amf_target(&self)->Result<AmfTarget,String> {
-        if let Some(converter)=&self.color {return converter.target().map(AmfTarget::ColorConverter);}
-        self.video_target().map(AmfTarget::VideoProcessor).map_err(|e|e.to_string())
+    pub fn conversion_path(&self)->&'static str {if self.color.is_some(){"color-converter"}else{"video-processor"}}
+    pub fn target(&self)->Result<ConversionTarget,String> {
+        if let Some(converter)=&self.color {return converter.target().map(ConversionTarget::ColorConverter);}
+        self.video_target().map(ConversionTarget::VideoProcessor).map_err(|e|e.to_string())
     }
-    pub fn amf_convert(&self,frame:&RawFrame,target:&AmfTarget)->Result<ID3D11Texture2D,String> {
-        let surface=frame.d3d11.as_ref().ok_or("missing AMF GPU input")?;
+    pub fn convert_into(&self,frame:&RawFrame,target:&ConversionTarget)->Result<ID3D11Texture2D,String> {
+        let surface=frame.d3d11.as_ref().ok_or("missing encoder GPU input")?;
         let (texture,device)=surface.capture_texture()?;
         self.validate_source(frame,texture,device).map_err(|e|e.to_string())?;
         let guard=surface.capture_read()?;
         let output=match (&self.color,target) {
-            (Some(converter),AmfTarget::ColorConverter(target))=>converter.convert_into(texture,target),
-            (None,AmfTarget::VideoProcessor(target))=>self.video_convert_into(frame,target,true).map_err(|e|e.to_string()),
-            _=>Err("AMF target conversion path changed".into()),
+            (Some(converter),ConversionTarget::ColorConverter(target))=>converter.convert_into(texture,target),
+            (None,ConversionTarget::VideoProcessor(target))=>self.video_convert_into(frame,target,true).map_err(|e|e.to_string()),
+            _=>Err("encoder target conversion path changed".into()),
         };
         if let Some(guard)=guard{guard.finish()?;}output
     }
@@ -208,7 +208,7 @@ pub(super) fn device_manager(device:&ID3D11Device)->windows::core::Result<IMFDXG
 impl Drop for Input {fn drop(&mut self){
     if let Some(p)=&self.profile {
         eprintln!("uu-gpu-input-profile path={} source_format={:?} source_pixel={:?} output_format={} width={} height={} device={:p} target_allocations={} output_views={} fresh_frames={} pooled_frames={} prepare_ns={} convert_ns={}",
-            self.amf_path(),self.source_format,self.pixel_format,if self.settings.hdr{"P010"}else{"NV12"},self.settings.width,self.settings.height,self.device.as_raw(),VpProfile::get(&p.allocations),VpProfile::get(&p.views),VpProfile::get(&p.fresh),VpProfile::get(&p.pooled),VpProfile::get(&p.prepare_ns),VpProfile::get(&p.convert_ns));
+            self.conversion_path(),self.source_format,self.pixel_format,if self.settings.hdr{"P010"}else{"NV12"},self.settings.width,self.settings.height,self.device.as_raw(),VpProfile::get(&p.allocations),VpProfile::get(&p.views),VpProfile::get(&p.fresh),VpProfile::get(&p.pooled),VpProfile::get(&p.prepare_ns),VpProfile::get(&p.convert_ns));
     }
 }}
 

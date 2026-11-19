@@ -103,6 +103,7 @@ fn main() -> anyhow::Result<()> {
     let mut frames = 180u32;
     let mut format = PixelFormat::I420;
     let mut gpu_input=false;
+    let mut cpu_every: Option<u32> = None;
     let mut gpu_generated=false;
     let mut motion=false;
     let mut tile_size=8usize;
@@ -141,6 +142,12 @@ fn main() -> anyhow::Result<()> {
             "--nvidia-quality-vs-speed"=>settings.tuning.nvidia_quality_vs_speed=Some(value.parse()?),
             "--intel-mf-quality-vs-speed" => settings.tuning.intel_mf_quality_vs_speed=Some(value.parse()?),
             "--gop-seconds" => settings.tuning.hardware_gop_seconds=Some(value.parse()?),
+            "--cpu-every" => {
+                let interval: u32 = value.parse()?;
+                ensure!(interval >= 2, "--cpu-every requires an interval of at least two frames");
+                cpu_every = Some(interval);
+            }
+            "--intel-gpu-input" => settings.tuning.intel_gpu_input=value.parse()?,
             "--intel-vbv-frames" => settings.tuning.intel_vbv_frames=Some(value.parse()?),
             "--amd-vbv-frames" => settings.tuning.amd_vbv_frames=Some(value.parse()?),
             "--amd-input-queue" => settings.tuning.amd_input_queue=Some(value.parse()?),
@@ -190,6 +197,8 @@ fn main() -> anyhow::Result<()> {
     ensure!(!motion || (format == PixelFormat::Bgra8 && source_scale==1),
         "moving tiles require bgra, gpu, or gpu-generated at native size");
     ensure!((2..=64).contains(&tile_size),"tile size must be 2–64 pixels");
+    ensure!(cpu_every.is_none() || (gpu_input && source_scale == 1),
+        "--cpu-every requires GPU input and native source size");
     ensure!(capture_copy.is_none() || gpu_generated,"capture-copy requires a generated GPU source");
     ensure!((1..=4).contains(&source_scale) && (gpu_input || source_scale==1)
         && settings.width*source_scale<=8192 && settings.height*source_scale<=8192,"source scale requires valid GPU capture geometry");
@@ -274,7 +283,7 @@ fn main() -> anyhow::Result<()> {
         }
         let capture_started=std::time::Instant::now();
         #[cfg(windows)]
-        let input=if let Some(gpu)=&gpu {
+        let input=if let Some(gpu)=gpu.as_ref().filter(|_| !cpu_every.is_some_and(|interval| index % interval == interval - 1)) {
             let source=Settings{width:settings.width*source_scale,height:settings.height*source_scale,..settings};
             let pts=Timestamp(u64::from(index)*1_000_000/u64::from(settings.fps));
             let frame=if gpu_generated {gpu.generated_with_copy(source.width,source.height,index*source_scale,pts,capture_copy)?}
@@ -385,7 +394,7 @@ fn main() -> anyhow::Result<()> {
     let average = times.iter().sum::<f64>() / times.len() as f64;
     let mut report=serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
         "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":(!steady).then_some(true),"pixel_verified_frames":verified,"pixel_verify_every":verify_every,"gpu_decoded_frames":gpu_decoded,"zero_output_inputs":zero_output_inputs,"max_decode_lag_frames":max_decode_lag_frames,
-        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"gpu_generated":gpu_generated,"capture_device_supplied":capture_device_supplied,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
+        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"gpu_generated":gpu_generated,"cpu_fallback_frames":cpu_every.map_or(0, |interval| frames/interval),"capture_device_supplied":capture_device_supplied,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
         "encode_ms_first":first_encode,"encode_ms_p99":times[times.len()*99/100],"encode_ms_max":times[times.len()-1],
         "encoder_preparation_ms":encoder_preparation_ms,"preparation_plus_first_encode_ms":encoder_preparation_ms+first_encode,

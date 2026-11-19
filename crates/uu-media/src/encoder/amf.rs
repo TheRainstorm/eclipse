@@ -47,7 +47,7 @@ struct Lease(NonNull<c_void>);
 impl Lease {fn new()->Result<Self,String>{NonNull::new(unsafe{eclipse_amf_lease_new()}).map(Self).ok_or_else(||"AMF lease allocation failed".into())}}
 impl super::input_pool::Released for Lease {fn released(&self)->bool{unsafe{eclipse_amf_lease_released(self.0.as_ptr())!=0}}}
 impl Drop for Lease {fn drop(&mut self){unsafe{eclipse_amf_lease_close(self.0.as_ptr());}}}
-struct Inputs(super::input_pool::Pool<super::gpu::AmfTarget,Lease>,&'static str);
+struct Inputs(super::input_pool::Pool<super::gpu::ConversionTarget,Lease>,&'static str);
 impl Drop for Inputs {
     fn drop(&mut self) {
         self.0.retire();
@@ -156,14 +156,14 @@ impl super::worker::Driver for Driver {
                 let mut first=proof.clone();first["event"]="shared_capture_first_input".into();crate::shared_capture::log(first);
                 self.shared_proof=Some(proof);
             }
-            self.inputs.1=input.amf_path();
+            self.inputs.1=input.conversion_path();
             if self.pool_enabled {
                 let lease=match Lease::new(){Ok(lease)=>lease,Err(error)=>{self.inputs.0.retire();return Err(error);}};
-                let key=match self.inputs.0.acquire(timestamp,lease,||input.amf_target()) {
+                let key=match self.inputs.0.acquire(timestamp,lease,||input.target()) {
                     Ok(key)=>key,Err(error)=>{self.inputs.0.retire();return Err(error);}
                 };
                 let (target,_)=self.inputs.0.target(key)?;
-                match input.amf_convert(frame,target) {
+                match input.convert_into(frame,target) {
                     Ok(output)=>texture=Some(output),
                     Err(error)=>{self.inputs.0.retire();return Err(error);}
                 }

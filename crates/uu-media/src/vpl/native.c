@@ -59,6 +59,9 @@ typedef struct {
     mfxExtVideoSignalInfo color; mfxExtAV1BitstreamParam av1;
     mfxExtBuffer *extensions[5];
     mfxFrameSurface1 surface;
+    mfxFrameSurface1 *gpu_surface;
+    mfxStatus (MFX_CDECL *get_surface)(mfxSession,mfxFrameSurface1 **);
+    mfxU16 input_pattern;
     uint8_t *pixels,*bits; size_t pixel_size,bit_size;
     uint32_t frame_order,peak_kbps,requested_gop; int vbr,explicit_vbv;
 } Encoder;
@@ -125,8 +128,15 @@ static int runtime_open(Runtime *rt,int decoder,char *error,size_t capacity){
     }
     return failed(error,capacity,"runtime unavailable; install Intel VPL dispatcher and GPU runtime",MFX_ERR_NOT_FOUND);
 }
+static void release_gpu_surface(Encoder *e) {
+    if (e->gpu_surface) {
+        e->gpu_surface->FrameInterface->Release(e->gpu_surface);
+        e->gpu_surface=NULL;
+    }
+}
 void eclipse_vpl_encoder_close(Encoder *e){
     if(!e)return;
+    release_gpu_surface(e);
     if(e->session){if(e->initialized)e->rt.encode_close(e->session);e->rt.close(e->session);}
     runtime_close(&e->rt);free(e->pixels);free(e->bits);
 #ifdef _WIN32
@@ -229,12 +239,22 @@ static int bitrate_matches(const Encoder *e,uint32_t target){
     return actual+multiplier>=target && actual<=target+multiplier && (!e->vbr || (maximum>=actual && maximum<=e->peak_kbps+multiplier));
 }
 int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint32_t fps,uint32_t target,uint32_t peak,int vbr,uint32_t target_usage,int low_power,uint32_t gop_frames,uint32_t vbv_frames,
-    Encoder **out,char *error,size_t capacity){
+    void *d3d11_device,Encoder **out,char *error,size_t capacity){
     if(!out || target_usage<1 || target_usage>7 || low_power<0 || low_power>2 || gop_frames>65535 || vbv_frames>5 || width<2 || height<2 || width>8192 || height>8192 || (width|height)&1 || !fps || fps>240 || target<64 || target>1000000 || peak<target || peak>2000000)
         return failed(error,capacity,"invalid encoder settings",MFX_ERR_INVALID_VIDEO_PARAM);
     *out=NULL;Encoder *e=(Encoder *)calloc(1,sizeof(*e));if(!e)return failed(error,capacity,"allocation",MFX_ERR_MEMORY_ALLOC);
     e->requested_gop=gop_frames;e->explicit_vbv=vbv_frames!=0;
     if(runtime_open(&e->rt,0,error,capacity)<0){eclipse_vpl_encoder_close(e);return -1;}
+    e->input_pattern=d3d11_device?MFX_IOPATTERN_IN_VIDEO_MEMORY:MFX_IOPATTERN_IN_SYSTEM_MEMORY;
+    mfxStatus (MFX_CDECL *set_handle)(mfxSession,mfxHandleType,mfxHDL)=NULL;
+    if (d3d11_device) {
+        set_handle=(void *)module_symbol(e->rt.module,"MFXVideoCORE_SetHandle");
+        e->get_surface=(void *)module_symbol(e->rt.module,"MFXMemory_GetSurfaceForEncode");
+        if (!set_handle || !e->get_surface) {
+            eclipse_vpl_encoder_close(e);
+            return failed(error,capacity,"D3D11 input API",MFX_ERR_UNSUPPORTED);
+        }
+    }
     mfxU32 id=codec==0?MFX_CODEC_AVC:codec==1?MFX_CODEC_HEVC:codec==2?MFX_CODEC_AV1:0;
     if(!id){eclipse_vpl_encoder_close(e);return failed(error,capacity,"unknown codec",MFX_ERR_UNSUPPORTED);}
     mfxStatus status=MFX_ERR_NOT_FOUND,last_error=MFX_ERR_NOT_FOUND;
@@ -245,12 +265,18 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
 #endif
     for(unsigned index=0;index<candidates;++index){
         status=session_open(&e->rt,&e->session,index,id);if(status<0){if(status==MFX_ERR_NOT_FOUND)break;last_error=status;continue;}
+        if (d3d11_device) {
+            status=set_handle(e->session,MFX_HANDLE_D3D11_DEVICE,d3d11_device);
+            if (status!=MFX_ERR_NONE) {
+                last_error=status;e->rt.close(e->session);e->session=NULL;continue;
+            }
+        }
         /* Prefer Intel's fixed-function low-power encoder (as used for
          * interactive streaming); retain the driver's general engine when
          * this codec/platform does not expose low-power encoding. */
         for(unsigned tuning=low_power==2?2:0;tuning<(low_power==1?2:4);++tuning){
             memset(&e->params,0,sizeof(e->params));
-            e->params.AsyncDepth=1;e->params.IOPattern=MFX_IOPATTERN_IN_SYSTEM_MEMORY;
+            e->params.AsyncDepth=1;e->params.IOPattern=e->input_pattern;
             e->params.mfx.CodecId=id;e->params.mfx.CodecProfile=codec==0?MFX_PROFILE_AVC_BASELINE:codec==1?MFX_PROFILE_HEVC_MAIN:MFX_PROFILE_AV1_MAIN;
             if(codec==0)e->params.mfx.CodecLevel=MFX_LEVEL_AVC_52;
             e->params.mfx.TargetUsage=(mfxU16)target_usage;
@@ -300,7 +326,7 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
                 || e->params.mfx.FrameInfo.CropX!=0 || e->params.mfx.FrameInfo.CropY!=0 || e->params.mfx.CodecProfile!=checked.mfx.CodecProfile
                 || !window_matches(&e->params,gop_frames,requested_kb,mismatch,sizeof(mismatch))
                 || e->params.mfx.GopRefDist!=1 || e->params.AsyncDepth!=1 || e->params.mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12
-                || e->params.IOPattern!=MFX_IOPATTERN_IN_SYSTEM_MEMORY || e->params.mfx.RateControlMethod!=(vbr?MFX_RATECONTROL_VBR:MFX_RATECONTROL_CBR) || !bitrate_matches(e,target)){
+                || e->params.IOPattern!=e->input_pattern || e->params.mfx.RateControlMethod!=(vbr?MFX_RATECONTROL_VBR:MFX_RATECONTROL_CBR) || !bitrate_matches(e,target)){
                 last_error=status<0?status:MFX_ERR_UNSUPPORTED;e->rt.encode_close(e->session);continue;
             }
             e->initialized=1;break;
@@ -310,13 +336,16 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
     }
     if(!e->initialized){eclipse_vpl_encoder_close(e);return failed(error,capacity,mismatch[0]?mismatch:"hardware codec/rate-control initialization",last_error);}
     e->surface.Info=e->params.mfx.FrameInfo;
-    uint32_t pitch=e->surface.Info.Width,rows=e->surface.Info.Height;
-    e->pixel_size=(size_t)pitch*rows*3/2;e->pixels=(uint8_t *)malloc(e->pixel_size);
+    if (!d3d11_device) {
+        uint32_t pitch=e->surface.Info.Width,rows=e->surface.Info.Height;
+        e->pixel_size=(size_t)pitch*rows*3/2;e->pixels=(uint8_t *)malloc(e->pixel_size);
+        if(!e->pixels){eclipse_vpl_encoder_close(e);return failed(error,capacity,"input allocation",MFX_ERR_MEMORY_ALLOC);}
+        memset(e->pixels,16,(size_t)pitch*rows);memset(e->pixels+(size_t)pitch*rows,128,(size_t)pitch*rows/2);
+        e->surface.Data.Pitch=(mfxU16)pitch;e->surface.Data.Y=e->pixels;e->surface.Data.U=e->pixels+(size_t)pitch*rows;e->surface.Data.V=e->surface.Data.U+1;
+    }
     e->bit_size=(size_t)width*height*3/2+65536;if(e->bit_size>64*1024*1024)e->bit_size=64*1024*1024;
     e->bits=(uint8_t *)malloc(e->bit_size);
-    if(!e->pixels||!e->bits){eclipse_vpl_encoder_close(e);return failed(error,capacity,"frame allocation",MFX_ERR_MEMORY_ALLOC);}
-    memset(e->pixels,16,(size_t)pitch*rows);memset(e->pixels+(size_t)pitch*rows,128,(size_t)pitch*rows/2);
-    e->surface.Data.Pitch=(mfxU16)pitch;e->surface.Data.Y=e->pixels;e->surface.Data.U=e->pixels+(size_t)pitch*rows;e->surface.Data.V=e->surface.Data.U+1;
+    if(!e->bits){eclipse_vpl_encoder_close(e);return failed(error,capacity,"bitstream allocation",MFX_ERR_MEMORY_ALLOC);}
 #ifdef _WIN32
     e->timer=timeBeginPeriod(1)==0;
 #endif
@@ -324,17 +353,42 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
 }
 int eclipse_vpl_encoder_low_power(Encoder *e){return e && e->params.mfx.LowPower==MFX_CODINGOPTION_ON;}
 int eclipse_vpl_encoder_input(Encoder *e,uint8_t **data,size_t *length,uint32_t *pitch,uint32_t *rows){
-    if(!e || e->surface.Data.Locked)return -1;
+    if(!e || !e->pixels || e->surface.Data.Locked)return -1;
     *data=e->pixels;*length=e->pixel_size;*pitch=e->surface.Data.Pitch;*rows=e->surface.Info.Height;return 0;
 }
-int eclipse_vpl_encoder_encode(Encoder *e,uint64_t timestamp,int keyframe,const uint8_t **data,size_t *length,uint64_t *pts,int *key,char *error,size_t capacity){
+/* The texture is borrowed until encode, cancellation, or the next acquisition.
+ * oneVPL owns reuse and retains any surface the encoder still needs. */
+int eclipse_vpl_encoder_texture(Encoder *e,void **texture,char *error,size_t capacity) {
+    if (!e || !e->get_surface || !texture) return failed(error,capacity,"missing video memory session",MFX_ERR_NOT_INITIALIZED);
+    *texture=NULL;
+    release_gpu_surface(e);
+    mfxFrameSurface1 *f=NULL;
+    mfxStatus st=e->get_surface(e->session,&f);
+    if (!f || !f->FrameInterface || !f->FrameInterface->Release)
+        return failed(error,capacity,"GetSurfaceForEncode",st<0?st:MFX_ERR_UNSUPPORTED);
+    e->gpu_surface=f;
+    if (st!=MFX_ERR_NONE || !f->FrameInterface->GetNativeHandle) {
+        release_gpu_surface(e);
+        return failed(error,capacity,"GetSurfaceForEncode",st!=MFX_ERR_NONE?st:MFX_ERR_UNSUPPORTED);
+    }
+    mfxResourceType type=0;
+    st=f->FrameInterface->GetNativeHandle(f,texture,&type);
+    if (st<0 || type!=MFX_RESOURCE_DX11_TEXTURE || !*texture) {
+        release_gpu_surface(e);
+        return failed(error,capacity,"D3D11 native texture",st<0?st:MFX_ERR_UNSUPPORTED);
+    }
+    return 0;
+}
+void eclipse_vpl_encoder_release_texture(Encoder *e) { if(e)release_gpu_surface(e); }
+
+static int encode_surface(Encoder *e,mfxFrameSurface1 *surface,uint64_t timestamp,int keyframe,const uint8_t **data,size_t *length,uint64_t *pts,int *key,char *error,size_t capacity){
     if(!e || e->initialized!=1)return failed(error,capacity,"missing/failed encoder",MFX_ERR_NOT_INITIALIZED);
     *data=NULL;*length=0;
     mfxBitstream bits;memset(&bits,0,sizeof(bits));bits.Data=e->bits;bits.MaxLength=(mfxU32)e->bit_size;
-    e->surface.Data.TimeStamp=timestamp;e->surface.Data.FrameOrder=e->frame_order++;
+    surface->Data.TimeStamp=timestamp;surface->Data.FrameOrder=e->frame_order++;
     mfxEncodeCtrl control;memset(&control,0,sizeof(control));if(keyframe)control.FrameType=MFX_FRAMETYPE_I|MFX_FRAMETYPE_IDR|MFX_FRAMETYPE_REF;
     mfxSyncPoint sync=NULL;mfxStatus status;uint64_t deadline=now_ms()+1000;
-    do{status=e->rt.encode(e->session,&control,&e->surface,&bits,&sync);if(status==MFX_WRN_DEVICE_BUSY)pause_ms();}
+    do{status=e->rt.encode(e->session,&control,surface,&bits,&sync);if(status==MFX_WRN_DEVICE_BUSY)pause_ms();}
         while(status==MFX_WRN_DEVICE_BUSY && now_ms()<deadline);
     if(status==MFX_ERR_MORE_DATA)return 0;
     if(status<0 || !sync)return failed(error,capacity,"EncodeFrameAsync",status);
@@ -342,6 +396,13 @@ int eclipse_vpl_encoder_encode(Encoder *e,uint64_t timestamp,int keyframe,const 
     if(status!=MFX_ERR_NONE)return failed(error,capacity,"encode synchronization",status);
     if(!bits.DataLength || (size_t)bits.DataOffset+bits.DataLength>e->bit_size)return failed(error,capacity,"invalid coded buffer",MFX_ERR_NOT_ENOUGH_BUFFER);
     *data=e->bits+bits.DataOffset;*length=bits.DataLength;*pts=bits.TimeStamp;*key=(bits.FrameType&(MFX_FRAMETYPE_I|MFX_FRAMETYPE_IDR))!=0;return 1;
+}
+int eclipse_vpl_encoder_encode(Encoder *e,uint64_t timestamp,int keyframe,const uint8_t **data,size_t *length,uint64_t *pts,int *key,char *error,size_t capacity) {
+    if(!e || (e->get_surface && !e->gpu_surface))return failed(error,capacity,"missing input surface",MFX_ERR_NOT_INITIALIZED);
+    mfxFrameSurface1 *f=e->get_surface?e->gpu_surface:&e->surface;
+    int result=encode_surface(e,f,timestamp,keyframe,data,length,pts,key,error,capacity);
+    release_gpu_surface(e);
+    return result;
 }
 int eclipse_vpl_encoder_bitrate(Encoder *e,uint32_t target,char *error,size_t capacity){
     if(!e || target<64 || target>1000000 || (e->vbr && target>e->peak_kbps))return failed(error,capacity,"invalid bitrate",MFX_ERR_INVALID_VIDEO_PARAM);
@@ -357,7 +418,7 @@ int eclipse_vpl_encoder_bitrate(Encoder *e,uint32_t target,char *error,size_t ca
     mfxStatus status=e->rt.reset(e->session,&e->params);
     if(status<0 || status==MFX_WRN_PARTIAL_ACCELERATION){e->params=previous;e->initialized=-1;return failed(error,capacity,"bitrate reset",status);}
     status=e->rt.get(e->session,&e->params);
-    if(status<0 || !bitrate_matches(e,target) || e->params.AsyncDepth!=1 || e->params.mfx.GopRefDist!=1
+    if(status<0 || !bitrate_matches(e,target) || e->params.IOPattern!=e->input_pattern || e->params.AsyncDepth!=1 || e->params.mfx.GopRefDist!=1
         || (e->requested_gop && e->params.mfx.GopPicSize!=e->requested_gop)
         || (e->explicit_vbv && vbv_kb(&e->params)!=retained_kb)
         || e->params.mfx.FrameInfo.CropW!=previous.mfx.FrameInfo.CropW || e->params.mfx.FrameInfo.CropH!=previous.mfx.FrameInfo.CropH

@@ -24,10 +24,15 @@ extern "C" {
         low_power:i32,
         gop_frames:u32,
         vbv_frames:u32,
+        d3d11_device: *mut c_void,
         out: *mut *mut c_void,
         error: *mut c_char,
         capacity: usize,
     ) -> i32;
+    #[cfg(all(windows, feature="mf-encode"))]
+    fn eclipse_vpl_encoder_texture(encoder: *mut c_void, texture: *mut *mut c_void, error: *mut c_char, capacity: usize) -> i32;
+    #[cfg(all(windows, feature="mf-encode"))]
+    fn eclipse_vpl_encoder_release_texture(encoder: *mut c_void);
     fn eclipse_vpl_encoder_close(encoder: *mut c_void);
     fn eclipse_vpl_encoder_low_power(encoder: *mut c_void) -> i32;
     fn eclipse_vpl_encoder_input(
@@ -64,6 +69,8 @@ pub(super) struct Driver {
     encoder: NonNull<c_void>,
     settings: Settings,
     name: String,
+    #[cfg(all(windows, feature="mf-encode"))]
+    video_input: Option<super::vpl_gpu::Input>,
     pending: VecDeque<(u64, Timestamp)>,
     headers: super::headers::Headers,
     profile: super::profile::Profile,
@@ -76,7 +83,40 @@ impl Drop for Driver {
     }
 }
 impl Driver {
-    pub fn open(settings: Settings) -> Result<Self, String> {
+    pub fn open(settings: Settings, input: Option<super::InputDevice>) -> Result<Self, String> {
+        #[cfg(all(windows, feature="mf-encode"))]
+        if settings.tuning.intel_gpu_input && !settings.hdr && settings.source_hdr.is_none() {
+            if let Some(input) = input.filter(|input| input.vendor == 0x8086) {
+                let attempt = || -> Result<Self, String> {
+                    let video = super::vpl_gpu::Input::new(input)?;
+                    let mut driver = Self::open_native(settings, video.device_ptr())?;
+                    let raw = driver.acquire_texture()?;
+                    video.texture(raw, settings)?;
+                    unsafe { eclipse_vpl_encoder_release_texture(driver.encoder.as_ptr()); }
+                    driver.video_input = Some(video);
+                    Ok(driver)
+                };
+                match attempt() {
+                    Ok(driver) => return Ok(driver),
+                    Err(error) => tracing::warn!(%error, "oneVPL D3D11 input unavailable; retrying with system memory"),
+                }
+            }
+        }
+        #[cfg(not(all(windows, feature="mf-encode")))]
+        let _ = input;
+        Self::open_native(settings, std::ptr::null_mut())
+    }
+
+    #[cfg(all(windows, feature="mf-encode"))]
+    fn acquire_texture(&self) -> Result<*mut c_void, String> {
+        let mut raw = std::ptr::null_mut();
+        let mut error = [0; 512];
+        let status = unsafe { eclipse_vpl_encoder_texture(self.encoder.as_ptr(), &mut raw, error.as_mut_ptr(), error.len()) };
+        if status < 0 { return Err(message(&error)); }
+        Ok(raw)
+    }
+
+    fn open_native(settings: Settings, device: *mut c_void) -> Result<Self, String> {
         if settings.hdr {return Err("HDR requires the Windows P010 hardware encoder path".into());}
         if cfg!(windows) && settings.tuning.intel_mf_quality_vs_speed.is_some()
             && !settings.tuning.custom_intel()
@@ -105,6 +145,7 @@ impl Driver {
                 match settings.tuning.intel_low_power{super::LowPower::Auto=>0,super::LowPower::On=>1,super::LowPower::Off=>2},
                 settings.tuning.gop_frames(settings.fps).unwrap_or(0),
                 u32::from(settings.tuning.intel_vbv_frames.unwrap_or(0)),
+                device,
                 &mut encoder,
                 error.as_mut_ptr(),
                 error.len(),
@@ -123,38 +164,28 @@ impl Driver {
             encoder,
             settings,
             name: format!(
-                "intel-vpl ({:?} hw, {}, {} engine, TU{}{})",
+                "intel-vpl ({:?} hw, {}, {} engine, TU{}{}, {})",
                 settings.codec,
                 if vbr { "VBR" } else { "CBR" },
-                if low_power { "low power" } else { "general" }, settings.tuning.intel_target_usage, controls(settings)
+                if low_power { "low power" } else { "general" }, settings.tuning.intel_target_usage, controls(settings),
+                if device.is_null() { "system memory" } else { "D3D11 input" }
             ),
+            #[cfg(all(windows, feature="mf-encode"))]
+            video_input: None,
             pending: VecDeque::new(),
             headers: Default::default(),
             profile: super::profile::Profile::new("intel-vpl"),
         })
     }
-}
-fn controls(settings: Settings) -> String {
-    let mut text = String::new();
-    if let Some(frames) = settings.tuning.gop_frames(settings.fps) {
-        text.push_str(&format!(", GOP={frames}"));
-    }
-    if let Some(frames) = settings.tuning.intel_vbv_frames {
-        text.push_str(&format!(", VBV={frames}f"));
-    }
-    text
-}
-impl super::worker::Driver for Driver {
-    fn backend_name(&self) -> &str {
-        &self.name
-    }
-    fn codec(&self) -> uu_proto::media::VideoCodec {
-        self.settings.codec
-    }
-    fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String> {
-        let started = self.profile.start();
-        if (frame.width, frame.height) != (self.settings.width, self.settings.height) {
-            return Err("capture size changed".into());
+    fn prepare_input(&mut self, frame: &RawFrame) -> Result<(), String> {
+        #[cfg(all(windows, feature="mf-encode"))]
+        if self.video_input.is_some() {
+            let raw = self.acquire_texture()?;
+            let result = self.video_input.as_mut().unwrap().write(raw, frame, self.settings);
+            if result.is_err() {
+                unsafe { eclipse_vpl_encoder_release_texture(self.encoder.as_ptr()); }
+            }
+            return result;
         }
         let (mut pointer, mut size, mut pitch, mut rows) = (std::ptr::null_mut(), 0, 0, 0);
         if unsafe {
@@ -184,12 +215,41 @@ impl super::worker::Driver for Driver {
             [pitch, pitch, 0],
             [0, pitch * rows, 0],
             surface,
-        )?;
-        let uploaded = started.map(|start| start.elapsed());
-        let tag = frame.pts.0.saturating_mul(90_000) / 1_000_000;
+        )
+    }
+}
+fn controls(settings: Settings) -> String {
+    let mut text = String::new();
+    if let Some(frames) = settings.tuning.gop_frames(settings.fps) {
+        text.push_str(&format!(", GOP={frames}"));
+    }
+    if let Some(frames) = settings.tuning.intel_vbv_frames {
+        text.push_str(&format!(", VBV={frames}f"));
+    }
+    text
+}
+impl super::worker::Driver for Driver {
+    #[cfg(all(windows, feature="mf-encode"))]
+    fn gpu_input(&self) -> bool { self.video_input.is_some() }
+    #[cfg(all(windows, feature="mf-encode"))]
+    fn gpu_vendor(&self) -> Option<u16> { self.video_input.as_ref().map(|_| 0x8086) }
+    fn backend_name(&self) -> &str {
+        &self.name
+    }
+    fn codec(&self) -> uu_proto::media::VideoCodec {
+        self.settings.codec
+    }
+    fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String> {
+        let started = self.profile.start();
+        if (frame.width, frame.height) != (self.settings.width, self.settings.height) {
+            return Err("capture size changed".into());
+        }
         if self.pending.len() >= 4 {
             return Err("Intel encoder buffered more than four input frames".into());
         }
+        self.prepare_input(frame)?;
+        let uploaded = started.map(|start| start.elapsed());
+        let tag = frame.pts.0.saturating_mul(90_000) / 1_000_000;
         self.pending.push_back((tag, frame.pts));
         let (mut data, mut len, mut pts, mut key) = (std::ptr::null(), 0, 0, 0);
         let mut error = [0 as c_char; 512];

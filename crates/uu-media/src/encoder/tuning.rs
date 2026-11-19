@@ -19,6 +19,8 @@ pub enum LowPower {
     Off,
 }
 
+fn disabled(value: &bool) -> bool { !*value }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tuning {
@@ -38,6 +40,9 @@ pub struct Tuning {
     /// oneVPL TargetUsage: 1 = best quality, 4 = balanced, 7 = fastest.
     pub intel_target_usage: u8,
     pub intel_low_power: LowPower,
+    /// Opt in to oneVPL video memory when capture exposes a compatible Intel D3D11 device.
+    #[serde(skip_serializing_if = "disabled")]
+    pub intel_gpu_input: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intel_vbv_frames: Option<u8>,
     /// Applies to Intel's Windows MFT in automatic hardware selection.
@@ -58,6 +63,7 @@ impl Default for Tuning {
             amd_vbv_frames: None,
             intel_target_usage: 7,
             intel_low_power: LowPower::Auto,
+            intel_gpu_input: false,
             intel_vbv_frames: None,
             intel_mf_quality_vs_speed: None,
             nvidia_quality_vs_speed: None,
@@ -101,7 +107,7 @@ impl Tuning {
         Ok(())
     }
     pub fn custom_intel(self) -> bool {
-        self.intel_target_usage != 7
+        (cfg!(windows) && self.intel_gpu_input) || self.intel_target_usage != 7
             || self.intel_low_power != LowPower::Auto
             || self.intel_vbv_frames.is_some()
     }
@@ -148,6 +154,15 @@ mod tests {
             serde_json::from_value::<Tuning>(serde_json::to_value(t).unwrap()).unwrap(),
             t
         );
+    }
+
+    #[test]
+    fn intel_texture_input_is_an_explicit_windows_preference() {
+        let tuning: Tuning = serde_json::from_str(r#"{"intel_gpu_input":true}"#).unwrap();
+        assert!(tuning.intel_gpu_input);
+        assert_eq!(tuning.custom_intel(), cfg!(windows));
+        assert_eq!(serde_json::to_value(tuning).unwrap()["intel_gpu_input"], true);
+        assert!(!Tuning::default().intel_gpu_input);
     }
 
     #[test]

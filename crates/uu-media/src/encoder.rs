@@ -24,6 +24,8 @@ mod worker;
 mod headers;
 #[cfg(all(feature="intel-vpl",any(windows,target_os="linux")))]
 mod vpl;
+#[cfg(all(windows, feature="mf-encode", feature="intel-vpl"))]
+mod vpl_gpu;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Preference {
@@ -178,12 +180,13 @@ fn hardware(settings: Settings, input:Option<InputDevice>) -> Result<Box<dyn Vid
     }
     #[cfg(all(windows,feature="mf-encode"))]
     if settings.preference!=Preference::Intel || settings.hdr || settings.source_hdr.is_some() {
-        match worker::Worker::spawn(move||mf::Driver::open(settings,input)) {
+        let mf_input=input.clone();
+        match worker::Worker::spawn(move||mf::Driver::open(settings,mf_input)) {
             Ok(encoder)=>return Ok(Box::new(encoder)),
             Err(mf_error)=>{
                 #[cfg(feature="intel-vpl")]
                 if matches!(settings.preference,Preference::Auto|Preference::Hardware|Preference::Intel) && (settings.codec!=VideoCodec::H264 || settings.tuning.custom_intel() || settings.preference==Preference::Intel) {
-                    return worker::Worker::spawn(move||vpl::Driver::open(settings))
+                    return worker::Worker::spawn(move||vpl::Driver::open(settings,input))
                         .map(|encoder|Box::new(encoder) as Box<dyn VideoEncoder>)
                         .map_err(|vpl_error|error(format!("Media Foundation: {mf_error}; Intel VPL: {vpl_error}")));
                 }
@@ -195,7 +198,7 @@ fn hardware(settings: Settings, input:Option<InputDevice>) -> Result<Box<dyn Vid
     if vpl_required
         || !cfg!(any(all(target_os="linux",feature="vaapi"),all(windows,feature="mf-encode")))
     {
-        return Ok(Box::new(worker::Worker::spawn(move||vpl::Driver::open(settings))?));
+        return Ok(Box::new(worker::Worker::spawn(move||vpl::Driver::open(settings,input))?));
     }
     if vpl_required {
         return Err(error("selected encoder requires the intel-vpl backend in this build"));

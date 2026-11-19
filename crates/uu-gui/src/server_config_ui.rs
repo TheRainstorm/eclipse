@@ -86,8 +86,12 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
                         crate::theme::selectable_value(ui,&mut tuning.intel_low_power,value,label);
                     }
                 });
-                optional_slider(ui, "自定义初始 VBV 缓冲", &mut tuning.intel_vbv_frames, 1, 1..=5, " 帧");
-                ui.weak(uu_i18n::text("更改 oneVPL 参数会在 Intel 上选择该后端。当前通过系统内存送帧，实际速度取决于显卡和分辨率。"));
+                optional_slider(ui, "自定义初始 VBV 缓冲", &mut tuning.intel_vbv_frames, 3, 1..=5, " 帧");
+                if cfg!(windows) {
+                    crate::theme::switch(ui, &mut tuning.intel_gpu_input, uu_i18n::text("优先使用 D3D11 纹理输入"));
+                    ui.weak(uu_i18n::text("在同一块 Intel 显卡上转换和编码画面。驱动无法接收纹理时使用系统内存。"));
+                }
+                ui.weak(uu_i18n::text("更改 oneVPL 参数会在 Intel 上选择该后端。串流诊断中可查看实际输入方式。"));
             });
         }
         if cfg!(windows) && matches!(s.encoding,Encoding::Auto|Encoding::Hardware|Encoding::Nvidia) {
