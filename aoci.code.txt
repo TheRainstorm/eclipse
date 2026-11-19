@@ -278,8 +278,8 @@ d3d11va.rs[IH9L]: F:以MF D3D设备管理器硬解H264、HEVC与AV1并租赁解�
 pixels.rs[DP7T]: F:在最后一个Bytes引用释放后回收有界CPU读回缓冲区 | R:code:crates/uu-media/src/hw/surface.rs | A:Pool,Pixels | S:仅保留两个且每个不超16MiB；复用不清可见区域，发布前调用方必须覆盖全部字节
 surface.rs[KH7S]: F:从对齐NV12分配提取可见区域并完整覆盖复用输出 | R:code:crates/uu-media/src/hw/d3d11va.rs | A:crop_nv12_into | S:UV起点按分配高度而非可见高度计算；校验失败不得修改输出
 thread.rs[RH8M]: F:将硬件解码初始化、准备、批量解码和销毁限定在同一个OS线程 | R:code:crates/uu-media/src/hw/mod.rs | A:Backend,Worker | S:Backend无需Send，不能迁移为可跨线程恢复的tokio任务；批量输出不重放AU
-vaapi.rs[IH8L]: F:用cros-codecs在Linux解析并硬解H264、HEVC或AV1并交付图像 | R:code:crates/uu-media/src/hw/thread.rs,code:crates/uu-media/src/hw/vaapi_download.rs | A:VaapiDecoder | S:CheckEvents和表面不足须排空事件后重试同一字节；先喂新AU再取旧输出，不能丢掉新压缩帧
-vaapi_download.rs[KH7M]: F:把只读 DMA-BUF 中可见的 NV12 两平面按线性或 Intel Y 布局复制到可复用像素缓冲 | R:code:crates/uu-media/src/hw/vaapi.rs | A:download | S:先校验两平面范围再 START/READ，END 失败也解除映射；未知布局退回驱动；Intel Y 在一个 32 行瓦片内按列连续读取，末列与末行组仅复制可见字节
+vaapi.rs[IH8L]: F:用 cros-codecs 在 Linux 分派 VAAPI 硬解 H264、HEVC 和 AV1，交付 DMA 表面或紧密 NV12 | R:code:crates/uu-media/src/hw/thread.rs,code:crates/uu-media/src/hw/vaapi_download.rs | A:VaapiDecoder | S:先喂新AU再取旧图，CheckEvents及表面不足排空事件重试同一字节；重建池同时替换其只读映射，读回失败清缓存并退回驱动
+vaapi_download.rs[KH7M]: F:校验 NV12 线性或 Intel Y 两平面，将可见像素读入复用缓冲 | R:code:crates/uu-media/src/hw/vaapi.rs | A:Mappings,download | S:池内唯一对象按设备与inode识别，可见末端须同时落在原映射及重导出范围，余者临时映射；只在每帧START/END之间访问；Intel Y按32行瓦片列复制可见字节
 vpl.rs[IH7S]: F:在专属线程执行Intel VPL AV1硬解并复制输出NV12像素 | R:code:crates/uu-media/src/vpl/native.c | A:VplDecoder | S:驱动借用表面不能跨线程；同步完成且边界检查后才复制两平面
 
 ===/home/yfy/Repo/uu_remote/crates/uu-proto/src/===
