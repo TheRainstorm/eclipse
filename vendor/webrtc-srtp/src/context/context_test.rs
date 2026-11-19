@@ -8,6 +8,47 @@ const CIPHER_CONTEXT_ALGO: ProtectionProfile = ProtectionProfile::Aes128CmHmacSh
 const DEFAULT_SSRC: u32 = 0;
 
 #[test]
+fn replay_detector_created_once_per_ssrc_and_protocol() -> Result<()> {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    fn counted(factory: ContextOption) -> (ContextOption, Arc<AtomicUsize>) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&count);
+        (
+            Box::new(move || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                factory()
+            }),
+            count,
+        )
+    }
+
+    let (rtp, rtp_calls) = counted(srtp_replay_protection(2048));
+    let (rtcp, rtcp_calls) = counted(srtcp_replay_protection(64));
+    let mut context = Context::new(
+        &[0; 16],
+        &[0; 14],
+        CIPHER_CONTEXT_ALGO,
+        Some(rtp),
+        Some(rtcp),
+    )?;
+    for ssrc in [7, 7, 8, 7, 8] {
+        context.set_roc(ssrc, 1);
+    }
+    assert_eq!(rtp_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(rtcp_calls.load(Ordering::Relaxed), 0);
+    for ssrc in [7, 7, 8, 7, 8] {
+        context.set_index(ssrc, 1);
+    }
+    assert_eq!(rtcp_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(rtp_calls.load(Ordering::Relaxed), 2);
+    Ok(())
+}
+
+#[test]
 fn test_context_roc() -> Result<()> {
     let key_len = CIPHER_CONTEXT_ALGO.key_len();
     let salt_len = CIPHER_CONTEXT_ALGO.salt_len();
