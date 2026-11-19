@@ -1343,6 +1343,29 @@ fn display_rename_is_metadata_only_and_does_not_require_an_idle_host() {
 }
 
 #[test]
+fn saving_the_active_windows_mode_persists_intent_without_reconfiguring() {
+    let (manager, backend) = fixture();
+    let path = saved_policy(&manager);
+    let display = manager.create_manual(Spec::default(), true).unwrap();
+    let target = manager.lock().unwrap()[&display.id].target.clone();
+    let hdr = Spec { hdr: true, ..display.spec };
+    backend.targets.lock().unwrap().iter_mut().find(|t| t.key == target).unwrap().actual = Some(hdr);
+    let gate = Arc::new(crate::shared_host::SessionGate::default());
+    manager.register_host(&gate);
+    let stream = gate.claim("streaming-peer").unwrap();
+
+    let edited = manager.configure_display(display.id, display.name, hdr).unwrap();
+    assert_eq!(edited.actual, Some(hdr));
+    assert_eq!(edited.spec, hdr);
+    assert_eq!(manager.saved_records().unwrap()[0].spec, hdr);
+    assert!(backend.reconfigured.lock().unwrap().is_empty());
+
+    drop(stream);
+    manager.remove(display.id).unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn display_mode_edit_requires_idle_host_then_reconfigures_and_updates_durable_intent() {
     let (manager,backend)=fixture();let path=saved_policy(&manager);
     let display=manager.create_manual(Spec::default(),true).unwrap();

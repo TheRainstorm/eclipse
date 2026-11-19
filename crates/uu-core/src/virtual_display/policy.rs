@@ -328,12 +328,11 @@ impl Manager {
         };
         if entry.display.cleanup_pending {return Err(Error::CleanupPending{id,message:entry.display.last_error.clone().unwrap_or_default()});}
         let saved_record=self.saved_records()?.into_iter().find(|r|r.id==id.0);
-        let previous=entry.display.clone();
         let current=self.backend.inventory()?.targets.into_iter().find(|target|target.key==entry.target).ok_or(Error::UnknownSlot)?;
-        // Actual HDR/mode may differ because of OS policy or an external mode
-        // change. A name-only save must not turn that observation into a new
-        // topology request, especially while this host is streaming.
-        let mode_changed=previous.spec!=spec || (restore_mode&&current.actual!=Some(spec));
+        // Renaming preserves the current OS mode. Saving a mode already active
+        // on this target only updates intent; reapplying it can reset other screens.
+        let mode_requested = entry.display.spec != spec || restore_mode;
+        let mode_changed = mode_requested && !(current.active && current.actual == Some(spec));
         let _edit=if mode_changed {
             if self.editing_mode.swap(true,Ordering::AcqRel) {return Err(platform("another virtual display edit is running"));}
             struct Edit<'a>(&'a AtomicBool);
