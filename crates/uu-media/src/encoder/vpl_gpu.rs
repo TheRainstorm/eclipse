@@ -148,7 +148,21 @@ impl Input {
                     .neutral
                     .as_ref()
                     .ok_or("missing oneVPL padding texture")?;
-                self.context.CopyResource(&dest, neutral);
+                // The visible NV12 rectangle is overwritten below. Only clear the
+                // uncovered even-aligned strips, including their chroma samples.
+                for (x, y, right, bottom) in [
+                    (settings.width, 0, width, settings.height),
+                    (0, settings.height, width, height),
+                ] {
+                    if x < right && y < bottom {
+                        let region = D3D11_BOX {
+                            left: x, top: y, front: 0, right, bottom, back: 1,
+                        };
+                        self.context.CopySubresourceRegion(
+                            &dest, 0, x, y, 0, neutral, 0, Some(&region),
+                        );
+                    }
+                }
                 self.context
                     .CopySubresourceRegion(&dest, 0, 0, 0, 0, &visible, 0, None);
             }
