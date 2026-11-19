@@ -1,6 +1,8 @@
 //! Generates D3D11 input without reading a desktop. Upload is outside encode timing.
 use anyhow::{ensure, Context, Result};
 use uu_media::{d3d11_frame::Frame, PixelFormat, RawFrame};
+#[path="moving_tiles.rs"]
+mod moving_tiles;
 use windows::{
     core::Interface,
     Win32::{
@@ -18,8 +20,13 @@ pub struct Upload {
     input: uu_media::encoder::InputDevice,
     pool: std::cell::RefCell<Option<uu_media::encoder::CapturePool>>,
     last: std::cell::RefCell<Option<RawFrame>>,
+    tiles: Option<moving_tiles::Tiles>,
 }
 impl Upload {
+    pub fn enable_tiles(&mut self, size: u32) -> Result<()> {
+        self.tiles = Some(moving_tiles::Tiles::new(&self.device, size)?);
+        Ok(())
+    }
     pub fn input_device(&self) -> Result<uu_media::encoder::InputDevice> {
         Ok(self.input.clone())
     }
@@ -50,6 +57,7 @@ impl Upload {
             input,
             pool: Default::default(),
             last: Default::default(),
+            tiles: None,
         })
     }
     pub fn frame(&self, frame: &RawFrame) -> Result<RawFrame> {
@@ -144,45 +152,49 @@ impl Upload {
         let texture = texture.context("missing generated GPU texture")?;
         unsafe {
             let context = self.device.GetImmediateContext()?;
-            let clear: ID3D11DeviceContext1 = context.cast()?;
             let mut view = None;
             self.device
                 .CreateRenderTargetView(&texture, None, Some(&mut view))?;
             let view = view.context("missing generated render target")?;
-            context.ClearRenderTargetView(&view, &[0.0, 0.0, 0.0, 1.0]);
-            let colors = [
-                [0.0, 0.0, 0.0, 1.0],
-                [1.0, 1.0, 1.0, 1.0],
-                [254.0 / 255.0, 0.0, 0.0, 1.0],
-                [0.0, 1.0, 1.0 / 255.0, 1.0],
-            ];
-            let offset = (u64::from(index) * 2 % u64::from(width)) as u32;
-            for bar in 1..4u32 {
-                let start = (bar * width + 3) / 4;
-                let end = ((bar + 1) * width + 3) / 4;
-                if start == end {
-                    continue;
-                }
-                let left = (start + width - offset) % width;
-                let right = left + end - start;
-                let rect = RECT {
-                    left: left as i32,
-                    top: 0,
-                    right: right.min(width) as i32,
-                    bottom: height as i32,
-                };
-                clear.ClearView(&view, &colors[bar as usize], Some(&[rect]));
-                if right > width {
-                    clear.ClearView(
-                        &view,
-                        &colors[bar as usize],
-                        Some(&[RECT {
-                            left: 0,
-                            top: 0,
-                            right: (right - width) as i32,
-                            bottom: height as i32,
-                        }]),
-                    );
+            if let Some(tiles) = &self.tiles {
+                tiles.draw(&context, &view, width, height, index);
+            } else {
+                let clear: ID3D11DeviceContext1 = context.cast()?;
+                context.ClearRenderTargetView(&view, &[0.0, 0.0, 0.0, 1.0]);
+                let colors = [
+                    [0.0, 0.0, 0.0, 1.0],
+                    [1.0, 1.0, 1.0, 1.0],
+                    [254.0 / 255.0, 0.0, 0.0, 1.0],
+                    [0.0, 1.0, 1.0 / 255.0, 1.0],
+                ];
+                let offset = (u64::from(index) * 2 % u64::from(width)) as u32;
+                for bar in 1..4u32 {
+                    let start = (bar * width + 3) / 4;
+                    let end = ((bar + 1) * width + 3) / 4;
+                    if start == end {
+                        continue;
+                    }
+                    let left = (start + width - offset) % width;
+                    let right = left + end - start;
+                    let rect = RECT {
+                        left: left as i32,
+                        top: 0,
+                        right: right.min(width) as i32,
+                        bottom: height as i32,
+                    };
+                    clear.ClearView(&view, &colors[bar as usize], Some(&[rect]));
+                    if right > width {
+                        clear.ClearView(
+                            &view,
+                            &colors[bar as usize],
+                            Some(&[RECT {
+                                left: 0,
+                                top: 0,
+                                right: (right - width) as i32,
+                                bottom: height as i32,
+                            }]),
+                        );
+                    }
                 }
             }
             context.Flush();

@@ -48,6 +48,9 @@ cc = "1.2"
 [dev-dependencies]
 serde_json.workspace = true
 
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62", features = ["Win32_Graphics_Direct3D_Fxc"] }
+
 [features]
 default = ["h264", "d3d11va", "mf-encode", "intel-vpl", "pyrowave"]
 # Pinned, packaged C runtime; Vulkan is loaded only when explicitly selected.

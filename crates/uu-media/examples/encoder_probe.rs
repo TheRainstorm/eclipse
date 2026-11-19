@@ -1,4 +1,4 @@
-//! Generated colour bars only: never opens a screen, input or audio device.
+//! Generated colour bars or deterministic moving tiles. No screen or input device.
 use anyhow::{ensure, Context};
 use std::io::Write;
 use uu_proto::media::VideoCodec;
@@ -66,6 +66,31 @@ fn input_format(mut frame: RawFrame, format: PixelFormat) -> RawFrame {
         }
     }
 }
+fn fixture(settings: Settings, index: u32, format: PixelFormat, motion: bool, tile_size: usize) -> RawFrame {
+    if !motion {
+        return input_format(pattern(settings, index), format);
+    }
+    // Changing tiles give the rate controller real work. Generate one row
+    // per block and copy it vertically, outside the timed encoder call.
+    let stride = settings.width as usize * 4;
+    let mut pixels = vec![0u8; stride * settings.height as usize];
+    for (y, band) in pixels.chunks_mut(stride * tile_size).enumerate() {
+        let (first, rest) = band.split_at_mut(stride);
+        for (x, tile) in first.chunks_mut(tile_size * 4).enumerate() {
+            let seed = (y as u32 * 65537 + x as u32).wrapping_add(index.wrapping_mul(835001));
+            let h = (seed ^ (seed >> 16)).wrapping_mul(0x7feb352d);
+            let h = (h ^ (h >> 15)).wrapping_mul(0x846ca68b);
+            let [b, g, r, _] = (h ^ (h >> 16)).to_le_bytes();
+            for pixel in tile.chunks_exact_mut(4) { pixel.copy_from_slice(&[b,g,r,255]); }
+        }
+        for row in rest.chunks_exact_mut(stride) { row.copy_from_slice(first); }
+    }
+    RawFrame {
+        width: settings.width, height: settings.height, stride: stride as u32,
+        pts: Timestamp(u64::from(index) * 1_000_000 / u64::from(settings.fps)),
+        format: PixelFormat::Bgra8, data: pixels.into(), gpu: false, dma_buf: None, d3d11: None,
+    }
+}
 fn main() -> anyhow::Result<()> {
     let mut settings = Settings {
         hdr:false,source_hdr:None,tuning:Default::default(), codec:uu_proto::media::VideoCodec::H264,rate_control:encoder::RateControl::Cbr,
@@ -79,6 +104,9 @@ fn main() -> anyhow::Result<()> {
     let mut format = PixelFormat::I420;
     let mut gpu_input=false;
     let mut gpu_generated=false;
+    let mut motion=false;
+    let mut tile_size=8usize;
+    let mut steady=false;
     let mut capture_device=true;
     let mut capture_copy=None;
     let mut source_scale=1u32;
@@ -111,6 +139,15 @@ fn main() -> anyhow::Result<()> {
             "--intel-target-usage"=>settings.tuning.intel_target_usage=value.parse()?,
             "--intel-low-power"=>settings.tuning.intel_low_power=match value.as_str(){"auto"=>encoder::LowPower::Auto,"on"=>encoder::LowPower::On,"off"=>encoder::LowPower::Off,_=>anyhow::bail!("Intel low power must be auto, on or off")},
             "--nvidia-quality-vs-speed"=>settings.tuning.nvidia_quality_vs_speed=Some(value.parse()?),
+            "--intel-mf-quality-vs-speed" => settings.tuning.intel_mf_quality_vs_speed=Some(value.parse()?),
+            "--gop-seconds" => settings.tuning.hardware_gop_seconds=Some(value.parse()?),
+            "--intel-vbv-frames" => settings.tuning.intel_vbv_frames=Some(value.parse()?),
+            "--amd-vbv-frames" => settings.tuning.amd_vbv_frames=Some(value.parse()?),
+            "--amd-input-queue" => settings.tuning.amd_input_queue=Some(value.parse()?),
+            "--amd-aq" => settings.tuning.amd_adaptive_quantization=Some(value.parse()?),
+            "--tile-size" => tile_size=value.parse()?,
+            "--motion" => motion=value.parse()?,
+            "--steady" => steady=value.parse()?,
             "--output"=>output_path=Some(std::path::PathBuf::from(value)),
             "--frames" => frames = value.parse()?,
             "--verify-every" => verify_every=value.parse()?,
@@ -150,11 +187,18 @@ fn main() -> anyhow::Result<()> {
     ensure!(vbr || peak.is_none(),"--peak-kbps requires --rate-control vbr");
     settings.rate_control=if vbr{encoder::RateControl::Vbr{peak_kbps:peak.unwrap_or(settings.bitrate_kbps.saturating_mul(2))}}else{encoder::RateControl::Cbr};
     settings.validate()?;
+    ensure!(!motion || (format == PixelFormat::Bgra8 && source_scale==1),
+        "moving tiles require bgra, gpu, or gpu-generated at native size");
+    ensure!((2..=64).contains(&tile_size),"tile size must be 2–64 pixels");
     ensure!(capture_copy.is_none() || gpu_generated,"capture-copy requires a generated GPU source");
     ensure!((1..=4).contains(&source_scale) && (gpu_input || source_scale==1)
         && settings.width*source_scale<=8192 && settings.height*source_scale<=8192,"source scale requires valid GPU capture geometry");
     #[cfg(windows)]
-    let gpu=if gpu_input {Some(gpu_encoder_input::Upload::new()?)}else{None};
+    let gpu=if gpu_input {
+        let mut gpu=gpu_encoder_input::Upload::new()?;
+        if motion && gpu_generated { gpu.enable_tiles(tile_size as u32)?; }
+        Some(gpu)
+    } else {None};
     let preparation_started=std::time::Instant::now();
     #[cfg(windows)]
     let input_device=if capture_device {gpu.as_ref().map(|gpu|gpu.input_device()).transpose()?}else{None};
@@ -205,35 +249,40 @@ fn main() -> anyhow::Result<()> {
     let mut requested_keys = 0u32;
     #[cfg(windows)]
     let mut gpu_verifier:Option<uu_media::d3d11_frame::Converter>=None;
+    let stream_start=std::time::Instant::now();
+    let mut frame_bytes=Vec::with_capacity(frames as usize);
     for index in 0..frames {
-        if index == frames / 3 || index == frames * 2 / 3 {
+        if steady {
+            let deadline=stream_start+std::time::Duration::from_secs_f64(f64::from(index)/f64::from(settings.fps));
+            std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
+        }
+        if !steady && (index == frames / 3 || index == frames * 2 / 3) {
             encoder.request_keyframe();
             requested_keys += 1;
         }
-        if index == frames / 2 {
+        if !steady && index == frames / 2 {
             encoder.set_bitrate((settings.bitrate_kbps/2).max(64))?;
             ensure!(
                 encoder.set_bitrate(0).is_err(),
                 "invalid bitrate must be rejected without replacing encoder"
             );
         }
-        if index == frames * 3 / 4 {
+        if !steady && index == frames * 3 / 4 {
             // Verify both directions without replacing the session or losing
             // timestamp/reference ownership after a rate-control reset.
             encoder.set_bitrate(settings.bitrate_kbps)?;
         }
         let capture_started=std::time::Instant::now();
-        let input = if gpu_generated {None}else{Some(input_format(pattern(settings, index), format))};
         #[cfg(windows)]
         let input=if let Some(gpu)=&gpu {
             let source=Settings{width:settings.width*source_scale,height:settings.height*source_scale,..settings};
             let pts=Timestamp(u64::from(index)*1_000_000/u64::from(settings.fps));
             let frame=if gpu_generated {gpu.generated_with_copy(source.width,source.height,index*source_scale,pts,capture_copy)?}
-                else {let mut pixels=input_format(pattern(source,index*source_scale),PixelFormat::Bgra8);pixels.pts=pts;gpu.frame(&pixels)?};
+                else {let mut pixels=fixture(source,index*source_scale,PixelFormat::Bgra8,motion,tile_size);pixels.pts=pts;gpu.frame(&pixels)?};
             RawFrame{width:settings.width,height:settings.height,stride:settings.width*4,..frame}
-        }else{input.unwrap()};
+        }else{fixture(settings,index,format,motion,tile_size)};
         #[cfg(not(windows))]
-        let input=input.context("generated GPU input requires Windows")?;
+        let input=fixture(settings,index,format,motion,tile_size);
         let capture_ms=capture_started.elapsed().as_secs_f64()*1000.0;
         capture_times.push(capture_ms);
         let started = std::time::Instant::now();
@@ -246,6 +295,7 @@ fn main() -> anyhow::Result<()> {
             "low-delay encoder emitted no current frame"
         );
         for coded in output {
+            frame_bytes.push(coded.data.len());
             if coded.is_keyframe {key_times.push(elapsed);keyframe_indexes.push(index);}else{delta_times.push(elapsed);}
             bytes += coded.data.len() as u64;
             emitted+=1;
@@ -288,7 +338,7 @@ fn main() -> anyhow::Result<()> {
                 decoded += 1;
                 gpu_decoded += u32::from(output.gpu);
                 if output_index % verify_every != 0 {continue;}
-                let expected = uu_media::convert::frame_to_rgba(&input_format(pattern(settings, output_index), format));
+                let expected = uu_media::convert::frame_to_rgba(&fixture(settings, output_index, format, motion, tile_size));
                 #[cfg(windows)]
                 let actual=if let Some(surface)=&output.d3d11 {
                     if !gpu_verifier.as_ref().is_some_and(|converter|converter.matches(surface)) {
@@ -327,12 +377,14 @@ fn main() -> anyhow::Result<()> {
         emitted == frames && (encode_only || decoded == frames) && keys >= requested_keys + 1,
         "keyframe requests or frame completion failed"
     );
+    let elapsed_s=stream_start.elapsed().as_secs_f64();
     let first_encode=times[0];
+    frame_bytes.sort_unstable();
     times.sort_by(f64::total_cmp);
     capture_encode_times.sort_by(f64::total_cmp);
     let average = times.iter().sum::<f64>() / times.len() as f64;
     let mut report=serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
-        "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,"pixel_verified_frames":verified,"pixel_verify_every":verify_every,"gpu_decoded_frames":gpu_decoded,"zero_output_inputs":zero_output_inputs,"max_decode_lag_frames":max_decode_lag_frames,
+        "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":(!steady).then_some(true),"pixel_verified_frames":verified,"pixel_verify_every":verify_every,"gpu_decoded_frames":gpu_decoded,"zero_output_inputs":zero_output_inputs,"max_decode_lag_frames":max_decode_lag_frames,
         "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"gpu_generated":gpu_generated,"capture_device_supplied":capture_device_supplied,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
         "encode_ms_first":first_encode,"encode_ms_p99":times[times.len()*99/100],"encode_ms_max":times[times.len()-1],
@@ -346,6 +398,9 @@ fn main() -> anyhow::Result<()> {
         "plus_encode_ms_mean":capture_encode_times.iter().sum::<f64>()/capture_encode_times.len() as f64,
         "plus_encode_ms_p50":capture_encode_times[capture_encode_times.len()/2],
         "plus_encode_ms_p95":capture_encode_times[capture_encode_times.len()*95/100]});
+    report["workload"]=serde_json::json!({"motion":motion,"tile_size":tile_size,"steady":steady,"tuning":settings.tuning,
+        "achieved_fps":f64::from(frames)/elapsed_s,"encoded_mbps":bytes as f64*8.0/elapsed_s/1e6,
+        "frame_bytes_p95":frame_bytes[frame_bytes.len()*95/100],"frame_bytes_max":frame_bytes.last()});
     println!("{report}");
     Ok(())
 }
