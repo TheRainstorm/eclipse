@@ -1,11 +1,8 @@
 //! Read-only DMA-BUF download. Avoid VAImage's CPU detile/retile round trip.
 //! Only plain linear NV12 and uncompressed Intel Y tiling are accepted; other
 //! modifiers keep the driver's VAImage path. This is still a CPU download.
-use std::{
-    io,
-    os::fd::{AsRawFd, OwnedFd},
-    ptr::NonNull,
-};
+use memmap2::{MmapOptions, MmapRaw};
+use std::{collections::HashMap, fs::File, io, os::fd::AsRawFd, os::unix::fs::MetadataExt};
 
 const LINEAR: u64 = 0;
 const INTEL_Y: u64 = 0x0100_0000_0000_0002;
@@ -13,7 +10,7 @@ const DMA_BUF_IOCTL_SYNC: libc::c_ulong = 0x4008_6200;
 const READ: u64 = 1;
 const END: u64 = 4;
 
-fn sync(fd: &OwnedFd, flags: u64) -> Result<(), String> {
+fn sync(fd: &File, flags: u64) -> Result<(), String> {
     loop {
         // Linux dma-buf.h: _IOW('b', 0, struct dma_buf_sync { __u64 flags; }).
         let status = unsafe { libc::ioctl(fd.as_raw_fd(), DMA_BUF_IOCTL_SYNC, &flags) };
@@ -21,79 +18,103 @@ fn sync(fd: &OwnedFd, flags: u64) -> Result<(), String> {
             return Ok(());
         }
         let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::EINTR) {
+        if !matches!(error.raw_os_error(), Some(libc::EINTR | libc::EAGAIN)) {
             return Err(format!("DMA-BUF read synchronization: {error}"));
         }
     }
 }
 
-struct Mapping<'a> {
-    fd: &'a OwnedFd,
-    address: NonNull<libc::c_void>,
-    size: usize,
+/// Map only the allocations that belong to this decoder pool. Its original
+/// DMA-BUF fds stay alive, including between successive exports of the same
+/// allocation. Ambiguous or unfamiliar identities still work with a one-shot map.
+#[derive(Default)]
+pub(super) struct Mappings {
+    slots: HashMap<(u64, u64), Slot>,
 }
-impl<'a> Mapping<'a> {
-    fn new(fd: &'a OwnedFd, size: usize) -> Result<Self, String> {
+
+enum Slot {
+    Unique { size: usize, map: Option<MmapRaw> },
+    Ambiguous,
+}
+
+fn identity(file: &File) -> Option<(u64, u64)> {
+    let stat = file.metadata().ok()?;
+    Some((stat.dev(), stat.ino()))
+}
+
+impl Mappings {
+    pub(super) fn register(&mut self, file: &File, size: usize) {
+        if let Some(key) = identity(file) {
+            self.slots
+                .entry(key)
+                .and_modify(|slot| *slot = Slot::Ambiguous)
+                .or_insert(Slot::Unique { size, map: None });
+        }
+    }
+
+    fn with_read<T>(
+        &mut self,
+        file: &File,
+        size: usize,
+        visible_end: usize,
+        read: impl FnOnce(&[u8]) -> Result<T, String>,
+    ) -> Result<T, String> {
         if size == 0 || size > 128 * 1024 * 1024 {
             return Err("DMA-BUF allocation is empty or exceeds the download limit".into());
         }
-        // The VA surface and its exported descriptor outlive this mapping.
-        // Never write to decoded/reference pictures through a CPU mapping.
-        let raw = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                size,
-                libc::PROT_READ,
-                libc::MAP_SHARED,
-                fd.as_raw_fd(),
-                0,
-            )
+        let map_file = |length| {
+            MmapOptions::new()
+                .len(length)
+                .map_raw_read_only(file)
+                .map_err(|error| format!("mapping DMA-BUF: {error}"))
         };
-        if raw == libc::MAP_FAILED {
-            return Err(format!("mapping DMA-BUF: {}", io::Error::last_os_error()));
-        }
-        let Some(address) = NonNull::new(raw) else {
-            unsafe {
-                libc::munmap(raw, size);
+        let transient;
+        let map = match identity(file).and_then(|key| self.slots.get_mut(&key)) {
+            Some(Slot::Unique {
+                size: expected,
+                map,
+            }) if visible_end <= *expected && *expected <= size => {
+                // VA can round the same imported object up on re-export.
+                // Map the original allocation only when both exports cover
+                // the entire visible image, including tile padding.
+                if map.is_none() {
+                    *map = Some(map_file(*expected)?);
+                }
+                map.as_ref().unwrap()
             }
-            return Err("DMA-BUF mapped at a null address".into());
+            _ => {
+                transient = map_file(size)?;
+                &transient
+            }
         };
-        if let Err(error) = sync(fd, READ) {
-            unsafe {
-                libc::munmap(raw, size);
-            }
-            return Err(error);
-        }
-        Ok(Self { fd, address, size })
-    }
-    fn bytes(&self) -> &[u8] {
-        // mmap succeeded; the exported object bounds the slice. START/READ
-        // has completed and the caller has synchronized the decoded surface.
-        unsafe { std::slice::from_raw_parts(self.address.as_ptr().cast(), self.size) }
-    }
-    fn finish(self) -> Result<(), String> {
-        let result = sync(self.fd, READ | END);
-        // Drop must always unmap, including an END failure; avoid a second END.
-        unsafe {
-            libc::munmap(self.address.as_ptr(), self.size);
-        }
-        std::mem::forget(self);
+        sync(file, READ)?;
+        let access = ReadAccess(Some(file));
+        // The decoder synchronized the surface. Only borrow its bytes between
+        // START/END; the raw mapping can stay installed while the GPU writes.
+        let result = read(unsafe { std::slice::from_raw_parts(map.as_ptr(), map.len()) });
+        access.finish()?;
         result
     }
 }
-impl Drop for Mapping<'_> {
+
+struct ReadAccess<'a>(Option<&'a File>);
+impl ReadAccess<'_> {
+    fn finish(mut self) -> Result<(), String> {
+        sync(self.0.take().unwrap(), READ | END)
+    }
+}
+impl Drop for ReadAccess<'_> {
     fn drop(&mut self) {
-        let _ = sync(self.fd, READ | END);
-        unsafe {
-            libc::munmap(self.address.as_ptr(), self.size);
+        if let Some(file) = self.0 {
+            let _ = sync(file, READ | END);
         }
     }
 }
 
-/// The descriptor's FDs are owned by its RAII wrapper and closed by libva.
 /// The caller retains and synchronizes the decoded handle before exporting.
 pub(super) fn download(
-    descriptor: &cros_libva::DrmPrimeSurfaceDescriptor,
+    mut descriptor: cros_libva::DrmPrimeSurfaceDescriptor,
+    mappings: &mut Mappings,
     width: u32,
     height: u32,
     pool: &crate::hw::pixels::Pool,
@@ -108,7 +129,7 @@ pub(super) fn download(
     {
         return Err("unsupported DMA-BUF NV12 layout".into());
     }
-    let object = &descriptor.objects[0];
+    let object = descriptor.objects.pop().unwrap();
     if !matches!(object.drm_format_modifier, LINEAR | INTEL_Y) {
         return Err("DMA-BUF modifier requires the driver download path".into());
     }
@@ -116,31 +137,34 @@ pub(super) fn download(
     let layer = &descriptor.layers[0];
     // Validate both planes before any mapping or destination modification.
     let (w, h) = (width as usize, height as usize);
+    let mut visible_end = 0;
     for (p, rows) in [h, h / 2].into_iter().enumerate() {
-        validate_plane(
+        visible_end = visible_end.max(validate_plane(
             object.size as usize,
             layer.offset[p] as usize,
             layer.pitch[p] as usize,
             w,
             rows,
             object.drm_format_modifier,
-        )?;
+        )?);
     }
-    let mapping = Mapping::new(&object.fd, object.size as usize)?;
+    let file = File::from(object.fd);
     let mut pixels = pool.take(length);
-    let (luma, chroma) = pixels.as_mut().split_at_mut(w * h);
-    for (p, destination) in [luma, chroma].into_iter().enumerate() {
-        copy_plane(
-            mapping.bytes(),
-            layer.offset[p] as usize,
-            layer.pitch[p] as usize,
-            w,
-            destination.len() / w,
-            object.drm_format_modifier,
-            destination,
-        )?;
-    }
-    mapping.finish()?;
+    mappings.with_read(&file, object.size as usize, visible_end, |source| {
+        let (luma, chroma) = pixels.as_mut().split_at_mut(w * h);
+        for (p, destination) in [luma, chroma].into_iter().enumerate() {
+            copy_plane(
+                source,
+                layer.offset[p] as usize,
+                layer.pitch[p] as usize,
+                w,
+                destination.len() / w,
+                object.drm_format_modifier,
+                destination,
+            )?;
+        }
+        Ok(())
+    })?;
     Ok(bytes::Bytes::from_owner(pixels))
 }
 
@@ -171,16 +195,14 @@ fn validate_plane(
     w: usize,
     h: usize,
     modifier: u64,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     if w == 0 || h == 0 || pitch < w || pitch > 1024 * 1024 {
         return Err("invalid DMA-BUF plane dimensions or pitch".into());
     }
     let end = position(pitch, w - 1, h - 1, modifier)
         .and_then(|last| offset.checked_add(last)?.checked_add(1));
-    if end.map_or(true, |end| end > size) {
-        return Err("DMA-BUF plane exceeds its exported object".into());
-    }
-    Ok(())
+    end.filter(|end| *end <= size)
+        .ok_or_else(|| "DMA-BUF plane exceeds its exported object".into())
 }
 fn copy_plane(
     source: &[u8],
@@ -230,6 +252,34 @@ fn copy_plane(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mappings_require_a_unique_pool_object_that_covers_the_visible_image() {
+        let file = File::open(std::env::current_exe().unwrap()).unwrap();
+        let key = identity(&file).unwrap();
+        let mut mappings = Mappings::default();
+        mappings.register(&file, 4096);
+
+        // A regular file can be mapped but cannot start DMA-BUF CPU access.
+        // No read callback may observe its bytes on either path.
+        let unreachable_read = |_: &[u8]| -> Result<(), String> { panic!("unsynchronized read") };
+        assert!(mappings.with_read(&file, 2048, 2048, unreachable_read).is_err());
+        assert!(mappings.with_read(&file, 8192, 4100, unreachable_read).is_err());
+        assert!(matches!(
+            mappings.slots[&key],
+            Slot::Unique { map: None, .. }
+        ));
+        assert!(mappings.with_read(&file, 8192, 4000, unreachable_read).is_err());
+        assert!(matches!(
+            mappings.slots[&key],
+            Slot::Unique { map: Some(_), .. }
+        ));
+
+        mappings.register(&file.try_clone().unwrap(), 4096);
+        assert!(matches!(mappings.slots[&key], Slot::Ambiguous));
+        assert!(mappings.with_read(&file, 8192, 4000, unreachable_read).is_err());
+        assert_eq!(mappings.slots.len(), 1);
+    }
+
     #[test]
     fn intel_y_known_tile_columns_rows_and_edges() {
         // Independent fixed offsets at tile, subtile and row boundaries.

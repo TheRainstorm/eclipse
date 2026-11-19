@@ -112,6 +112,7 @@ struct Decoder {
     pending: VecDeque<RawFrame>,
     pixels: super::pixels::Pool,
     dma_readback: bool,
+    mappings: download::Mappings,
     profile: DecodeProfile,
 }
 
@@ -143,6 +144,7 @@ impl Decoder {
             name: format!("vaapi (cros-codecs hw, {}{})", match codec {VideoCodec::H264=>"",VideoCodec::Hevc=>"HEVC, ",VideoCodec::Av1=>"AV1, ",VideoCodec::Pyrowave=>"PyroWave, "}, path.display()),
             pending: VecDeque::new(),
             pixels: super::pixels::Pool::default(),
+            mappings: download::Mappings::default(),
             dma_readback: std::env::var("UU_VAAPI_READBACK").as_deref() != Ok("legacy"),
             profile: DecodeProfile { enabled: std::env::var("UU_DECODE_PROFILE").is_ok_and(|v|v!="0"), ..Default::default() },
         })
@@ -302,13 +304,14 @@ impl Decoder {
                     let surface = picture.surface();
                     let direct = if self.dma_readback {
                         match surface.export_prime().map_err(|e| e.to_string())
-                            .and_then(|descriptor| download::download(&descriptor,resolution.width,resolution.height,&self.pixels)) {
+                            .and_then(|descriptor| download::download(descriptor,&mut self.mappings,resolution.width,resolution.height,&self.pixels)) {
                             Ok(pixels) => Some(pixels),
                             Err(reason) => {
                                 // An unknown modifier or DMA mapping failure must
                                 // keep hardware decode, using the driver layout.
                                 tracing::debug!(%reason,"VAAPI DMA-BUF download unavailable; keeping driver mapping");
                                 self.dma_readback = false;
+                                self.mappings = download::Mappings::default();
                                 None
                             }
                         }
@@ -377,6 +380,7 @@ impl Decoder {
         // report failures, so every frame it hands out must already exist.
         let mut pool_info=info.clone();
         if crate::dma_buf::rendering() {pool_info.min_num_frames+=6;}
+        let mut mappings = download::Mappings::default();
         let mut prepared = VecDeque::new();
         for _ in 0..pool_info.min_num_frames {
             // Let the VA driver choose its native allocation. ChromeOS GBM's
@@ -422,11 +426,13 @@ impl Decoder {
                     })
                     .collect(),
             };
-            let handles = descriptor
+            let object_size = descriptor.objects[0].size as usize;
+            let handles: Vec<_> = descriptor
                 .objects
                 .into_iter()
                 .map(|o| std::fs::File::from(o.fd))
                 .collect();
+            if self.dma_readback { mappings.register(&handles[0], object_size); }
             let frame = GenericDmaVideoFrame::new(handles, layout)?;
             prepared.push_back(frame);
         }
@@ -437,6 +443,7 @@ impl Decoder {
         });
         pool.resize(&pool_info);
         self.pool = Some(pool);
+        self.mappings = mappings;
         Ok(())
     }
 }

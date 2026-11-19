@@ -65,7 +65,7 @@ d3d11va = []
 mf-encode = []
 # Linux: VA-API stateless decode via cros-codecs. Needs libva and libgbm
 # development packages at build time, so it is opt-in.
-vaapi = ["cros-codecs/vaapi", "dep:cros-libva", "dep:libc"]
+vaapi = ["cros-codecs/vaapi", "dep:cros-libva", "dep:libc", "dep:memmap2"]
 
 [dependencies.openh264]
 version = "0.9"
@@ -95,4 +95,5 @@ windows = { version = "0.62", features = [
 cpal = "0.15.3"
 libpulse-binding = "2.30.1"
 cros-libva = { version = "0.0.12", optional = true }
+memmap2 = { version = "0.9", optional = true }
 libc = { version = "0.2", optional = true }
