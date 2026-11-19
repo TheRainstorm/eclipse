@@ -14,6 +14,8 @@ Linux VA-API 支持完整访问单元提交，并依据 H.264 色彩标记选择
 
 开发机需要 Rust、C/C++、Clang、nasm、pkg-config，以及 libva/libgbm/libdrm/ALSA/PulseAudio、PipeWire 和 XKB 的开发包。Ubuntu 可安装 `libva-dev libgbm-dev libdrm-dev libasound2-dev libpulse-dev libpipewire-0.3-dev`，Arch 使用对应 `libva mesa libdrm alsa-lib libpulse pipewire libxkbcommon libxkbcommon-x11` 软件包。Ubuntu 的 X11 支持还需 `libxkbcommon-x11-dev`（运行时为 `libxkbcommon-x11-0`）；该库在启动 X11 后端时动态加载，单独运行 `ldd` 无法检查它是否存在。运行桌面推荐安装 PipeWire ALSA 插件和中文字体。
 
+构建启用 `vaapi` 的 Linux 客户端时，Wayland HDR 呈现器使用 `wayland-scanner` 从仓库内的协议描述生成 C 绑定，并链接 libepoxy、GBM 和 libwayland-client。Ubuntu 需额外安装 `libepoxy-dev libwayland-dev libwayland-bin`，Arch 需安装 `libepoxy wayland`。运行发行包需要这几个库，只有源码构建需要扫描器。串流窗口所在的输出、合成器及视频解码器都支持 HDR10 时，客户端才会请求 HDR。初次连接到 SDR 输出时默认协商 SDR；已协商 HDR10 的串流窗口迁到 SDR 输出后，HUD 显示「HDR10 → SDR」。
+
 ```sh
 cargo run -p uu-gui --features vaapi
 python3 tools/linux/package.py
