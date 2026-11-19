@@ -195,19 +195,32 @@ fn copy_plane(
     if w.checked_mul(h) != Some(destination.len()) {
         return Err("invalid DMA-BUF destination size".into());
     }
-    for (y, row) in destination.chunks_exact_mut(w).enumerate() {
-        if modifier == LINEAR {
+    if modifier == LINEAR {
+        for (y, row) in destination.chunks_exact_mut(w).enumerate() {
             let start = offset + y * pitch;
             row.copy_from_slice(&source[start..start + w]);
-        } else {
-            let base = offset + (y / 32) * pitch * 32 + (y % 32) * 16;
-            let whole = w / 16 * 16;
-            for (column, target) in row[..whole].chunks_exact_mut(16).enumerate() {
-                let start = base + (column / 8) * 4096 + (column % 8) * 512;
-                target.copy_from_slice(&source[start..start + 16]);
+        }
+        return Ok(());
+    }
+
+    // Each Intel Y column stores 32 consecutive 16-byte row segments.
+    // Read eight of them together while the destination rows still fit in cache.
+    const BAND_ROWS: usize = 8;
+    let whole = w / 16 * 16;
+    for (band, rows) in destination.chunks_mut(w * BAND_ROWS).enumerate() {
+        let y = band * BAND_ROWS;
+        let base = offset + (y / 32) * pitch * 32 + (y % 32) * 16;
+        for x in (0..whole).step_by(16) {
+            let column = base + x / 16 * 512;
+            for (dy, row) in rows.chunks_exact_mut(w).enumerate() {
+                let start = column + dy * 16;
+                row[x..x + 16].copy_from_slice(&source[start..start + 16]);
             }
-            if whole != w {
-                let start = base + (whole / 128) * 4096 + ((whole % 128) / 16) * 512;
+        }
+        if whole < w {
+            let column = base + whole / 16 * 512;
+            for (dy, row) in rows.chunks_exact_mut(w).enumerate() {
+                let start = column + dy * 16;
                 row[whole..].copy_from_slice(&source[start..start + w - whole]);
             }
         }
@@ -249,6 +262,34 @@ mod tests {
             destination,
             [vec![1; 16], vec![2; 2], vec![3; 16], vec![4; 2]].concat()
         );
+    }
+    #[test]
+    fn intel_y_bands_match_visible_pixels_across_padded_tile_rows() {
+        let (offset, pitch, width) = (63, 384, 146);
+        for height in [1, 7, 8, 9, 17, 31, 32, 33, 64, 65] {
+            // Supply exactly the visible extent. A partial column or band
+            // must not read a complete 16-byte segment past the allocation.
+            let last = position(pitch, width - 1, height - 1, INTEL_Y).unwrap();
+            let source: Vec<u8> = (0..=offset + last)
+                .map(|index| (index ^ (index >> 7) ^ (index >> 14)) as u8)
+                .collect();
+            let expected: Vec<u8> = (0..height)
+                .flat_map(|y| (0..width).map(move |x| position(pitch, x, y, INTEL_Y).unwrap()))
+                .map(|index| source[offset + index])
+                .collect();
+            let mut destination = vec![0; width * height];
+            copy_plane(
+                &source,
+                offset,
+                pitch,
+                width,
+                height,
+                INTEL_Y,
+                &mut destination,
+            )
+            .unwrap();
+            assert_eq!(destination, expected, "height {height}");
+        }
     }
     #[test]
     fn linear_planes_respect_offsets_and_row_padding() {
