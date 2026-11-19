@@ -232,3 +232,27 @@ CPU 火焰图表示采样时线程正在执行什么，宽度不是帧延迟。�
 逐张匹配同一条 PresentMon 记录的 GPU 完成和系统显示时间，两者间隔的中位数为 **21.2–27.0 ms**。这个区间涵盖窗口合成与等待刷新，给出了后续优化窗口呈现时可直接复测的终点。[PresentMon 指标定义](https://github.com/GameTechDev/PresentMon/blob/main/README-ConsoleApplication.md)
 
 另有一项可独立验证的开销。Windows 客户端原先每次绘制都获取后台缓冲并创建渲染目标视图。D3D11 可以在同一尺寸下沿用视图，每帧绑定，调整缓冲尺寸前释放。在同一块 GPU 上交替运行 12 组、每组 4,000 次，视图准备与绑定每次用时的组中位数从 **2.06 µs 降到 0.33 µs**。用不同尺寸和连续翻转生成的 20 帧逐像素校验通过。上表四轮都使用视图复用，表内差异仅用于评估队列设置。[微软 DXGI 资源说明](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/d3d10-graphics-programming-guide-dxgi) · [ResizeBuffers 引用生命周期](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-resizebuffers)
+
+## Sway 下的 4K165 SDR 呈现
+
+在固定 165 Hz 的外屏上，AV1 已硬解到 164 帧/秒时，仍可能有多次刷新显示同一幅画面。Sway 的 `output … max_render_time` 可以调整合成器选择缓冲区的时机。关闭该设置时，Sway 尽早开始合成。设置为 2 时，它会尽量等到离下一次刷新还有 2 毫秒再开始，刚完成的画面就有更多机会赶上这一次刷新。预算过小也可能错过刷新期限。[Sway 1.12 输出手册](https://github.com/swaywm/sway/blob/1.12/sway/sway-output.5.scd)
+
+在 Sway 1.12、Intel 核显、4K165 SDR、AV1 CBR 133 Mbps、固定刷新且开启垂直同步的实机对照中，普通客户端全屏显示持续变化的测试图。硬解在五轮均达到 163.6–164.8 帧/秒。逐次读取显卡最终扫描内容的校验值，每轮取 12 秒，并记录其中最慢的一秒。
+
+| 合成预算，按测试顺序 | 整屏内容变化/秒 | 最慢一秒变化/秒 |
+|---|---:|---:|
+| 默认 A | 146.7 | 132.8 |
+| 2 毫秒 A | 158.2 | 153.9 |
+| 1 毫秒 | 150.4 | 143.9 |
+| 2 毫秒 B | 155.1 | 148.9 |
+| 默认 B | 149.9 | 138.8 |
+
+整屏校验包含视频、HUD 和光标。另一组使用主机图像身份和外屏硬件呈现序号的对照中，每秒首次呈现的不同主机图像从默认两轮的 142.9–145.8 提高到 2 毫秒两轮的 156.3–157.6。此时提交到外屏呈现约占平均源至首显时间的 34–36%，默认两轮约占 40–41%。这些数值适用于上述输出、显卡和负载。
+
+想在自己的机器上比较，可在 Sway 桌面终端先运行 `swaymsg -r -t get_outputs`，记下串流屏的 `name` 和 `max_render_time`，将下一条命令中的输出名替换成实际名称。
+
+```sh
+swaymsg output '<输出名>' max_render_time 2
+```
+
+这条命令立即影响该输出上的窗口。复测同一段运动画面后，如果原值是 0，用 `swaymsg output '<输出名>' max_render_time off` 恢复；如果原值为正数，重新设回该数值即可。整个比较可以在当前桌面完成。
