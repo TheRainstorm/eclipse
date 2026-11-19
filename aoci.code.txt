@@ -23,8 +23,8 @@ request.rs[IH7T]: F:通过ashpd连接发起屏幕选择并管理未完成门户�
 uu-signal.rs[EN7S]: F:运行按私人组鉴权的TLS信令与可选STUN，并分派本机设备组管理 | R:code:crates/uu-cli/src/bin/uu-signal/groups.rs,code:crates/uu-core/src/internet/server.rs,code:crates/uu-core/src/internet/turn.rs,code:crates/uu-core/src/internet/stun.rs | A:main,Args,Action | S:服务必须groups-file，无默认token入口；group子命令不需TLS私钥；TURN URL及secret成对；coturn占STUN端口时不传stun-bind；不访问桌面
 
 ===/home/yfy/Repo/uu_remote/crates/uu-cli/src/===
-lan_cli.rs[EN7M]: F:提供LAN发现、公钥配对、保存设备和前台共享控制命令 | R:code:crates/uu-core/src/native_lan.rs,code:crates/uu-core/src/native_lan_store.rs | A:Command,run | S:配对需要主机确认；生成图禁止桌面输入，忘记本地设备不撤销主机授权
-main.rs[EG8L]: F:以Eclipse命令分派原生串流、网络探测、Windows服务迁移与插件操作 | R:code:crates/uu-cli/src/native_cli.rs,code:crates/uu-cli/src/service_cli.rs,code:crates/uu-core/src/config.rs,code:crates/uu-plugin-sdk/src/runtime.rs | A:Cli,main,NativeVideoOptions | S:后台只取保护绑定的配置；服务命令先于插件初始化，迁移更先于Config取使用锁；插件命令仅派已启用实例，CLI保软件编码默认
+lan_cli.rs[EN7M]: F:提供LAN发现、公钥配对、已配对设备探测与可指定编码参数的前台共享命令 | R:code:crates/uu-core/src/native_lan.rs,code:crates/uu-core/src/native_lan_store.rs,code:crates/uu-cli/src/main.rs | A:Command,run | S:配对须主机核对短码；生成图禁止桌面输入；忘记本地设备不撤销主机授权；前台主机显式传入调优，省略沿用媒体默认
+main.rs[EG8L]: F:分派Eclipse原生串流、探测、Windows服务及插件命令，为三类前台主机提供统一视频参数解析 | R:code:crates/uu-cli/src/native_cli.rs,code:crates/uu-cli/src/lan_cli.rs,code:crates/uu-cli/src/internet_cli.rs,code:crates/uu-cli/src/service_cli.rs,code:crates/uu-core/src/config.rs,code:crates/uu-plugin-sdk/src/runtime.rs,code:crates/uu-media/src/encoder/tuning.rs | A:Cli,main,NativeVideoOptions | S:CLI默认软件编码，硬件调优JSON在启动前同配置规则校验；后台只取保护绑定；服务先于插件初始化，迁移先于Config使用锁；插件命令只派已启用实例
 native_cli.rs[AN7M]: F:运行原生共享及有期限的媒体探测，输出统计和显示源元数据 | R:code:crates/uu-core/src/native.rs,code:crates/uu-core/src/native_pairing.rs | A:host,probe,sources | S:探测仅处理授权媒体，不注入桌面输入；帧数与时限均有界
 service_cli.rs[EO7M]: F:分派所属配置的Windows服务部署、迁移、启停及管理命令并传播正常延期结果 | R:code:crates/uu-cli/src/service_cli/install.rs,code:crates/uu-core/src/service_admin/deployment.rs | A:Command,run,relocate,start,stop,manage | S:修改先核归属；退出10为空闲延期、11等待安装、自动12被取代；显式防火墙才补双栈；迁移入口在Config前运行，不持源共享锁
 
@@ -248,7 +248,7 @@ hdr.rs[KH8M]: F:提供HDR信号数学和能力探针，导出原始观测及呈�
 hdr_windows.rs[IH7S]: F:RAII封装HDR与原生D3D呈现FFI，区分实际提交、复用、繁忙延后并读取有界原始观测 | R:code:crates/uu-media/src/hdr_present.cpp,code:crates/uu-media/src/present_observation.rs | A:Presentation,NativePresentation | S:HWND和所属UI线程须活过表面；resize前注销WGL；Deferred仍须返回已排GPU读的submitted值；原始观测不是显示完成；未启用观测时不查询QPC或DXGI统计；像素诊断最多2048边长
 hevc.rs[KH7S]: F:解析HEVC几何颜色位深及随机访问帧，验证硬解能力并导出自身编码颜色规范化 | R:code:crates/uu-media/src/decoder.rs,code:crates/uu-media/src/hevc_encoder_color.rs | A:Sequence,sequence,is_keyframe,probe_decoder,declare_encoder_color | S:prepare成功不等于可解码，必须真实产出有效GPU图像；SPS限64KiB；颜色重写只供自身编码器使用，不改任意接收流
 lib.rs[LH8M]: F:导出媒体组件并按协商格式与设备能力构建编码和解码门面 | R:code:crates/uu-media/src/decoder.rs,code:crates/uu-media/src/codec.rs | A:default_encoder,default_decoder,decoder_for_codec | S:H264软件回退不能解HEVC；能力探针后为真实会话重建解码器，避免残留参考与PTS
-pyrowave.rs[IH8L]: F:封装固定PyroWave C接口、码流验证及编码解码GPU帧租约 | R:code:crates/uu-media/src/pyrowave/native.cpp | A:Encoder,Decoder,frame_size | S:不可信AU先验证全部块；非线程安全运行库包括槽归还均由Mutex串行；仅SDR420和CBR
+pyrowave.rs[IH8L]: F:封装固定PyroWave C接口、验证码流并以租约托管编码解码的GPU资源 | R:code:crates/uu-media/src/pyrowave/native.cpp | A:Encoder,Decoder,frame_size | S:仅SDR420及CBR，标准编码器的厂商调优不阻塞此独立后端；不可信AU先核验全部块再入驱动；共享解码器和GPU槽归还均经同一Mutex；每帧独立可解码
 shared_capture.rs[DP8L]: F:以NT共享句柄和keyed mutex协调同适配器独立设备的采集快照 | R:code:crates/uu-media/src/encoder/capture_pool.rs | A:Stats,Slot,Guard | S:Arc管CPU复用而mutex管GPU顺序；仅S_OK授所有权，正数timeout不算成功；释放不明则污染代次
 present_observation.rs[DO7T]: F:定义版本化Rust与C++共享的原始Present身份、QPC及DXGI统计布局 | R:code:crates/uu-media/src/hdr_present.cpp,code:crates/uu-media/src/hdr_windows.rs | A:RawPresentObservation | S:repr(C)固定176字节并校验版本大小及关键偏移；HRESULT与零统计原样保留；源fence值只证明图像身份，不证明显示时间
 hevc_encoder_color.rs[KH8M]: F:验证自身HEVC SPS并有界重写VUI视频颜色声明，保持其它语法与图像NAL不变 | R:code:crates/uu-media/src/hevc.rs,code:crates/uu-media/src/encoder/mf.rs,code:crates/uu-media/src/color.rs | A:declare_encoder_color | S:只接受本机编码输出且先用完整H265解析器验证SPS，限64KiB；仅4:2:0的SDR8位或HDR10位；SDR声明limited601，HDR声明limited2020/PQ；保留非SPS字节、参考与几何，缺失VUI或信号字段可插入，接收流禁止使用
@@ -259,17 +259,17 @@ pulse_route.rs[IH8M]: F:为Linux声音采集租赁自有静音输出，迁移播
 wasapi_mute.rs[IH7S]: F:在声音worker中租赁精确WASAPI默认输出静音并观察外部声音调整 | R:code:crates/uu-media/src/audio_capture/mute.rs,code:crates/uu-media/src/audio_capture/wasapi.rs | A:Output,Guard | S:打开loopback前后核端点ID；自有GUID通知不算手动覆盖；COM对象及回调先于平衡CoUninitialize退役；正常Drop释放租约
 
 ===/home/yfy/Repo/uu_remote/crates/uu-media/src/encoder/===
-amf.rs[IH8M]: F:将AMF会话适配编码worker并管理设备重绑、输入池与动态码率和诊断 | R:code:crates/uu-media/src/amf/native.cpp,code:crates/uu-media/src/encoder/input_pool.rs | A:Driver | S:同代输入只有匹配输出与surface归还后复用；重新绑定先安全结束旧native代次
+amf.rs[IH8M]: F:将AMD原生硬件会话接入编码线程，传递按格式核验的调优，管理设备重绑、输入池与码率更新 | R:code:crates/uu-media/src/amf/native.cpp,code:crates/uu-media/src/encoder/input_pool.rs,code:crates/uu-media/src/encoder/tuning.rs | A:Driver | S:省略GOP、队列和VBV传0，AQ自动传负值；同代目标须匹配输出且驱动归还surface才复用；重绑先结束旧代，逐帧校时间戳和强制关键帧，动态码率保参考链
 capture_pool.rs[DP8M]: F:提供2至3个不可变GPU采集快照槽并在无租约时复用 | R:code:crates/uu-media/src/d3d11_frame_windows.rs,code:crates/uu-media/src/shared_capture.rs | A:CapturePool | S:饱和丢新采集不扩VRAM；CPU独占与同context GPU排序共同保证复用，探针Weak挂视图不挂池槽
 gpu.rs[IH8M]: F:在GPU缩放转换D3D采集图像，生成编码样本、AMF目标并创建或复用设备管理器 | R:code:crates/uu-media/src/encoder/input_pool.rs,code:crates/uu-media/src/encoder/mf.rs,code:crates/uu-media/src/encoder/input_device.rs | A:Input,AmfTarget,device_manager | S:MF每样本独立目标，不套AMF池复用；转换持capture_read租约；预绑定可复用同一管理器，设备身份仍按完整COM与LUID检查
 headers.rs[KR7S]: F:缓存自身编码器参数集并为恢复关键帧补齐有序解码头 | R:code:crates/uu-media/src/encoder/worker.rs | A:Headers | S:只复用真实输出头；缺任一H264或HEVC参数集时前缀完整有序链
 input_device.rs[DH8S]: F:在编码器初始化前持有采集设备身份并支持同适配器独立设备 | R:code:crates/uu-media/src/encoder/gpu.rs | A:InputDevice,DeviceIdentity | S:拒绝SINGLETHREADED并启用context多线程保护；适配器匹配用完整LUID而非厂商ID
 input_pool.rs[DP8T]: F:以代次序号和PTS管理AMF最多两个输入目标与在途租约 | R:code:crates/uu-media/src/encoder/amf.rs | A:Pool,Released | S:收到输出且对应surface确已释放才复用；重复或错PTS完成退役整代
 low_delay.rs[KH7S]: F:为自身无B帧H264编码输出声明VUI不重排并保留颜色几何 | R:code:crates/uu-media/src/encoder.rs | A:declare_no_reordering | S:不得应用于任意收到的码流，它们可能真实重排
-mf.rs[IH8L]: F:通过Windows异步硬件MFT编码三种标准格式，预绑定采集设备并校正自身序列颜色 | R:code:crates/uu-media/src/encoder/worker.rs,code:crates/uu-media/src/encoder/gpu.rs,code:crates/uu-media/src/hevc_encoder_color.rs | A:Driver,Runtime | S:transform先于COM/MF释放；已知设备在类型协商前绑定，首GPU图复用管理器且核验身份，不关闭重建；无初始设备保迟绑定；输入credit不授复用；仅改自身HEVC/AV1颜色，参数头缓存和恢复校验在修正后，未知位深几何颜色失败
+mf.rs[IH8L]: F:预绑定D3D11设备并驱动Windows异步硬件MFT编码，核验显式GOP与画质速度并校正自身序列颜色 | R:code:crates/uu-media/src/encoder/worker.rs,code:crates/uu-media/src/encoder/gpu.rs,code:crates/uu-media/src/encoder/tuning.rs,code:crates/uu-media/src/hevc_encoder_color.rs | A:Driver,Runtime | S:transform先于COM与MF释放；已知设备在协商前绑定，首GPU图核完整身份并复用；input credit不能复用样本；显式GOP及对应厂商MFT速度在设定媒体类型后读回，默认仅尽力设置；强制IDR和PTS须匹配，先改自身HEVC/AV1颜色再缓存恢复头
 upload.rs[KH8L]: F:校验CPU帧和驱动平面布局后直接上传limited601 NV12 | R:code:crates/uu-media/src/encoder/upload/x86.rs | A:upload_frame | S:完整校验后才清填充；YUV输入按full601压范围，避免NV12与I420往返
-vaapi.rs[IH7M]: F:以线程所有的VAAPI编码器上传NV12并输出低延迟H264 AnnexB | R:code:crates/uu-media/src/encoder/upload.rs | A:Driver | S:先探测derive视图，不支持则get与put；码率重建要求新关键帧
-vpl.rs[IH7M]: F:通过动态VPL窄C接口拥有Intel硬件编码资源及时间戳队列 | R:code:crates/uu-media/src/vpl/native.c | A:Driver | S:此路径拒绝HDR；Rust拥有关闭职责，码率更新按运行库结果判断参考链
+vaapi.rs[IH7M]: F:在所属线程选择VA渲染节点、上传NV12并按主机关键帧间隔用低延迟预测器生成H264 | R:code:crates/uu-media/src/encoder/upload.rs,code:crates/uu-media/src/encoder/tuning.rs | A:Driver | S:GOP按实际FPS换算，缺省两秒；仅匹配厂商的私有设置阻挡该节点；先探测derive视图，失败用get/put；逐次须产出同PTS当前帧，更新码率后要求新关键帧
+vpl.rs[IH7M]: F:通过动态oneVPL接口管理Intel硬编、系统内存输入与PTS队列，传递显式GOP及初始VBV | R:code:crates/uu-media/src/vpl/native.c,code:crates/uu-media/src/encoder/upload.rs,code:crates/uu-media/src/encoder/tuning.rs | A:Driver | S:拒HDR和仍须生效的Intel MFT专属速度；不覆写被锁表面，按90kHz标签找回原始PTS；显式VBV须驱动接受，码率重置保初始容量且要求下一帧IDR；Rust负责关闭
 worker.rs[RH8M]: F:通过有界同步请求把硬件编码资源限制在独立OS线程 | R:code:crates/uu-media/src/encoder/headers.rs | A:Worker,Driver,BitrateChange | S:五秒无响应即断开请求，Drop不阻塞也不强杀；驱动自行返回后在原线程清理
 
 ===/home/yfy/Repo/uu_remote/crates/uu-media/src/hw/===
