@@ -25,18 +25,18 @@ uniform sampler2D cursor_alpha;
 uniform sampler2D cursor_xor;
 uniform bool cursor_enabled;
 uniform vec4 cursor_bounds;
-void video_main() {
+void video_main(int layout_kind, bool is_hdr) {
     vec2 video_uv=uv*video_uv_layout.xy;
     vec2 luma_uv=video_uv_origin+clamp(video_uv,video_uv_layout.zw*0.5,video_uv_layout.xy-video_uv_layout.zw*0.5);
-    vec2 chroma_uv=video_uv_origin+clamp(video_uv+vec2(pixel_layout==5?video_uv_layout.z*0.5:0.0,0.0),video_uv_layout.zw,video_uv_layout.xy-video_uv_layout.zw);
-    if(pixel_layout==3 || pixel_layout==4) {vec3 rgb=texture(plane0,luma_uv).rgb;output_color=vec4(hdr_input?hdr_color(rgb):rgb,1.0);return;}
-    if(pixel_layout==2) {output_color=vec4(texture(plane0,luma_uv).bgr,1.0);return;}
-    float factor=pixel_layout==5 ? 65535.0/(64.0*1023.0) : 1.0;
+    vec2 chroma_uv=video_uv_origin+clamp(video_uv+vec2(layout_kind==5?video_uv_layout.z*0.5:0.0,0.0),video_uv_layout.zw,video_uv_layout.xy-video_uv_layout.zw);
+    if(layout_kind==3 || layout_kind==4) {vec3 rgb=texture(plane0,luma_uv).rgb;output_color=vec4(is_hdr?hdr_color(rgb):rgb,1.0);return;}
+    if(layout_kind==2) {output_color=vec4(texture(plane0,luma_uv).bgr,1.0);return;}
+    float factor=layout_kind==5 ? 65535.0/(64.0*1023.0) : 1.0;
     float y=(texture(plane0,luma_uv).r*factor-levels.x)*levels.y;
-    vec2 chroma=(pixel_layout==0 || pixel_layout==5) ? texture(plane1,chroma_uv).rg : vec2(texture(plane1,chroma_uv).r,texture(plane2,chroma_uv).r);
+    vec2 chroma=(layout_kind==0 || layout_kind==5) ? texture(plane1,chroma_uv).rg : vec2(texture(plane1,chroma_uv).r,texture(plane2,chroma_uv).r);
     chroma=(chroma*factor-vec2(levels.z))*levels.w;
     vec3 rgb=vec3(y+coeff.x*chroma.y,y-coeff.y*chroma.x-coeff.z*chroma.y,y+coeff.w*chroma.x);
-    if(hdr_input) {
+    if(is_hdr) {
         vec3 p=pow(clamp(rgb,0.0,1.0),vec3(32.0/2523.0));
         vec3 wide=10000.0/80.0*pow(max(p-3424.0/4096.0,vec3(0))/(2413.0/128.0-(2392.0/128.0)*p),vec3(16384.0/2610.0));
         rgb=vec3(dot(wide,vec3(1.660491,-0.587641,-0.072850)),dot(wide,vec3(-0.124550,1.132900,-0.008349)),dot(wide,vec3(-0.018151,-0.100579,1.118730)));
@@ -44,7 +44,9 @@ void video_main() {
     } else {output_color=vec4(clamp(rgb,0.0,1.0),1.0);}
 }
 void main() {
-    video_main();
+    // Give the compiler a constant NV12/SDR path while sharing the color and cursor math.
+    if (pixel_layout == 0 && !hdr_input) video_main(0, false);
+    else video_main(pixel_layout, hdr_input);
     if(cursor_enabled) {
         vec2 p=(uv-cursor_bounds.xy)/cursor_bounds.zw;
         if(all(greaterThanEqual(p,vec2(0))) && all(lessThan(p,vec2(1)))) {
