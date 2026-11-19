@@ -14,6 +14,7 @@
 ## 测量工具与时间线
 
 - [主机逐帧测量](frame-tracing.md)
+- [Intel AV1 编码与采集快照的离屏对照](../architecture/native-encoding.md#测量采集快照复制的影响)
 - [同帧原生 Present 诊断](present-observation-profiling.md)
 - [自动化实机延迟实验](automated-latency-lab.md)
 - [输入时间线与原生重复呈现](input-timeline-and-native-presents.md)

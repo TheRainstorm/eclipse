@@ -31,6 +31,18 @@ VBV 约束编码器允许的码流突发。以 48 Mbps、60 FPS 的 CBR 为例�
 
 4K 时 MFT 实际输出 26.5–32.4 Mbps，oneVPL 输出 49.2 Mbps。较慢的一组也使用相同的目标码率。数据可以复现该显卡编码环节的收益，采集、网络、客户端呈现和显示器扫描需单独测量。
 
+#### 测量采集快照复制的影响
+
+上表直接把生成的 BGRA 纹理送给编码器。要覆盖 Windows 采集保存桌面快照这一步，可用同一个 `encoder_probe` 交替运行 `--capture-copy none` 和 `--capture-copy pooled`，其余参数固定。后者将每张新图复制到生产代码使用的快照池，再送到同一设备上的 oneVPL 编码。
+
+```text
+encoder_probe --encoder intel --intel-gpu-input true --codec av1 --rate-control cbr --bitrate-kbps 48000 --width 3840 --height 2160 --fps 60 --frames 240 --input gpu-generated --motion true --tile-size 24 --steady true --capture-copy pooled --decoder none
+```
+
+在同一台 Arc B390 上按“直接、快照、快照、直接”顺序测试，直接输入两轮达到 60.02 / 59.40 FPS，经过快照池两轮达到 57.25 / 56.14 FPS。此处启用了 CPU 和 GPU 分段诊断，负载包含离屏绘制；真实 DXGI 取帧、网络和客户端显示需另测。
+
+进一步对照驱动调用时，4K 非关键帧的 `EncodeFrameAsync` 平均约 0.06 ms，`SyncOperation` 平均约 15.4–15.6 ms。这里记录的是线程等到码流可取的时间，包含此前排入 GPU 的工作。判断一次优化是否有效，应同时检查整帧耗时、实际 FPS 和码率。单看上传耗时，可能把等待从一个调用移到下一个调用误判成提速。
+
 #### 跨关键帧检查 AV1 CBR 文字清晰度
 
 一次 90 帧的色条测试只覆盖约 1.5 秒。检查静止文字时，需要跨过多个周期关键帧。将清晰的桌面文字测试图导出为 1920×1080 的紧密排列 BGRA 文件，运行下面的离屏探针。它先显示空画面，随后显示、滚动并停住同一页文字。每次校验都从实际解码表面取回像素，并与该帧的输入比较。
