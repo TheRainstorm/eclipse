@@ -3,6 +3,7 @@
 use eframe::glow::{self, HasContext};
 use std::{
     ffi::{c_char, c_void, CStr},
+    num::NonZeroUsize,
     os::fd::AsRawFd,
     sync::Arc,
 };
@@ -23,6 +24,12 @@ impl Api {
     unsafe fn load(gl: &glow::Context) -> Result<Self, String> {
         if !gl.supported_extensions().contains("GL_OES_EGL_image") {
             return Err("GL_OES_EGL_image unavailable".into());
+        }
+        let version = gl.version();
+        let core_sync =
+            (version.major, version.minor) >= if version.is_embedded { (3, 0) } else { (3, 2) };
+        if !core_sync && !gl.supported_extensions().contains("GL_ARB_sync") {
+            return Err("GL sync objects unavailable".into());
         }
         let library = libloading::Library::new("libEGL.so.1").map_err(|e| e.to_string())?;
         let current: unsafe extern "C" fn() -> *mut c_void = *library
@@ -80,36 +87,68 @@ struct Imported {
     api: Arc<Api>,
     textures: Vec<glow::Texture>,
     images: Vec<usize>,
-    fence: usize,
+    fence: Option<NonZeroUsize>,
     // Must outlive all GL sampling, including after a newer frame arrives.
     _frame: RawFrame,
 }
 impl Imported {
-    unsafe fn ready(&self) -> bool {
-        if self.fence == 0 {
-            return true;
-        }
-        matches!(
+    unsafe fn release_fence(&mut self) {
+        if let Some(fence) = self.fence.take() {
             self.gl
-                .client_wait_sync(glow::NativeFence(self.fence as *mut _), 0, 0),
-            glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED
-        )
-    }
-    unsafe fn sampled(&mut self) -> Result<(), String> {
-        if self.fence != 0 {
-            self.gl.delete_sync(glow::NativeFence(self.fence as *mut _));
-            self.fence = 0;
+                .delete_sync(glow::NativeFence(fence.get() as *mut _));
         }
-        match self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0) {
+    }
+    unsafe fn finish_for_fallback(&self, error: &str) {
+        eprintln!("DMA-BUF rendering unavailable, retaining CPU upload: {error}");
+        dma_buf::set_rendering(false);
+        // Sampling was submitted in this context. Complete it before the VA
+        // surface can be returned to its pool without a usable fence.
+        self.gl.finish();
+    }
+    unsafe fn ready(&mut self) -> bool {
+        let Some(fence) = self.fence else {
+            return true;
+        };
+        let status = self
+            .gl
+            .client_wait_sync(glow::NativeFence(fence.get() as *mut _), 0, 0);
+        match fence_complete(status) {
+            Ok(false) => return false,
+            Ok(true) => {}
+            Err(error) => self.finish_for_fallback(error),
+        }
+        self.release_fence();
+        true
+    }
+    unsafe fn sampled(&mut self) -> Result<(), &'static str> {
+        // The new fence covers all sampling in this context, including any
+        // previous draw. On failure the importer must finish before release.
+        let replacement = self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0);
+        self.release_fence();
+        match checked_fence(replacement) {
             Ok(fence) => {
-                self.fence = fence.0 as usize;
+                self.fence = Some(fence);
                 Ok(())
             }
             Err(error) => {
-                self.gl.finish();
+                self.finish_for_fallback(error);
                 Err(error)
             }
         }
+    }
+}
+fn checked_fence(fence: Result<glow::NativeFence, String>) -> Result<NonZeroUsize, &'static str> {
+    // Native glow can wrap a null GLsync in Ok after glFenceSync fails.
+    fence
+        .ok()
+        .and_then(|f| NonZeroUsize::new(f.0 as usize))
+        .ok_or("GL fence creation failed")
+}
+fn fence_complete(status: u32) -> Result<bool, &'static str> {
+    match status {
+        glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED => Ok(true),
+        glow::TIMEOUT_EXPIRED => Ok(false),
+        _ => Err("GL fence completion unavailable"),
     }
 }
 impl Drop for Imported {
@@ -119,9 +158,7 @@ impl Drop for Imported {
             // may still own a displayed surface; finish before returning it to VA.
             if !self.ready() {
                 self.gl.finish();
-            }
-            if self.fence != 0 {
-                self.gl.delete_sync(glow::NativeFence(self.fence as *mut _));
+                self.release_fence();
             }
             for texture in self.textures.drain(..) {
                 self.gl.delete_texture(texture);
@@ -151,7 +188,7 @@ impl Importer {
         })
     }
     fn reap(&mut self) {
-        self.retired.retain(|frame| !unsafe { frame.ready() });
+        self.retired.retain_mut(|frame| !unsafe { frame.ready() });
     }
     pub fn clear(&mut self) {
         if let Some(frame) = self.current.take() {
@@ -163,6 +200,9 @@ impl Importer {
     /// the newest pending frame; never wait on the UI thread or queue old frames.
     pub unsafe fn set(&mut self, frame: RawFrame) -> Result<bool, String> {
         self.reap();
+        if !dma_buf::rendering() {
+            return Err("DMA-BUF import disabled".into());
+        }
         if self.retired.len() >= 3 {
             return Ok(false);
         }
@@ -175,7 +215,7 @@ impl Importer {
             api: self.api.clone(),
             textures: Vec::new(),
             images: Vec::new(),
-            fence: 0,
+            fence: None,
             _frame: frame.clone(),
         };
         for p in 0..2 {
@@ -264,11 +304,35 @@ impl Importer {
             1.0 / dma.height as f32,
         ]
     }
-    pub unsafe fn sampled(&mut self) {
+    pub unsafe fn sampled(&mut self) -> bool {
         if let Some(frame) = &mut self.current {
-            if frame.sampled().is_err() {
-                dma_buf::set_rendering(false);
+            if frame.sampled().is_ok() {
+                return true;
             }
+            self.clear();
         }
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_real_fence_can_guard_sampling() {
+        assert!(checked_fence(Err("failed".into())).is_err());
+        assert!(checked_fence(Ok(glow::NativeFence(std::ptr::null_mut()))).is_err());
+        let nonnull = glow::NativeFence(std::ptr::dangling_mut());
+        assert!(checked_fence(Ok(nonnull)).is_ok());
+    }
+
+    #[test]
+    fn only_timeout_keeps_an_import_in_flight() {
+        assert_eq!(fence_complete(glow::ALREADY_SIGNALED), Ok(true));
+        assert_eq!(fence_complete(glow::CONDITION_SATISFIED), Ok(true));
+        assert_eq!(fence_complete(glow::TIMEOUT_EXPIRED), Ok(false));
+        assert!(fence_complete(glow::WAIT_FAILED).is_err());
+        assert!(fence_complete(0).is_err());
     }
 }

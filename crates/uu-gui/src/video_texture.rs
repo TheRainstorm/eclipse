@@ -930,6 +930,10 @@ impl Planes {
                                 "DMA-BUF rendering unavailable, retaining CPU upload: {error}"
                             );
                             uu_core::display_frames::dma_buf::set_rendering(false);
+                            importer.clear();
+                            self.dma_active = false;
+                            self.size = [0, 0];
+                            self.observation = None;
                         }
                     }
                 } else {
@@ -1076,7 +1080,11 @@ impl Planes {
         #[cfg(target_os = "linux")]
         if self.dma_active {
             if let Some(importer) = &mut self.importer {
-                importer.sampled();
+                if !importer.sampled() {
+                    self.dma_active = false;
+                    self.size = [0, 0];
+                    self.observation = None;
+                }
             }
         }
         // egui restores its program, VAO and blend state after the callback.
