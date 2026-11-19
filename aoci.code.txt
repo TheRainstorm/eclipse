@@ -278,7 +278,7 @@ d3d11va.rs[IH9L]: F:以MF D3D设备管理器硬解H264、HEVC与AV1并租赁解�
 pixels.rs[DP7T]: F:在最后一个Bytes引用释放后回收有界CPU读回缓冲区 | R:code:crates/uu-media/src/hw/surface.rs | A:Pool,Pixels | S:仅保留两个且每个不超16MiB；复用不清可见区域，发布前调用方必须覆盖全部字节
 surface.rs[KH7S]: F:从对齐NV12分配提取可见区域并完整覆盖复用输出 | R:code:crates/uu-media/src/hw/d3d11va.rs | A:crop_nv12_into | S:UV起点按分配高度而非可见高度计算；校验失败不得修改输出
 thread.rs[RH8M]: F:将硬件解码初始化、准备、批量解码和销毁限定在同一个OS线程 | R:code:crates/uu-media/src/hw/mod.rs | A:Backend,Worker | S:Backend无需Send，不能迁移为可跨线程恢复的tokio任务；批量输出不重放AU
-vaapi.rs[IH8L]: F:在Linux用cros-codecs分派VA硬解，按解码表面池选择导出NV12或CPU读回 | R:code:crates/uu-media/src/hw/thread.rs,code:crates/uu-media/src/hw/vaapi_download.rs,code:crates/uu-media/src/dma_buf.rs | A:VaapiDecoder | S:先喂新AU再取旧图，CheckEvents或表面不足需排事件再喂原字节。建池按真实设备及modifier匹配，渲染附加表面分配失败时若基础池已够则回退CPU。导入能力和DMA映射随换池重建，旧池拒绝不会影响新池。读回失败可退驱动
+vaapi.rs[IH8L]: F:用cros-codecs在Linux分派硬解，按位深和可见区交付NV12或P010，在兼容池导出NV12租约 | R:code:crates/uu-media/src/hw/thread.rs,code:crates/uu-media/src/hw/vaapi_download.rs,code:crates/uu-media/src/dma_buf.rs,code:vendor/cros-codecs/src/backend/vaapi/decoder.rs | A:VaapiDecoder | S:先喂新AU再取旧图，CheckEvents与表面不足需排事件再喂原字节。换池按真实位深分配格式，设备和modifier相容才留导入槽，附加槽不足可退CPU。非零裁剪按当前图的原点和两平面步长读回。十位必须取得真实P010，derive格式不符才请求驱动生成P010，保留PTS和高位对齐，不当作NV12导出
 vaapi_download.rs[KH7L]: F:由VA描述符或仍持租约的DMA-BUF导出同一可见NV12图，校验并复制linear和Intel Y两平面 | R:code:crates/uu-media/src/hw/vaapi.rs,code:crates/uu-media/src/dma_buf.rs | A:Mappings,download,read_export | S:两平面先验边界再映射。池缓存按设备及inode唯一且原映射和新导出均覆盖可见末端才复用，其余临时映射。CPU读严格位于DMA同步START与END之间。Intel Y按32行瓦片列读。渲染失败的同帧读回不用解码池映射缓存
 vpl.rs[IH7S]: F:在专属线程执行Intel VPL AV1硬解并复制输出NV12像素 | R:code:crates/uu-media/src/vpl/native.c | A:VplDecoder | S:驱动借用表面不能跨线程；同步完成且边界检查后才复制两平面
 
