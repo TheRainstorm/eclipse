@@ -1,4 +1,4 @@
-// FP16 scRGB presentation for a single native video window. MIT OR Apache-2.0.
+// DXGI presentation for a single native video window. MIT OR Apache-2.0.
 #include "d3d11_hdr_display.h"
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -53,6 +53,15 @@ UINT presentation_queue_limit() {
     }();
     return limit;
 }
+bool native_sdr_r8_requested() {
+    static const bool enabled=[] {
+        const char* value=std::getenv("ECLIPSE_NATIVE_SDR_R8");
+        return value&&std::strcmp(value,"1")==0;
+    }();
+    return enabled;
+}
+constexpr DXGI_FORMAT scrgb_format=DXGI_FORMAT_R16G16B16A16_FLOAT;
+constexpr DXGI_FORMAT sdr_format=DXGI_FORMAT_R8G8B8A8_UNORM;
 struct Apartment {
     HRESULT result=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     Apartment(){if(FAILED(result)&&result!=RPC_E_CHANGED_MODE)check(result,"initialize composition apartment");}
@@ -118,7 +127,9 @@ struct Presentation {
     ComPtr<IDXGISwapChain3> chain;
     ComPtr<ID3D11Texture2D> shared_texture;
     unsigned width=0,height=0;
+    DXGI_FORMAT buffer_format=scrgb_format;
     bool hdr=false;
+    bool known_sdr_output=false;
     bool allow_tearing=false;
     float white=80;
     HMONITOR monitor=nullptr;
@@ -158,7 +169,7 @@ struct Presentation {
     void refresh(bool force=false) {
         auto now=GetTickCount64();auto active=MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST);
         if(!force&&active==monitor&&now-queried<500)return;
-        bool changed=active!=monitor;monitor=active;queried=now;hdr=false;white=80;
+        bool changed=active!=monitor;monitor=active;queried=now;hdr=false;known_sdr_output=false;white=80;
         if(!inventory || !inventory->IsCurrent()) {
             inventory.Reset();active_output.Reset();changed=true;
             if(FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),(void**)inventory.GetAddressOf())))return;
@@ -178,18 +189,20 @@ struct Presentation {
         EclipseOutputDesc1 desc{};
         if(active_output && SUCCEEDED(active_output->GetDesc1(&desc))) {
             hdr=desc.color==DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+            known_sdr_output=desc.attached&&desc.monitor==active&&desc.color==DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
             white=hdr?eclipse_sdr_white(desc.name):80.f;
         }
     }
 
-    void resize(unsigned w,unsigned h,bool allocate_shared=true) {
+    void resize(unsigned w,unsigned h,bool allocate_shared=true,DXGI_FORMAT format=scrgb_format) {
         if(!w||!h||w>16384||h>16384)throw std::runtime_error("invalid HDR window size");
-        if(width==w&&height==h)return;
-        content_window.resize(w,h);
+        if(width==w&&height==h&&buffer_format==format)return;
+        if(width!=w||height!=h)content_window.resize(w,h);
         // Caller has unregistered the old WGL object before this replacement.
         shared_texture.Reset();
+        const bool set_color=!chain||buffer_format!=format;
         if(!chain) {
-            DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=w;desc.Height=h;desc.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
+            DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=w;desc.Height=h;desc.Format=format;
             desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;
             // Retain room for the driver allowance, the backbuffer and DWM.
             // SyncInterval=0 can replace queued flips; starving this ring or
@@ -204,14 +217,17 @@ struct Presentation {
                 allow_tearing=false;desc.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 created=factory->CreateSwapChainForHwnd(device.Get(),content_window.value,&desc,nullptr,nullptr,&initial);
             }
-            check(created,"create FP16 HDR swap chain");
+            check(created,"create window swap chain");
             std::fprintf(stderr,"HDR HWND flip-discard allow_tearing=%s buffers=%u\n",allow_tearing?"true":"false",desc.BufferCount);
             check(initial.As(&chain),"query HDR swap chain");
             frame_ready=chain->GetFrameLatencyWaitableObject();
             if(!frame_ready)throw std::runtime_error("get presentation frame readiness");
             chain_id=present_identity();
-            check(chain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709),"set scRGB HDR color space");
-        }else check(chain->ResizeBuffers(5,w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT|(allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0)),"resize HDR swap chain");
+        }else check(chain->ResizeBuffers(5,w,h,format,DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT|(allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0)),"resize window swap chain");
+        // Publish the allocated format before SetColorSpace1. If the driver
+        // rejects the color space, the caller must resize these actual buffers back.
+        buffer_format=format;
+        if(set_color)check(chain->SetColorSpace1(format==sdr_format?DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709),"set swap chain color space");
         surface_epoch=present_identity();observation_ready=false;
         D3D11_TEXTURE2D_DESC td{};td.Width=w;td.Height=h;td.MipLevels=1;td.ArraySize=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
         td.SampleDesc.Count=1;td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;td.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
@@ -340,7 +356,7 @@ struct NativePresentation:Presentation {
     ComPtr<ID3D11ShaderResourceView> image_view;
     ComPtr<ID3D11Fence> ready,consumed;
     ComPtr<ID3D11VertexShader> vertex;
-    ComPtr<ID3D11PixelShader> pixel;
+    ComPtr<ID3D11PixelShader> pixel,sdr_pixel;
     ComPtr<ID3D11Buffer> parameters;
     ComPtr<ID3D11SamplerState> linear,nearest;
     ComPtr<ID3D11RasterizerState> rasterizer;
@@ -365,7 +381,7 @@ cbuffer Params:register(b0){float4 rect;float4 output;float4 flags;float4 cursor
 float4 vs(uint id:SV_VertexID):SV_Position{float2 p=float2((id<<1)&2,id&2);return float4(p.x*2-1,1-p.y*2,0,1);}
 float3 gamma_rgb(float3 v){return sign(v)*lerp(abs(v)*12.92,1.055*pow(abs(v),1.0/2.4)-0.055,step(0.0031308,abs(v)));}
 float3 linear_rgb(float3 v){return sign(v)*lerp(abs(v)/12.92,pow((abs(v)+0.055)/1.055,2.4),step(0.04045,abs(v)));}
-float4 ps(float4 pos:SV_Position):SV_Target{
+float3 compose(float4 pos){
  float2 uv=(pos.xy-rect.xy)/max(rect.zw,1);float3 base=0;
  if(flags.z>0 && all(uv>=0) && all(uv<1)){
   float3 rgb=video.SampleLevel(bilinear,uv,0).rgb;
@@ -383,9 +399,11 @@ float4 ps(float4 pos:SV_Position):SV_Target{
  float2 screen=pos.xy/output.xy;float4 ui=overlay.SampleLevel(bilinear,float2(screen.x,1-screen.y),0);
  // Match egui's gamma-space premultiplied blending, including additive
  // colors with zero alpha. Never unpremultiply gamma channels as linear RGB.
- float3 composite=ui.rgb+base*(1-ui.a);
- return float4(linear_rgb(composite)*output.z,1);
-})";
+ return ui.rgb+base*(1-ui.a);
+}
+float4 ps(float4 pos:SV_Position):SV_Target{return float4(linear_rgb(compose(pos))*output.z,1);}
+float4 ps_sdr(float4 pos:SV_Position):SV_Target{return float4(compose(pos),1);}
+)";
         ComPtr<ID3DBlob> vs,ps,error;
         HRESULT result=D3DCompile(shader,sizeof(shader),nullptr,nullptr,nullptr,"vs","vs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&vs,&error);
         if(FAILED(result)&&error)throw std::runtime_error((const char*)error->GetBufferPointer());check(result,"compile native composition vertex shader");
@@ -393,19 +411,50 @@ float4 ps(float4 pos:SV_Position):SV_Target{
         if(FAILED(result)&&error)throw std::runtime_error((const char*)error->GetBufferPointer());check(result,"compile native composition pixel shader");
         check(device->CreateVertexShader(vs->GetBufferPointer(),vs->GetBufferSize(),nullptr,&vertex),"create native composition vertex shader");
         check(device->CreatePixelShader(ps->GetBufferPointer(),ps->GetBufferSize(),nullptr,&pixel),"create native composition pixel shader");
+        if(native_sdr_r8_requested()){
+            ComPtr<ID3DBlob> sdr;
+            HRESULT hr=D3DCompile(shader,sizeof(shader),nullptr,nullptr,nullptr,"ps_sdr","ps_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&sdr,nullptr);
+            if(SUCCEEDED(hr))hr=device->CreatePixelShader(sdr->GetBufferPointer(),sdr->GetBufferSize(),nullptr,&sdr_pixel);
+            if(FAILED(hr))std::fprintf(stderr,"{\"event\":\"native_present_sdr_r8_fallback\",\"stage\":\"shader\",\"hr\":%ld}\n",long(hr));
+        }
         D3D11_BUFFER_DESC bd{};bd.ByteWidth=sizeof(Params);bd.Usage=D3D11_USAGE_DEFAULT;bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;check(device->CreateBuffer(&bd,nullptr,&parameters),"create native composition parameters");
         D3D11_SAMPLER_DESC sd{};sd.AddressU=sd.AddressV=sd.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;sd.MaxLOD=D3D11_FLOAT32_MAX;sd.Filter=D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
         check(device->CreateSamplerState(&sd,&linear),"create native video sampler");sd.Filter=D3D11_FILTER_MIN_MAG_MIP_POINT;check(device->CreateSamplerState(&sd,&nearest),"create native cursor sampler");
         D3D11_RASTERIZER_DESC rd{};rd.FillMode=D3D11_FILL_SOLID;rd.CullMode=D3D11_CULL_NONE;rd.DepthClipEnable=TRUE;check(device->CreateRasterizerState(&rd,&rasterizer),"create native composition rasterizer");
     }
-    void resize(unsigned w,unsigned h){
-        if(width==w&&height==h&&render_target)return;
+    void bind_target(unsigned w,unsigned h,DXGI_FORMAT format){
         // D3D11 keeps buffer zero's view usable across flips. All references
         // to the old buffer must be released before ResizeBuffers.
         render_target.Reset();
-        for(auto& view:overlay_views)view.Reset();for(auto& texture:overlays)texture.Reset();
         debug_target.Reset();debug_pixels.clear();
-        Presentation::resize(w,h,false);
+        last_present_result=E_FAIL;
+        Presentation::resize(w,h,false,format);
+        ComPtr<ID3D11Texture2D> backbuffer;
+        check(chain->GetBuffer(0,IID_PPV_ARGS(&backbuffer)),"get native video backbuffer");
+        D3D11_TEXTURE2D_DESC actual{};
+        backbuffer->GetDesc(&actual);
+        if(actual.Format!=format)throw std::runtime_error("unexpected native backbuffer format");
+        check(device->CreateRenderTargetView(backbuffer.Get(),nullptr,&render_target),"create native video target");
+        std::fprintf(stderr,"{\"event\":\"native_present_surface\",\"chain_id\":%llu,\"surface_epoch\":%llu,\"qpc\":%lld,\"format\":\"%s\",\"color_space\":\"%s\",\"sdr_r8_requested\":%s,\"width\":%u,\"height\":%u}\n",
+            (unsigned long long)chain_id,(unsigned long long)surface_epoch,(long long)present_qpc(),format==sdr_format?"rgba8":"rgba16f",
+            format==sdr_format?"srgb-p709":"scrgb-linear-p709",native_sdr_r8_requested()?"true":"false",actual.Width,actual.Height);
+    }
+    void configure_target(unsigned w,unsigned h,DXGI_FORMAT format){
+        if(format==sdr_format){
+            try{bind_target(w,h,format);return;}
+            catch(const std::exception& e){
+                std::fprintf(stderr,"{\"event\":\"native_present_sdr_r8_fallback\",\"stage\":\"backbuffer\",\"reason\":\"%s\"}\n",e.what());
+                sdr_pixel.Reset(); // This window stays on the known working path.
+            }
+        }
+        bind_target(w,h,scrgb_format);
+    }
+    void resize(unsigned w,unsigned h){
+        // The target is bound before the UI ring is built. If any ring view
+        // failed to initialize, a same-size retry still has to rebuild the ring.
+        if(width==w&&height==h&&render_target&&overlay_views.back())return;
+        for(auto& view:overlay_views)view.Reset();for(auto& texture:overlays)texture.Reset();
+        configure_target(w,h,buffer_format);
         D3D11_TEXTURE2D_DESC td{};td.Width=w;td.Height=h;td.MipLevels=1;td.ArraySize=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;td.SampleDesc.Count=1;
         td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;td.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
         for(unsigned i=0;i<3;i++){
@@ -413,9 +462,6 @@ float4 ps(float4 pos:SV_Position):SV_Target{
             ComPtr<ID3D11Texture2D> sampled=overlays[i];
             check(device->CreateShaderResourceView(sampled.Get(),nullptr,&overlay_views[i]),"create native UI ring view");
         }
-        ComPtr<ID3D11Texture2D> backbuffer;
-        check(chain->GetBuffer(0,IID_PPV_ARGS(&backbuffer)),"get native video backbuffer");
-        check(device->CreateRenderTargetView(backbuffer.Get(),nullptr,&render_target),"create native video target");
     }
     void offer(uint64_t id,void* const* handles,uint64_t produced_value,uint64_t consumed_value,const float* rect,bool source_hdr,float source_white){
         if(source_id!=id){
@@ -446,19 +492,28 @@ float4 ps(float4 pos:SV_Position):SV_Target{
         for(auto& v:cursor_views)v.Reset();for(auto& c:cursors)c.Reset();cursor_width=cursor_height=0;
     }
     void begin(){offered=false;params.flags[3]=0;observation_ready=false;}
+    DXGI_FORMAT desired_format() const {
+        // info() refreshes the physical output in begin(), even with a cached
+        // scene. Unknown destinations, HDR and the linear FP16 pixel inspector
+        // all retain the floating-point path.
+        const bool sdr_video=offered&&params.flags[0]==0;
+        return sdr_pixel&&sdr_video&&known_sdr_output&&!debug_enabled?sdr_format:scrgb_format;
+    }
     int present(unsigned index,bool vsync,bool unchanged){
         submitted_return=0;
         if(index>=3||!render_target)throw std::runtime_error("native presentation ring is not ready");
+        const DXGI_FORMAT desired=desired_format();
         // Retry occluded/failed submissions; only S_OK establishes reusable
         // content. No D3D read or consumed-fence signal occurs on this path.
-        if(unchanged&&last_present_result==S_OK&&content_visible)return 1;
+        if(unchanged&&desired==buffer_format&&last_present_result==S_OK&&content_visible)return 1;
         if(!admit_frame(vsync))return 2;
+        if(desired!=buffer_format)configure_target(width,height,desired);
         if(offered)check(commands->Wait(ready.Get(),ready_value),"GPU wait for converted native video");
         params.output[0]=float(width);params.output[1]=float(height);params.output[2]=(debug_enabled&&debug_white>0?debug_white:white)/80;params.flags[1]=(debug_enabled&&debug_hdr>=0?debug_hdr!=0:hdr)?1:0;params.flags[2]=offered?1:0;
         context->UpdateSubresource(parameters.Get(),0,nullptr,&params,0,0);
         context->OMSetRenderTargets(1,render_target.GetAddressOf(),nullptr);context->OMSetBlendState(nullptr,nullptr,0xffffffff);context->OMSetDepthStencilState(nullptr,0);context->RSSetState(rasterizer.Get());
         D3D11_VIEWPORT viewport{0,0,float(width),float(height),0,1};context->RSSetViewports(1,&viewport);context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        context->VSSetShader(vertex.Get(),nullptr,0);context->PSSetShader(pixel.Get(),nullptr,0);context->PSSetConstantBuffers(0,1,parameters.GetAddressOf());
+        context->VSSetShader(vertex.Get(),nullptr,0);context->PSSetShader(buffer_format==sdr_format?sdr_pixel.Get():pixel.Get(),nullptr,0);context->PSSetConstantBuffers(0,1,parameters.GetAddressOf());
         ID3D11ShaderResourceView* views[4]={offered?image_view.Get():nullptr,overlay_views[index].Get(),cursor_views[0].Get(),cursor_views[1].Get()};context->PSSetShaderResources(0,4,views);
         ID3D11SamplerState* samplers[2]={linear.Get(),nearest.Get()};context->PSSetSamplers(0,2,samplers);context->Draw(3,0);
         ID3D11ShaderResourceView* none[4]={};context->PSSetShaderResources(0,4,none);context->OMSetRenderTargets(0,nullptr,nullptr);

@@ -129,6 +129,23 @@ $env:ECLIPSE_PRESENT_QUEUE_LIMIT = '1'
 
 对照实验只改变此上限，固定画质、刷新率、图案负载和窗口状态，分别验证窗口与全屏。共同检查真实新图帧率、重复/丢帧、CPU 与等待、`admitted_deferred`、Present 的结果和耗时，以及同帧系统显示终点与实际 PresentMode。较短 Present API 调用、较少排队或单次低均值都不能代替显示改善；不能把窗口化的 Composed Flip 与全屏的 Independent Flip 当作同条件样本。未证明尾延迟、帧率及原有全屏体验不退化前，默认值保持 `3`。
 
+## Windows 普通窗口的 SDR 输出格式实验
+
+原生 D3D11 呈现器默认向 Windows 提交 FP16 scRGB。要比较普通窗口中的 SDR 呈现，在控制端退出串流进程，从带有以下环境变量的新进程启动同一配置。
+
+```powershell
+$env:ECLIPSE_NATIVE_SDR_R8 = '1'
+.\eclipse.exe
+```
+
+当视频源为 SDR，且窗口所在输出报告标准 SDR 色彩空间时，呈现器可将最终合成结果写入每通道 8 位的 RGBA 交换链。HDR 源、HDR 桌面及无法识别的输出使用 FP16。两种路径使用相同的视频尺寸、UI 和光标混合规则。若驱动拒绝实验路径，该窗口回退到 FP16。
+
+对照时从新进程启动每一轮。用 `native_present_surface` 的 `format` 确认实际后台缓冲为 `rgba8` 或 `rgba16f`。`color_space` 记录 DXGI 已接受设置的色彩空间。对同一张已显示的图像比较 GPU 就绪至系统显示的时间，同时记录独立源图显示率、窗口尺寸、前台状态、VSync 和 PresentMon 模式。关闭实验后可用以下命令恢复启动环境。
+
+```powershell
+Remove-Item Env:ECLIPSE_NATIVE_SDR_R8 -ErrorAction SilentlyContinue
+```
+
 ## 可选的 Windows 输入路径观测
 
 排查间歇性鼠标拖后时，可在客户端启动前设置 `ECLIPSE_INPUT_TRACE=1`。退出该配置的客户端窗口后，从 PowerShell 启动新进程；已运行的进程不会因环境变量变化自动启用：
