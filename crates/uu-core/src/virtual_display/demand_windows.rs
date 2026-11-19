@@ -166,30 +166,51 @@ pub(super) fn reconcile_owner(scope: &str, retained: &BTreeSet<Uuid>) -> Result<
     }
     Ok(())
 }
-/// Retire only the old Eclipse-created pool. External adapters have no matching
-/// first-install receipt. Active/claimed outputs wait for their owning host.
+enum Configuration {
+    Private,
+    // New independently hosted nodes inherit the external driver's advertised
+    // modes. Never switch VDDPATH or write a per-monitor EDID in this mode.
+    Shared(Option<PathBuf>),
+}
+fn shared_configuration(current: Option<PathBuf>) -> Result<Configuration> {
+    use std::path::{Component, Prefix};
+    // This is the signed Mtt driver's fallback when VDDPATH is absent.
+    let directory = current.as_deref().unwrap_or(Path::new(r"C:\VirtualDisplayDriver"));
+    if !directory.is_absolute() || !matches!(directory.components().next(),
+        Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))) {
+        return Err(fail("共用 Mtt 驱动需要本机的配置目录。"));
+    }
+    let bytes = store::read(&directory.join("vdd_settings.xml"))
+        .map_err(|e| fail(format!("无法读取现有 Mtt 驱动的单屏配置 vdd_settings.xml：{e}")))?;
+    let advertised = capacity_config::exact_count(&bytes, 1)?.original_count;
+    if advertised != 1 {
+        return Err(fail(format!("现有 Mtt 驱动设置为每个适配器创建 {advertised} 块屏幕；Eclipse 需要每个适配器一块。请在原驱动管理器中检查显示器数量。")));
+    }
+    Ok(Configuration::Shared(current))
+}
+/// Retire a proven Eclipse legacy pool, or coexist with the existing driver
+/// using its unchanged configuration and a separately owned PnP instance.
 fn select_configuration(
     state: &State,
     directory: &Path,
     saved: &BTreeSet<TargetKey>,
-) -> Result<()> {
+) -> Result<Configuration> {
     let current = driver::current_configuration()?;
     if current.as_deref() == Some(directory) {
-        return driver::demand_configuration(directory);
+        let installed = driver::demand_instances()?;
+        if installed.iter().any(|instance| !state.records.iter().any(|record| record.instance.as_ref() == Some(instance))) {
+            return shared_configuration(current);
+        }
+        return Ok(Configuration::Private);
     }
     if let Some(current) = current {
         let owned = capacity::legacy_owned(&current)?;
         let installed = driver::demand_instances()?;
-        if installed.iter().any(|id| !owned.contains(id)) {
-            return Err(fail(
-                "检测到其它安装管理的 Mtt 虚拟显示器，未修改它的配置；请先在原管理程序中移除。",
-            ));
+        if owned.is_empty() || installed.iter().any(|id| !owned.contains(id)) {
+            return shared_configuration(Some(current));
         }
         if !installed.is_empty() {
             capacity::retire_legacy_pool(&current, saved)?;
-        }
-        if owned.is_empty() && state.directory.as_deref() != Some(&current) {
-            return Err(fail("已有 Mtt 配置不属于 Eclipse，未覆盖该配置。"));
         }
         // Device absence includes phantom nodes; compare the exact registry
         // value again before clearing only the stale, proven-owned pathname.
@@ -204,10 +225,11 @@ fn select_configuration(
             .iter()
             .any(|instance| !owned.contains(instance))
         {
-            return Err(fail("已有 Mtt 适配器缺少可确认的配置归属，未接管该设备。"));
+            return shared_configuration(None);
         }
     }
-    driver::demand_configuration(directory)
+    driver::demand_configuration(directory)?;
+    Ok(Configuration::Private)
 }
 /// Adopt a completed device by its protected logical identity, never its name.
 fn adopt_ready(scope:&str,id:LeaseId)->Result<Option<(Target,Box<dyn Claim>)>> {
@@ -295,7 +317,7 @@ pub(super) fn create_named(scope:&str,id:LeaseId,saved:&BTreeSet<TargetKey>,name
     if let Some(record)=state.records.iter().find(|r|current.as_ref()==Some(&directory.join(format!("monitor-{}",r.token)))) {
         driver::switch_demand_configuration(&directory.join(format!("monitor-{}",record.token)),&directory)?;
     }
-    select_configuration(&state, &directory, saved)?;
+    let settings = select_configuration(&state, &directory, saved)?;
     let token = Uuid::new_v4();
     state.records.push(Record {
         scope: scope.into(),
@@ -307,8 +329,19 @@ pub(super) fn create_named(scope:&str,id:LeaseId,saved:&BTreeSet<TargetKey>,name
     });
     save(&state)?;
     let result = (|| -> Result<(Target, Box<dyn Claim>)> {
-        let configuration=driver::stage_monitor_configuration(&directory,token,id.0,name,spec)?;
-        driver::switch_demand_configuration(&directory,&configuration)?;
+        let private_override = match &settings {
+            Configuration::Private => {
+                let path = driver::stage_monitor_configuration(&directory, token, id.0, name, spec)?;
+                driver::switch_demand_configuration(&directory, &path)?;
+                Some(path)
+            }
+            Configuration::Shared(expected) => {
+                if driver::current_configuration()?.as_ref() != expected.as_ref() {
+                    return Err(fail("Mtt 配置目录已更改，请重新启用显示器。"));
+                }
+                None
+            }
+        };
         let instance =
             driver::create_demand_device(&directory, &token.to_string(), id.0, &mut |instance| {
                 state
@@ -350,12 +383,21 @@ pub(super) fn create_named(scope:&str,id:LeaseId,saved:&BTreeSet<TargetKey>,name
             std::thread::sleep(Duration::from_millis(100));
         };
         let claim = super::super::ownership_windows::claim(&target.key)?;
-        driver::verify_demand_device(&instance, &token.to_string(), true)?;
+        if !driver::verify_demand_device(&instance, &token.to_string(), true)? {
+            return Err(Error::UnknownSlot);
+        }
         let record = state.records.iter_mut().find(|r| r.token == token).unwrap();
         record.target = Some(target.key.clone());
         record.ready = true;
         save(&state)?;
-        driver::switch_demand_configuration(&configuration,&directory)?;
+        if let Some(path) = private_override {
+            driver::switch_demand_configuration(&path, &directory)?;
+        } else if let Configuration::Shared(expected) = settings {
+            if driver::current_configuration()? != expected {
+                return Err(fail("Mtt 配置目录在启用期间已更改，本次设备将被移除。"));
+            }
+            shared_configuration(expected)?;
+        }
         driver::rename_demand_monitor(&target.key,&token.to_string(),name)?;
         Ok((target, claim))
     })();
@@ -431,7 +473,9 @@ fn remove_with_context(key: &TargetKey,context:Option<(&DisplaySnapshot,&[(Targe
     save(&state)?;
     if state.records.is_empty() && driver::demand_instances()?.is_empty() {
         if let Some(directory) = &state.directory {
-            driver::retire_uninstalled_configuration(directory)?;
+            if driver::current_configuration()?.as_ref() == Some(directory) {
+                driver::retire_uninstalled_configuration(directory)?;
+            }
         }
     }
     Ok(())
@@ -478,6 +522,40 @@ pub(super) fn owned_keys(key: &TargetKey) -> Result<BTreeSet<TargetKey>> {
 #[cfg(test)]
 mod live_tests {
     use super::*;
+
+    #[test]
+    fn shared_configuration_accepts_only_one_monitor_and_preserves_external_files() {
+        let directory = std::env::temp_dir().join(format!("eclipse-shared-mtt-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let settings = directory.join("vdd_settings.xml");
+        let user_edid = directory.join("user_edid.bin");
+        let external_edid = [0x00, 0xff, 0x12, 0x34];
+        std::fs::write(&user_edid, external_edid).unwrap();
+
+        for (counts, accepted) in [
+            ("<!-- <count>8</count> --><count> 01 </count>", true),
+            ("<count>16</count>", false),
+            ("<count>0</count>", false),
+            ("<count>one</count>", false),
+            ("<count>1</count><count>1</count>", false),
+        ] {
+            let xml = format!(
+                "\u{feff}<vdd_settings>\r\n<monitors>{counts}</monitors>\r\n</vdd_settings>"
+            );
+            std::fs::write(&settings, xml.as_bytes()).unwrap();
+            let result = shared_configuration(Some(directory.clone()));
+            if accepted {
+                assert!(matches!(result, Ok(Configuration::Shared(Some(path))) if path == directory));
+            } else {
+                assert!(result.is_err(), "{counts}");
+            }
+            assert_eq!(std::fs::read(&settings).unwrap(), xml.as_bytes());
+            assert_eq!(std::fs::read(&user_edid).unwrap(), external_edid);
+            assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     #[ignore = "explicit administrator fixture; creates and removes only its own devices"]
     fn signed_driver_hotplug_preserves_sibling_and_original_displays() {
