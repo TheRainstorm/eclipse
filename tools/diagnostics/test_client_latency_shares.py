@@ -76,6 +76,25 @@ class LatencySharesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'counted more than once'):
                 tool.analyze([*groups, ['c', first]], 0, None)
 
+    def test_decoded_endpoint_requires_real_pts_output_and_no_gui_stages(self):
+        rows = [row(1, [4, 8, 10, 12, 32, None, None, None]),
+                row(2, [10, 11, 12, 13, None, 16, 20, 30]),
+                row(3, [20, 21, 22, 23, 29, None, None, None], pts_us=None)]
+        # An input decode return alone is not evidence that its PTS came out.
+        rows[1]['at_us'][0] = 14
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'trace.json'
+            path.write_text(json.dumps(trace(rows)))
+            draw = tool.analyze([['condition', path]], 0, None)
+            self.assertEqual(draw['groups']['condition']['pooled']['all']['frames'], 0)
+            decoded = tool.analyze([['condition', path]], 0, None, 'decoded')
+        group = decoded['groups']['condition']
+        self.assertEqual(group['runs'][0]['coverage']['rejected_rows'],
+                         {'missing_boundary': 1, 'missing_identity': 1})
+        self.assertEqual(group['pooled']['all']['frames'], 1)
+        self.assertEqual(list(group['pooled']['all']['stages']), list(tool.STAGES[:4]))
+        self.assertEqual(group['pooled']['at_or_above_total_p95']['total_sum_us'], 28)
+
 
 if __name__ == '__main__':
     unittest.main()

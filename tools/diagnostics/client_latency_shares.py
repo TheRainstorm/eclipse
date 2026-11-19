@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Attribute first RTP read to first draw on the client's monotonic clock.
+"""Attribute first RTP read to decoded output or first draw on the client's monotonic clock.
 
 Run with --group NAME TRACE [TRACE ...] for each comparable condition. Only
 pool runs acquired under the same settings. Window selection uses first RTP
@@ -20,6 +20,7 @@ BOUNDARIES = (
     'output_available_by_pts', 'mailbox_published', 'mailbox_take', 'draw_callback',
 )
 STAGES = tuple(f'{a}..{b}' for a, b in zip(BOUNDARIES, BOUNDARIES[1:]))
+ENDPOINTS = {'draw': 'draw_callback', 'decoded': 'output_available_by_pts'}
 
 
 def unsigned(value):
@@ -35,7 +36,7 @@ def identities(row):
     )
 
 
-def read_trace(trace, skip_us, duration_us):
+def read_trace(trace, skip_us, duration_us, boundaries=BOUNDARIES):
     if (trace['version'] != 1 or trace['event'] != 'video_pipeline_trace_end'
             or trace['clock'] != 'client_monotonic' or trace['complete'] is not True):
         raise ValueError('expected a complete v1 client_monotonic terminal pipeline trace')
@@ -45,7 +46,7 @@ def read_trace(trace, skip_us, duration_us):
         raise ValueError('inconsistent trace retention counters')
     if len(names) != len(set(names)):
         raise ValueError('ambiguous stage table')
-    indices = [names.index(key) for key in BOUNDARIES]
+    indices = [names.index(key) for key in boundaries]
     seen = [Counter() for _ in range(3)]
     packets = []
     for row in rows:
@@ -73,7 +74,7 @@ def read_trace(trace, skip_us, duration_us):
             continue
         window_rows += 1
         sources[(row['epoch'], row['track'], row['ssrc'])] += 1
-        absent = [name for name, value in zip(BOUNDARIES, times) if value is None]
+        absent = [name for name, value in zip(boundaries, times) if value is None]
         missing.update(absent)
         inversions = [name for name, a, b in zip(STAGES, times, times[1:])
                       if a is not None and b is not None and b < a]
@@ -112,11 +113,11 @@ def quantile(ordered, fraction):
     return ordered[lower] + (ordered[math.ceil(index)] - ordered[lower]) * (index - lower)
 
 
-def attribution(frames):
+def attribution(frames, stages):
     totals = sorted(map(sum, frames))
     elapsed = sum(totals)
     parts = {}
-    for index, name in enumerate(STAGES):
+    for index, name in enumerate(stages):
         time = sum(row[index] for row in frames)
         parts[name] = {
             'sum_us': time, 'mean_ms': time / (1000 * len(frames)) if frames else None,
@@ -130,18 +131,23 @@ def attribution(frames):
     }
 
 
-def summary(frames):
-    all_frames = attribution(frames)
+def summary(frames, stages=STAGES):
+    all_frames = attribution(frames, stages)
     # Compare in the same microsecond units without a milliseconds round trip.
     threshold = quantile(sorted(map(sum, frames)), .95) if frames else None
     tail = [row for row in frames if sum(row) >= threshold]
-    return {'all': all_frames, 'at_or_above_total_p95': attribution(tail)}
+    return {'all': all_frames, 'at_or_above_total_p95': attribution(tail, stages)}
 
 
-def analyze(groups, skip_us, duration_us):
+def analyze(groups, skip_us, duration_us, until='draw'):
+    last = BOUNDARIES.index(ENDPOINTS[until])
+    boundaries, stages = BOUNDARIES[:last + 1], STAGES[:last]
+    end_description = ('first draw callback' if until == 'draw'
+                       else 'decoder output available for the original PTS')
     result = {
-        'scope': 'Client monotonic API observations, first RTP read through first draw callback. '
-                 'Wire transit, host work, GPU completion and panel display are outside this interval.',
+        'until': until,
+        'scope': f'Client monotonic API observations, first RTP read through {end_description}. '
+                 'The trace provides no separate host, one-way network, GPU or panel timing.',
         'method': 'Same-row complete monotone paths. Shares use sums of microseconds; '
                   'group summaries pool accepted frames. P50/P95 use linear interpolation. '
                   'Tail includes all ties at or above the group total P95. Unmatched events are whole-trace counts.',
@@ -154,15 +160,15 @@ def analyze(groups, skip_us, duration_us):
         runs, pooled = [], []
         for path in map(Path, paths):
             try:
-                coverage, frames = read_trace(json.loads(path.read_bytes()), skip_us, duration_us)
+                coverage, frames = read_trace(json.loads(path.read_bytes()), skip_us, duration_us, boundaries)
             except (ValueError, TypeError, KeyError, OSError) as error:
                 raise ValueError(f'{path}: {error}') from error
             if coverage['trace_id'] in trace_ids:
                 raise ValueError(f'{path}: trace counted more than once')
             trace_ids.add(coverage['trace_id'])
-            runs.append({'file': str(path), 'coverage': coverage, 'summary': summary(frames)})
+            runs.append({'file': str(path), 'coverage': coverage, 'summary': summary(frames, stages)})
             pooled.extend(frames)
-        result['groups'][name] = {'runs': runs, 'pooled': summary(pooled)}
+        result['groups'][name] = {'runs': runs, 'pooled': summary(pooled, stages)}
     baseline, *others = result['groups']
     result['baseline_group'] = baseline
     deltas = {}
@@ -171,7 +177,7 @@ def analyze(groups, skip_us, duration_us):
         for cohort, summary_base in result['groups'][baseline]['pooled'].items():
             comparison = result['groups'][name]['pooled'][cohort]
             changes = {}
-            for stage in STAGES:
+            for stage in stages:
                 before = summary_base['stages'][stage]['share_pct']
                 after = comparison['stages'][stage]['share_pct']
                 changes[stage] = None if before is None or after is None else after - before
@@ -197,14 +203,14 @@ def print_table(result):
             print(f"{cohort} (N={value['frames']}) mean/P50/P95 ms: " +
                   ' / '.join(fmt(value[key]) for key in ('total_mean_ms', 'total_p50_ms', 'total_p95_ms')))
         print(f"{'Stage':45} {'All ms':>9} {'All %':>9} {'Tail ms':>9} {'Tail %':>9}")
-        for stage in STAGES:
+        for stage in group['pooled']['all']['stages']:
             parts = [group['pooled'][key]['stages'][stage] for key in ('all', 'at_or_above_total_p95')]
             print(f'{stage:45}' + ''.join(f"{fmt(part[field]):>10}" for part in parts
                                         for field in ('mean_ms', 'share_pct')))
     for name, changes in result['share_delta_pp_from_baseline'].items():
         print(f"\nShare change from {result['baseline_group']} to {name} (percentage points)")
         print(f"{'Stage':45} {'All':>9} {'Tail':>9}")
-        for stage in STAGES:
+        for stage in changes['all']:
             print(f"{stage:45} {fmt(changes['all'][stage]):>9} {fmt(changes['at_or_above_total_p95'][stage]):>9}")
 
 
@@ -213,6 +219,8 @@ def main():
     parser.add_argument('--group', nargs='+', action='append', required=True, metavar='NAME_OR_TRACE')
     parser.add_argument('--skip', type=float, default=0, help='seconds from earliest retained first RTP read')
     parser.add_argument('--duration', type=float, help='window length in seconds (default: through final read)')
+    parser.add_argument('--until', choices=ENDPOINTS, default='draw',
+                        help='last required same-image boundary (default: draw; decoded does not require display)')
     parser.add_argument('--json', action='store_true', help='include per-run summaries and exact coverage')
     args = parser.parse_args()
     if not math.isfinite(args.skip) or args.skip < 0:
@@ -221,7 +229,7 @@ def main():
         parser.error('--duration must be finite and positive')
     try:
         result = analyze(args.group, round(args.skip * 1e6),
-                         round(args.duration * 1e6) if args.duration is not None else None)
+                         round(args.duration * 1e6) if args.duration is not None else None, args.until)
     except ValueError as error:
         parser.exit(2, f'{error}\n')
     if args.json:
