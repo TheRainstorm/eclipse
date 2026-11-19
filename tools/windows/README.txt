@@ -29,7 +29,7 @@ Eclipse — Windows / Linux 远程串流客户端（Windows x64 包）
 每份配置的服务端设置和配对保存在 data/server，服务使用独立的受保护运行副本。
 一台电脑同时运行一个服务端；服务管理可在空闲时切换到本配置。复制目录前先停止服务。
 迁移到新电脑仍需注册后台服务并安装所需驱动。外部证书等自选文件需要一并迁移。
-说明：https://github.com/TheRainstorm/eclipse/blob/master/docs/configuration-storage.md
+说明：https://github.com/TheRainstorm/eclipse/blob/master/docs/guides/configuration-storage.md
 
 连接设备
 

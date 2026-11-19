@@ -1,6 +1,6 @@
 # R0 主机测量首批验证
 
-日期：2026-10-24；版本：v0.18.8 开发测试版。本报告验证测量功能与有限条件下的开销，不证明真实串流延迟已经降低。[方案范围](../streaming-latency-and-stability-plan.md)、[事件及复现方法](../frame-tracing.md)。
+日期：2026-10-24；版本：v0.18.8 开发测试版。本报告验证测量功能与有限条件下的开销，不证明真实串流延迟已经降低。[方案范围](streaming-latency-and-stability-plan.md)、[事件及复现方法](frame-tracing.md)。
 
 ## 已完成
 

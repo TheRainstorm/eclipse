@@ -154,6 +154,6 @@ relative_seconds,render_cpu_ms,textures_ms,mailbox_ms,decode_ms
 
 剩余约 2–3ms 仍包含视频共享/绑定回调及其它 UI 工作。内屏旧日志中的低于 1ms 数值会受到便宜的纯 UI 重绘样本影响，不能与每个新视频帧的绘制开销直接相比。完整 GPU 执行、显示扫描和输入到画面的延迟仍需要同帧关联或专门测量。
 
-排查类似问题时，应同时核对隐藏和可见视口的 DPI，沿 `render_frame_window` → `glow_draw_window` 与 `video_paint_window` 的层级定位，避免重复相加嵌套回调。`presentation_swap_interval` 表示实际交换状态。若纹理组已正常但 Render 仍高，应继续依据新的分组证据调查，不能把所有外屏高值都套用到此原因。字段口径见 [Windows 延迟说明](../windows-latency.md)。
+排查类似问题时，应同时核对隐藏和可见视口的 DPI，沿 `render_frame_window` → `glow_draw_window` 与 `video_paint_window` 的层级定位，避免重复相加嵌套回调。`presentation_swap_interval` 表示实际交换状态。若纹理组已正常但 Render 仍高，应继续依据新的分组证据调查，不能把所有外屏高值都套用到此原因。字段口径见 [Windows 延迟说明](windows-latency.md)。
 
 PixPin 首次截图导致全屏窗口变化的问题按用户要求另外搁置，本次没有把它列为已解决。

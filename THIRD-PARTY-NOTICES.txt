@@ -2,7 +2,7 @@ uu-client third-party notices
 Generated from Cargo.lock, including optional, build, and other-platform dependencies.
 This is a source inventory, not a claim that every component is linked into every binary.
 Third-party licenses remain independent of the project MIT OR Apache-2.0 license.
-See docs/licensing-and-compatibility.md for native runtime, font, and patent considerations.
+See docs/legal/licensing-and-compatibility.md for native runtime, font, and patent considerations.
 
 ## ab_glyph 0.2.32
 SPDX: Apache-2.0

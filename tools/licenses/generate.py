@@ -26,11 +26,11 @@ def main():
               'Generated from Cargo.lock, including optional, build, and other-platform dependencies.',
               'This is a source inventory, not a claim that every component is linked into every binary.',
               'Third-party licenses remain independent of the project MIT OR Apache-2.0 license.',
-              'See docs/licensing-and-compatibility.md for native runtime, font, and patent considerations.', '']
+              'See docs/legal/licensing-and-compatibility.md for native runtime, font, and patent considerations.', '']
     texts = {}
     inventory = ['# 锁定依赖与许可证', '',
                  '由 `python3 tools/licenses/generate.py` 根据 Cargo.lock 生成；包括可选、构建和其它平台依赖。',
-                 '这不是某一二进制的链接清单，也不能替代对新增代码来源的人工检查。完整随包许可文本见 [THIRD-PARTY-NOTICES.txt](../THIRD-PARTY-NOTICES.txt)。', '',
+                 '这不是某一二进制的链接清单，也不能替代对新增代码来源的人工检查。完整随包许可文本见 [THIRD-PARTY-NOTICES.txt](../../THIRD-PARTY-NOTICES.txt)。', '',
                  '| 组件 | 版本 | 上游许可证表达式 |', '|---|---|---|']
     missing = []
     for package in packages:
@@ -69,9 +69,9 @@ def main():
     for digest, value in sorted(texts.items()):
         output += [f'## License text {digest}', value, '']
     args.output_root.mkdir(parents=True,exist_ok=True)
-    (args.output_root/'docs').mkdir(exist_ok=True)
+    (args.output_root/'docs'/'legal').mkdir(parents=True,exist_ok=True)
     (args.output_root / 'THIRD-PARTY-NOTICES.txt').write_text('\n'.join(line.rstrip() for line in output), encoding='utf-8')
-    (args.output_root / 'docs' / 'dependency-licenses.md').write_text('\n'.join(inventory) + '\n', encoding='utf-8')
+    (args.output_root / 'docs' / 'legal' / 'dependency-licenses.md').write_text('\n'.join(inventory) + '\n', encoding='utf-8')
     print(json.dumps({'packages': len(packages), 'distinct_license_texts': len(texts),
                       'crates_without_separate_license_file': len(missing)}))
 

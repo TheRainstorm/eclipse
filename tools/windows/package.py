@@ -106,7 +106,7 @@ def check_tools():
     for name in ('cargo', 'rustup', 'git', 'nasm', 'cmake', *(compiler_tool(tool)
                  for tool in ('gcc', 'g++', 'objdump', 'windres', 'strip'))):
         if not shutil.which(name):
-            raise RuntimeError(f'缺少 {name}；依赖安装方法见 docs/windows-build.md')
+            raise RuntimeError(f'缺少 {name}；依赖安装方法见 docs/development/windows-build.md')
     targets = subprocess.check_output(['rustup', 'target', 'list', '--installed'], text=True)
     if TARGET not in targets.splitlines():
         raise RuntimeError(f'请先执行 rustup target add {TARGET}')

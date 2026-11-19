@@ -41,7 +41,7 @@ python3 tools/linux/set_pairing_password.py
 文件夹后直接运行。设置与插件数据在 eclipse-data/data，日志在 eclipse-data/state。
 空目录可体验首次使用，原用户配置保留；不同版本各用一份目录。退出全部窗口和托盘
 后复制整个程序目录即可携带配置，更新时保留 eclipse-data。应用设置 → 常规可查看路径。
-说明：https://github.com/TheRainstorm/eclipse/blob/master/docs/configuration-storage.md
+说明：https://github.com/TheRainstorm/eclipse/blob/master/docs/guides/configuration-storage.md
 支持 Wayland/X11；Wayland 系统快捷键捕获取决于合成器支持 shortcuts-inhibit 协议。
 默认保留被控端原有显示布局，独占虚拟屏仅在显式选择时启用。
 

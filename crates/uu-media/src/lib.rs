@@ -5,7 +5,7 @@
 //! official client separates `GameViewerServer` (host) from the controller UI.
 //!
 //! The official media plane is standard WebRTC with H.264/HEVC video and
-//! Opus audio (see `docs/protocol-notes.md`), so the codec layer here is
+//! Opus audio (see `docs/compatibility/protocol-notes.md`), so the codec layer here is
 //! deliberately codec-agnostic and pluggable.
 
 pub mod av1;

@@ -9,11 +9,11 @@ Eclipse 将多屏远程办公、游戏串流和主机共享管理放在同一个
 
 正式完整包自带 UU 兼容与壁纸合集插件，均默认关闭，在设置中按需启用。UU 插件源码仍在独立仓库维护，原生串流无需启用插件。项目仍在快速迭代，实际格式、帧率和延迟取决于两端硬件、驱动、显示与网络。
 
-[下载正式版](https://github.com/TheRainstorm/eclipse/releases) · [版本说明](docs/releases.md) · [设备连接与授权](docs/device-connection-and-trust.md) · [插件安装](docs/plugins.md) · [TODO / 路线图](docs/roadmap.md)
+[下载正式版](https://github.com/TheRainstorm/eclipse/releases) · [文档索引](docs/README.md) · [版本说明](docs/releases/README.md) · [设备连接与授权](docs/guides/device-connection-and-trust.md) · [插件安装](docs/guides/plugins.md) · [TODO / 路线图](docs/roadmap.md)
 
 ## 核心功能
 
-以下介绍当前代码已具备的能力；正式包以对应[版本说明](docs/releases.md)为准，平台条件和待完善项目见[当前边界](#当前边界)与[路线图](docs/roadmap.md)。
+以下介绍当前代码已具备的能力；正式包以对应[版本说明](docs/releases/README.md)为准，平台条件和待完善项目见[当前边界](#当前边界)与[路线图](docs/roadmap.md)。
 
 ### 连接与自托管
 
@@ -21,7 +21,7 @@ Eclipse 将多屏远程办公、游戏串流和主机共享管理放在同一个
 - **自己的公网连接服务**：WSS 设备目录、ICE / STUN 打洞、直连优先与 TURN/UDP 中转。面向 NAT / CGNAT 网络协商可用路径，无需两台电脑都暴露公网地址；UDP 完全受限的网络仍有边界。
 - **一份接入码加入私人设备组**：导入服务器地址、组凭据及必要证书；不同组隔离设备目录，组内发现仍需独立设备配对。可管理多个自建服务器。
 
-[设备连接与授权](docs/device-connection-and-trust.md) · [连接服务部署](docs/connection-service.md)
+[设备连接与授权](docs/guides/device-connection-and-trust.md) · [连接服务部署](docs/guides/connection-service.md)
 
 ### 多屏与工作区
 
@@ -29,7 +29,7 @@ Eclipse 将多屏远程办公、游戏串流和主机共享管理放在同一个
 - **Windows 按需虚拟显示器（实验性）**：串流时新增临时屏，或保存持久屏；编辑名称、分辨率、刷新率与 HDR。启用才创建设备，禁用或删除实际移除设备，无需预留一排断开的显示器。
 - **临时与持久生命周期**：最后一个使用者断开后自动禁用临时屏；持久屏在退出程序或停止服务后继续保留。支持恢复单屏上次位置，首次启用默认向右扩展。首次使用需要安装虚拟显示驱动。
 
-[多屏与独立窗口](docs/multiple-displays.md) · [虚拟显示器](docs/virtual-displays.md)
+[多屏与独立窗口](docs/guides/multiple-displays.md) · [虚拟显示器](docs/guides/virtual-displays.md)
 
 ### 共享协作与房主控制
 
@@ -37,7 +37,7 @@ Eclipse 将多屏远程办公、游戏串流和主机共享管理放在同一个
 - **房主会话中心**：通过托盘、会话页或悬浮球查看连接，逐会话开关键盘、鼠标、手柄，调整显示器、码率和帧率，或断开连接。
 - **共享游戏厅**：新加入者默认只看画面，由房主按需授予输入权限，并控制画质与显示器；Windows 本机键鼠优先，默认本机停止操作 3 秒后恢复远程键鼠，也可手动暂停。
 
-[会话中心与共享游戏厅](docs/host-session-control.md)。会话中心是普通桌面窗口，尚无阻止已获键鼠权限的远端点击面板的输入隔离。
+[会话中心与共享游戏厅](docs/guides/host-session-control.md)。会话中心是普通桌面窗口，尚无阻止已获键鼠权限的远端点击面板的输入隔离。
 
 ### 音视频与输入
 
@@ -46,7 +46,7 @@ Eclipse 将多屏远程办公、游戏串流和主机共享管理放在同一个
 - **桌面与游戏输入**：绝对 / 相对鼠标、独立远端光标、系统快捷键捕获、可自定义客户端快捷键；双方许可的文本与 PNG 图片剪贴板。可转发手柄与运动传感器，主机需相应虚拟手柄驱动。
 - **系统声音**：Opus 音频、音量与静音、多屏音源协调；可在串流时静音主机输出，并在最后一路声音串流正常结束后恢复原状态。
 
-[编解码](docs/native-encoding.md) · [HDR](docs/hdr.md) · [输入](docs/native-input.md) · [剪贴板](docs/native-clipboard.md) · [手柄](docs/native-gamepad.md) · [声音](docs/native-audio.md)
+[编解码](docs/architecture/native-encoding.md) · [HDR](docs/guides/hdr.md) · [输入](docs/architecture/native-input.md) · [剪贴板](docs/architecture/native-clipboard.md) · [手柄](docs/architecture/native-gamepad.md) · [声音](docs/architecture/native-audio.md)
 
 ### 后台运行与隐私
 
@@ -55,14 +55,14 @@ Eclipse 将多屏远程办公、游戏串流和主机共享管理放在同一个
 - **便携配置与版本隔离**：Windows 默认在程序旁保存 `eclipse-data`，解压即可运行；设置中可更换数据目录，应用后迁移并重启。客户端与服务端配置独立保存，一台 Windows 电脑同时只激活一个主机服务配置。
 - **连接可见**：Windows 被控端显示短暂连接提醒，会话页可分页查看最近 200 次连接记录。
 
-[后台服务与锁屏](docs/windows-background-service.md) · [配置与便携模式](docs/configuration-storage.md)
+[后台服务与锁屏](docs/guides/windows-background-service.md) · [配置与便携模式](docs/guides/configuration-storage.md)
 
 ### 诊断与扩展
 
 - **可展开的串流诊断**：精简 HUD、历史曲线、网络路径、丢包与恢复、输入确认 RTT、采集 / 编解码 / 呈现阶段统计，以及带误差区间的视频端到端估测。提供可复现的延迟测试与 profiling 工具。
 - **独立插件 SDK**：主程序提供原生串流，完整包自带匹配 SDK 的 UU 兼容与壁纸合集，分别启用；必应每日壁纸、收藏、缓存与前后浏览内置于应用。
 
-[统计定义](docs/hud.md) · [延迟实测与工具](docs/streaming-latency-profiling.md) · [插件](docs/plugins.md)
+[统计定义](docs/guides/hud.md) · [延迟实测与工具](docs/performance/streaming-latency-profiling.md) · [插件](docs/guides/plugins.md)
 
 ## 与 Sunshine / Moonlight、UU 远程的侧重点
 
@@ -95,7 +95,7 @@ Sunshine 是主机端，通常搭配 Moonlight 客户端使用，因此这里比
 
 ![Eclipse 设置与独立插件模块](docs/images/eclipse-settings.png)
 
-截图中的版本和勾选状态是拍摄时的示例。新安装的插件总开关默认关闭；手动启用 UU 插件后，兼容客户端和账号连接服务默认开启，实验性兼容服务器、官方中转默认关闭。HUD 的阶段估计与视频端到端指标口径不同，都不能直接当作完整操作响应时间，详见[统计定义](docs/hud.md)。
+截图中的版本和勾选状态是拍摄时的示例。新安装的插件总开关默认关闭；手动启用 UU 插件后，兼容客户端和账号连接服务默认开启，实验性兼容服务器、官方中转默认关闭。HUD 的阶段估计与视频端到端指标口径不同，都不能直接当作完整操作响应时间，详见[统计定义](docs/guides/hud.md)。
 
 ## 平台支持
 
@@ -111,7 +111,7 @@ Sunshine 是主机端，通常搭配 Moonlight 客户端使用，因此这里比
 
 ## 开始使用
 
-从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包。以下为当前开发分支的使用方式，旧版本以包内说明和[发布记录](docs/releases.md)为准。
+从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包。以下为当前开发分支的使用方式，旧版本以包内说明和[发布记录](docs/releases/README.md)为准。
 
 ### Windows
 
@@ -122,7 +122,7 @@ Sunshine 是主机端，通常搭配 Moonlight 客户端使用，因此这里比
 
 旧版配置仍在 AppData 时，可在同一设置页点击“使用旧版用户配置”，确认后重启使用原目录，旧数据和新便携目录均保留。
 
-作为被控端时，在“服务管理”启用本机后台服务，按系统提示授权。日常运行无需执行安装脚本；需要创建系统入口时，可选用包内的 `install.ps1`。[配置与迁移](docs/configuration-storage.md) · [后台服务](docs/windows-background-service.md)
+作为被控端时，在“服务管理”启用本机后台服务，按系统提示授权。日常运行无需执行安装脚本；需要创建系统入口时，可选用包内的 `install.ps1`。[配置与迁移](docs/guides/configuration-storage.md) · [后台服务](docs/guides/windows-background-service.md)
 
 ### Linux
 
@@ -140,30 +140,30 @@ python3 uninstall.py
 # 默认保留配置；清除默认用户配置时使用：python3 uninstall.py --purge
 ```
 
-安装和卸载均可用 `--prefix` 指定同一个安装前缀。自选的外部数据目录保留，可自行备份或清理。Linux 支持 X11 / Wayland，采集与控制受桌面授权约束。[依赖与平台说明](docs/linux-client.md)
+安装和卸载均可用 `--prefix` 指定同一个安装前缀。自选的外部数据目录保留，可自行备份或清理。Linux 支持 X11 / Wayland，采集与控制受桌面授权约束。[依赖与平台说明](docs/development/linux-client.md)
 
 ### 连接设备
 
 在被控端打开“服务管理”启动共享；控制端添加 IP 地址，或导入同一自建服务器接入码并选择在线设备。首次连接按提示完成配对，以后从设备列表直接连接。
 
-[连接与配对](docs/device-connection-and-trust.md) · [自建连接服务](docs/connection-service.md)
+[连接与配对](docs/guides/device-connection-and-trust.md) · [自建连接服务](docs/guides/connection-service.md)
 
 ### 壁纸与可选 UU 插件
 
 - **壁纸合集已随完整包提供**：打开“应用设置 → 插件”，启用“壁纸合集”，再到“外观”选择 Pipw 二次元或 Wallhaven；必应每日壁纸无需插件。
 - **UU 兼容插件也已随包提供**：在“应用设置 → 插件”启用，再选择需要的 UU 兼容客户端、账号连接服务等模块。登录、远程协助和实验性兼容入口见 [UU 插件仓库说明](https://github.com/TheRainstorm/uu-client-plugins#readme)。只有单独更新插件时，才需要下载匹配主程序 SDK 的插件包。
 
-壁纸合集和 UU 插件均默认关闭，用户自行启用。升级时保留 `eclipse-data`、自选目录的 `eclipse-profile.json` 及外部数据，并使用匹配主程序 SDK 的插件。[插件说明](docs/plugins.md)
+壁纸合集和 UU 插件均默认关闭，用户自行启用。升级时保留 `eclipse-data`、自选目录的 `eclipse-profile.json` 及外部数据，并使用匹配主程序 SDK 的插件。[插件说明](docs/guides/plugins.md)
 
 正式包使用版本标签命名，例如 `eclipse-windows-x64-v0.24.7.zip`；开发包使用 `eclipse-windows-x64-dev-<主程序提交号>.zip`。UU 插件源码版本记录在包内清单中，文件名无需再带一段插件提交号。
 
-本项目由个人维护，目前无盈利，与网易及其 UU 远程产品无隶属、合作或官方授权关系。第三方名称仅说明兼容对象，商标及权利归原权利人所有。如相关权利人要求下架，维护者将配合停止公开分发并处理相关内容。[许可与兼容接入说明](docs/licensing-and-compatibility.md)
+本项目由个人维护，目前无盈利，与网易及其 UU 远程产品无隶属、合作或官方授权关系。第三方名称仅说明兼容对象，商标及权利归原权利人所有。如相关权利人要求下架，维护者将配合停止公开分发并处理相关内容。[许可与兼容接入说明](docs/legal/licensing-and-compatibility.md)
 
 ## 快捷键与统计
 
-默认客户端快捷键均以 **Ctrl+Alt** 开头：`F / X` 全屏或窗口、`S` 启用 HUD、`Q` 退出当前串流、`M` 静音、`V` 垂直同步、`H` 悬浮入口、`Z` 释放或捕获输入。可在应用设置中自定义，菜单按实际绑定显示。[完整快捷键](docs/keyboard-shortcuts.md) · [键盘捕获规则](docs/keyboard-capture.md)
+默认客户端快捷键均以 **Ctrl+Alt** 开头：`F / X` 全屏或窗口、`S` 启用 HUD、`Q` 退出当前串流、`M` 静音、`V` 垂直同步、`H` 悬浮入口、`Z` 释放或捕获输入。可在应用设置中自定义，菜单按实际绑定显示。[完整快捷键](docs/guides/keyboard-shortcuts.md) · [键盘捕获规则](docs/architecture/keyboard-capture.md)
 
-视频端到端统计从源画面到客户端显示回执区间，不包含此前的输入上行和远端应用响应。`Est.Total` 是已知阶段的独立窗口估计；帧周期是节拍参考，不会额外加入视频 E2E。两者都不能用来直接判断完整鼠标跟随延迟。[延迟口径](docs/native-latency.md) · [HUD](docs/hud.md) · [延迟实测与工具](docs/streaming-latency-profiling.md)
+视频端到端统计从源画面到客户端显示回执区间，不包含此前的输入上行和远端应用响应。`Est.Total` 是已知阶段的独立窗口估计；帧周期是节拍参考，不会额外加入视频 E2E。两者都不能用来直接判断完整鼠标跟随延迟。[延迟口径](docs/performance/native-latency.md) · [HUD](docs/guides/hud.md) · [延迟实测与工具](docs/performance/streaming-latency-profiling.md)
 
 ## 当前边界
 
@@ -200,8 +200,8 @@ python3 tools/windows/package.py
 # Linux 构建环境中：python3 tools/linux/package.py
 ```
 
-[架构与资源所有权](docs/architecture.md) · [Windows 构建](docs/windows-build.md) · [Linux 构建](docs/linux-client.md) · [插件架构](docs/plugins.md) · [协议与传输](docs/protocol-compatibility-and-transport.md) · [源码参考索引](docs/reference-index.md)
+[架构与资源所有权](docs/architecture/architecture.md) · [Windows 构建](docs/development/windows-build.md) · [Linux 构建](docs/development/linux-client.md) · [插件架构](docs/guides/plugins.md) · [协议与传输](docs/architecture/protocol-compatibility-and-transport.md) · [源码参考索引](docs/development/reference-index.md)
 
 感谢 [Moonlight](https://github.com/moonlight-stream/moonlight-qt)、[Sunshine](https://github.com/LizardByte/Sunshine)、[Foundation Sunshine](https://github.com/AlkaidLab/foundation-sunshine)、[uu-remote-linux](https://github.com/VallierDev/uu-remote-linux)，以及 Rust WebRTC、egui、OpenH264、Opus 等项目。参考机制与引用代码分别遵守来源许可。
 
-本项目原创部分采用 **[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)** 双许可，由使用者任选。第三方组件保留各自许可证，见[第三方通知](THIRD-PARTY-NOTICES.txt)与[依赖清单](docs/dependency-licenses.md)。
+本项目原创部分采用 **[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)** 双许可，由使用者任选。第三方组件保留各自许可证，见[第三方通知](THIRD-PARTY-NOTICES.txt)与[依赖清单](docs/legal/dependency-licenses.md)。
