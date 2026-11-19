@@ -117,6 +117,7 @@ struct Decoder {
     importable: Arc<AtomicBool>,
     dma_readback: bool,
     mappings: download::Mappings,
+    p010_image_format: Option<cros_libva::VAImageFormat>,
     profile: DecodeProfile,
 }
 
@@ -151,6 +152,7 @@ impl Decoder {
             mappings: download::Mappings::default(),
             drm_device: path.metadata().ok().filter(|m| m.file_type().is_char_device()).map(|m| m.rdev()),
             importable: Default::default(),
+            p010_image_format: None,
             dma_readback: std::env::var("UU_VAAPI_READBACK").as_deref() != Ok("legacy"),
             profile: DecodeProfile { enabled: std::env::var("UU_DECODE_PROFILE").is_ok_and(|v|v!="0"), ..Default::default() },
         })
@@ -272,10 +274,15 @@ impl Decoder {
                     let download_started = self.profile.enabled.then(std::time::Instant::now);
                     let frame = handle.video_frame();
                     let resolution = handle.display_resolution();
-                    if frame.fourcc() != Fourcc::from(b"NV12") {
-                        return Err("decode surface is not NV12".to_string());
-                    }
-                    if crate::dma_buf::rendering() && self.importable.load(Ordering::Acquire) {
+                    let format = match u32::from(frame.fourcc()) {
+                        cros_libva::VA_FOURCC_NV12 => PixelFormat::Nv12,
+                        cros_libva::VA_FOURCC_P010 => PixelFormat::P010,
+                        other => return Err(format!("Unsupported VA decode surface {other:#x}")),
+                    };
+                    let rect = handle.borrow().visible_rect();
+                    let origin = [rect.x, rect.y];
+                    let native_nv12 = format == PixelFormat::Nv12 && origin == [0, 0];
+                    if native_nv12 && crate::dma_buf::rendering() && self.importable.load(Ordering::Acquire) {
                         let exported = handle.borrow().surface().export_prime();
                         if let Ok(mut descriptor) = exported {
                             if descriptor.fourcc == cros_libva::VA_FOURCC_NV12
@@ -307,7 +314,7 @@ impl Decoder {
                     // row is a complete Intel Y tile and panics on iHD exports.
                     let picture = handle.borrow();
                     let surface = picture.surface();
-                    let direct = if self.dma_readback {
+                    let direct = if native_nv12 && self.dma_readback {
                         match surface.export_prime().map_err(|e| e.to_string())
                             .and_then(|descriptor| download::download(descriptor,&mut self.mappings,resolution.width,resolution.height,&self.pixels)) {
                             Ok(pixels) => Some(pixels),
@@ -322,29 +329,32 @@ impl Decoder {
                         }
                     } else { None };
                     let pixels = if let Some(pixels) = direct { pixels } else {
-                    let image = cros_libva::Image::derive_from(
-                        surface,
-                        (resolution.width, resolution.height),
-                    )
-                    .map_err(|e| format!("VA image mapping: {e}"))?;
-                    let layout = image.image();
-                    if layout.format.fourcc != cros_libva::VA_FOURCC_NV12 || layout.num_planes != 2
-                    {
-                        return Err("mapped VA image is not two-plane NV12".into());
-                    }
-                    let planes = [
-                        image
-                            .as_ref()
-                            .get(layout.offsets[0] as usize..)
-                            .ok_or("VA luma offset outside mapping")?,
-                        image
-                            .as_ref()
-                            .get(layout.offsets[1] as usize..)
-                            .ok_or("VA chroma offset outside mapping")?,
-                    ];
-                    let pitches = [layout.pitches[0] as usize, layout.pitches[1] as usize];
-                    let pixels = pack_nv12(&planes, &pitches, resolution.width, resolution.height)?;
-                    Bytes::from(pixels)
+                        let visible = (resolution.width + origin[0], resolution.height + origin[1]);
+                        let derived = cros_libva::Image::derive_from(surface, visible);
+                        let image = match format {
+                            PixelFormat::P010 => match derived {
+                                Ok(image) if image.image().format.fourcc == cros_libva::VA_FOURCC_P010 => image,
+                                _ => cros_libva::Image::create_from(
+                                    surface, self.p010_image_format.ok_or("VA P010 image format is unavailable")?,
+                                    surface.size(), visible,
+                                ).map_err(|e| format!("VA P010 image download: {e}"))?,
+                            },
+                            _ => derived.map_err(|e| format!("VA image mapping: {e}"))?,
+                        };
+                        let layout = image.image();
+                        if layout.format.fourcc != u32::from(frame.fourcc()) || layout.num_planes != 2
+                            || u32::from(layout.width) < visible.0 || u32::from(layout.height) < visible.1 {
+                            return Err("Mapped VA image does not match the decoded surface".into());
+                        }
+                        let uv = layout.offsets[1] as usize;
+                        let y = layout.offsets[0] as usize;
+                        let data = image.as_ref();
+                        let planes = [
+                            data.get(y..uv).ok_or("VA luma range outside mapping")?,
+                            data.get(uv..).ok_or("VA chroma offset outside mapping")?,
+                        ];
+                        let pitches = [layout.pitches[0] as usize, layout.pitches[1] as usize];
+                        Bytes::from(pack_420(&planes, &pitches, resolution.width, resolution.height, format, origin)?)
                     };
                     if let Some(started) = download_started {
                         self.profile.download_us += started.elapsed().as_micros() as u64;
@@ -353,8 +363,8 @@ impl Decoder {
                     self.pending.push_back(RawFrame {
                         width: resolution.width,
                         height: resolution.height,
-                        format: PixelFormat::Nv12,
-                        stride: resolution.width,
+                        format,
+                        stride: format.row_bytes(resolution.width),
                         data: pixels,
                         pts: Timestamp(if self.codec==VideoCodec::Av1 {display_timestamp}else{handle.timestamp()}),
                         gpu: false,
@@ -369,12 +379,15 @@ impl Decoder {
 
     /// (Re)build the surface pool with the size the decoder advertises.
     fn resize(&mut self, info: &StreamInfo) -> Result<(), String> {
-        if info.format != DecodedFormat::NV12 {
-            return Err(format!(
-                "driver chose {:?}, only NV12 is supported",
-                info.format
-            ));
-        }
+        let (rt_format, fourcc) = match info.format {
+            DecodedFormat::NV12 => (cros_libva::VA_RT_FORMAT_YUV420, cros_libva::VA_FOURCC_NV12),
+            DecodedFormat::P010 => (cros_libva::VA_RT_FORMAT_YUV420_10, cros_libva::VA_FOURCC_P010),
+            other => return Err(format!("Unsupported VA decoded format {other:?}")),
+        };
+        let p010_image_format = if info.format == DecodedFormat::P010 {
+            self.display.query_image_formats().map_err(|e| format!("Querying VA image formats: {e}"))?
+                .into_iter().find(|f| f.fourcc == cros_libva::VA_FOURCC_P010)
+        } else { None };
         if !(1..=64).contains(&info.min_num_frames) {
             return Err(format!("driver wants {} surfaces", info.min_num_frames));
         }
@@ -393,8 +406,8 @@ impl Decoder {
             let surface = self
                 .display
                 .create_surfaces(
-                    cros_libva::VA_RT_FORMAT_YUV420,
-                    Some(cros_libva::VA_FOURCC_NV12),
+                    rt_format,
+                    Some(fourcc),
                     info.coded_resolution.width,
                     info.coded_resolution.height,
                     Some(UsageHint::USAGE_HINT_DECODER | UsageHint::USAGE_HINT_EXPORT),
@@ -409,18 +422,24 @@ impl Decoder {
             // GenericDmaVideoFrame currently supports one contiguous object.
             // Reject unfamiliar layouts instead of interpreting tiled memory
             // with the wrong pitch or silently producing damaged pictures.
-            if descriptor.objects.len() != 1
+            if descriptor.fourcc != fourcc
+                || descriptor.width < info.coded_resolution.width || descriptor.height < info.coded_resolution.height
+                || descriptor.objects.len() != 1
                 || descriptor.layers.len() != 1
+                || descriptor.layers[0].drm_format != fourcc
                 || descriptor.layers[0].num_planes != 2
                 || descriptor.layers[0].object_index[..2] != [0, 0]
             {
-                return Err("VA driver exported an unsupported NV12 layout".into());
+                return Err(format!("VA driver exported an unsupported {:?} layout", info.format));
             }
             let modifier = descriptor.objects[0].drm_format_modifier;
             let layer = &descriptor.layers[0];
+            if !(layer.offset[0] < layer.offset[1] && layer.offset[1] < descriptor.objects[0].size) {
+                return Err("VA decode plane ranges overlap or exceed the allocation".into());
+            }
             let layout = FrameLayout {
                 format: (
-                    Fourcc::from(b"NV12"),
+                    Fourcc::from(fourcc),
                     descriptor.objects[0].drm_format_modifier,
                 ),
                 size: info.coded_resolution,
@@ -438,14 +457,14 @@ impl Decoder {
                 .into_iter()
                 .map(|o| std::fs::File::from(o.fd))
                 .collect();
-            if self.dma_readback { mappings.register(&handles[0], object_size); }
+            if info.format == DecodedFormat::NV12 && self.dma_readback { mappings.register(&handles[0], object_size); }
             let frame = GenericDmaVideoFrame::new(handles, layout)?;
             Ok((frame, modifier))
         };
         while prepared.len() < pool_info.min_num_frames {
             match prepare() {
                 Ok((frame, modifier)) => {
-                    let supported = crate::dma_buf::supports_pool(self.drm_device, modifier);
+                    let supported = info.format == DecodedFormat::NV12 && crate::dma_buf::supports_pool(self.drm_device, modifier);
                     if prepared.is_empty() && supported {
                         // Allow a visible picture, a pending frame and bounded GL retirement.
                         importable = true;
@@ -474,6 +493,7 @@ impl Decoder {
         self.pool = Some(pool);
         self.mappings = mappings;
         self.importable = Arc::new(AtomicBool::new(importable));
+        self.p010_image_format = p010_image_format;
         Ok(())
     }
 }
@@ -514,7 +534,7 @@ fn open_node(path: &Path,codec:VideoCodec) -> Result<std::rc::Rc<Display>, Strin
         .map_err(|e| format!("querying VA profiles: {e}"))?;
     let requested:&[VAProfile::Type]=match codec {
         VideoCodec::H264=>&[VAProfile::VAProfileH264High,VAProfile::VAProfileH264Main],
-        VideoCodec::Hevc=>&[VAProfile::VAProfileHEVCMain],
+        VideoCodec::Hevc=>&[VAProfile::VAProfileHEVCMain, VAProfile::VAProfileHEVCMain10],
         VideoCodec::Av1=>&[VAProfile::VAProfileAV1Profile0],
         VideoCodec::Pyrowave=>return Err("PyroWave uses the Vulkan decoder".into()),
     };
@@ -532,28 +552,45 @@ fn open_node(path: &Path,codec:VideoCodec) -> Result<std::rc::Rc<Display>, Strin
     Err(format!("driver offers no {codec:?} VLD entry point"))
 }
 
-/// Repack the driver's (possibly padded) NV12 planes into a tightly packed
-/// frame, which is the layout `crate::convert` expects.
-fn pack_nv12(
+/// Copy the visible rectangle of a padded NV12 or P010 image to tight Y and UV planes.
+fn pack_420(
     planes: &[&[u8]],
     pitches: &[usize],
     width: u32,
     height: u32,
+    format: PixelFormat,
+    origin: [u32; 2],
 ) -> Result<Vec<u8>, String> {
-    let (w, h) = (width as usize, height as usize);
+    let h = height as usize;
+    let bytes_per_sample = match format {
+        PixelFormat::Nv12 => 1,
+        PixelFormat::P010 => 2,
+        _ => return Err("Expected a semi-planar VA image".into()),
+    };
+    let w = (width as usize).checked_mul(bytes_per_sample).ok_or("VA row size overflow")?;
     if planes.len() < 2 || pitches.len() < 2 {
-        return Err(format!("NV12 surface has {} planes", planes.len()));
+        return Err(format!("VA surface has {} planes", planes.len()));
     }
-    if w == 0 || h == 0 || w % 2 != 0 || h % 2 != 0 {
-        return Err("NV12 dimensions must be positive and even".into());
+    if width == 0 || h == 0 || width % 2 != 0 || h % 2 != 0 {
+        return Err("4:2:0 dimensions must be positive and even".into());
     }
+    if origin[0] % 2 != 0 || origin[1] % 2 != 0 {
+        return Err("4:2:0 crop origin must be even".into());
+    }
+    let x = (origin[0] as usize).checked_mul(bytes_per_sample).ok_or("VA crop offset overflow")?;
+    let right = x.checked_add(w).ok_or("VA crop width overflow")?;
+    let top = origin[1] as usize;
+    let mut visible = [&[][..]; 2];
     for (i, rows) in [h, h / 2].into_iter().enumerate() {
+        let start = pitches[i].checked_mul(top >> i).and_then(|n| n.checked_add(x))
+            .ok_or("VA crop offset overflow")?;
+        visible[i] = planes[i].get(start..).ok_or("VA crop outside mapping")?;
         let needed = pitches[i]
             .checked_mul(rows - 1)
             .and_then(|n| n.checked_add(w));
-        if pitches[i] < w || needed.map_or(true, |n| planes[i].len() < n) {
+        if pitches[i] < right || needed.map_or(true, |n| visible[i].len() < n) {
             return Err(format!(
-                "NV12 plane {i} is truncated or has an invalid pitch"
+                "VA plane {i} is truncated or has an invalid pitch"
             ));
         }
     }
@@ -561,16 +598,16 @@ fn pack_nv12(
         .checked_mul(h)
         .and_then(|n| n.checked_mul(3))
         .map(|n| n / 2)
-        .ok_or("NV12 dimensions overflow")?;
+        .ok_or("VA dimensions overflow")?;
     let mut out = vec![0u8; length];
     for row in 0..h {
         out[row * w..(row + 1) * w]
-            .copy_from_slice(&planes[0][row * pitches[0]..row * pitches[0] + w]);
+            .copy_from_slice(&visible[0][row * pitches[0]..row * pitches[0] + w]);
     }
     let chroma = w * h;
     for row in 0..h / 2 {
         out[chroma + row * w..chroma + (row + 1) * w]
-            .copy_from_slice(&planes[1][row * pitches[1]..row * pitches[1] + w]);
+            .copy_from_slice(&visible[1][row * pitches[1]..row * pitches[1] + w]);
     }
     Ok(out)
 }
@@ -621,14 +658,27 @@ mod tests {
         // 2x2 luma (pitch 4) and one interleaved chroma row (pitch 4).
         let y = [1u8, 2, 9, 9, 3, 4, 9, 9];
         let uv = [10u8, 20, 30, 40];
-        let packed = pack_nv12(&[&y, &uv], &[4, 4], 2, 2).unwrap();
+        let packed = pack_420(&[&y, &uv], &[4, 4], 2, 2, PixelFormat::Nv12, [0, 0]).unwrap();
         assert_eq!(packed, vec![1, 2, 3, 4, 10, 20]);
     }
 
     #[test]
+    fn p010_crop_keeps_both_high_aligned_planes_and_their_padding_separate() {
+        let y: Vec<u8> = (0u16..24).flat_map(|v| (v << 6).to_le_bytes()).collect();
+        let uv: Vec<u8> = (100u16..112).flat_map(|v| (v << 6).to_le_bytes()).collect();
+        let expected: Vec<u8> = [14u16, 15, 20, 21, 108, 109].into_iter()
+            .flat_map(|v| (v << 6).to_le_bytes()).collect();
+        let packed = pack_420(&[&y, &uv], &[12, 12], 2, 2, PixelFormat::P010, [2, 2]).unwrap();
+        assert_eq!(packed, expected);
+        assert!(pack_420(&[&y, &uv], &[12, 12], 2, 2, PixelFormat::P010, [1, 2]).is_err());
+        assert!(pack_420(&[&y, &uv], &[12, 12], 2, 2, PixelFormat::P010, [6, 2]).is_err());
+        assert!(pack_420(&[&y, &uv[..17]], &[12, 12], 2, 2, PixelFormat::P010, [2, 2]).is_err());
+    }
+
+    #[test]
     fn truncated_planes_and_invalid_layouts_are_rejected() {
-        assert!(pack_nv12(&[&[7u8], &[]], &[8, 8], 2, 2).is_err());
-        assert!(pack_nv12(&[&[0; 8], &[0; 4]], &[1, 4], 2, 2).is_err());
-        assert!(pack_nv12(&[&[0; 8], &[0; 4]], &[4, 4], 3, 2).is_err());
+        assert!(pack_420(&[&[7u8], &[]], &[8, 8], 2, 2, PixelFormat::Nv12, [0, 0]).is_err());
+        assert!(pack_420(&[&[0; 8], &[0; 4]], &[1, 4], 2, 2, PixelFormat::Nv12, [0, 0]).is_err());
+        assert!(pack_420(&[&[0; 8], &[0; 4]], &[4, 4], 3, 2, PixelFormat::Nv12, [0, 0]).is_err());
     }
 }

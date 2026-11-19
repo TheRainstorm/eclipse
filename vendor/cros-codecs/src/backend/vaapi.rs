@@ -72,7 +72,7 @@ const FORMAT_MAP: [FormatMap; 10] = [
     FormatMap {
         rt_format: libva::VA_RT_FORMAT_YUV420_10,
         va_fourcc: libva::VA_FOURCC_P010,
-        decoded_format: DecodedFormat::I010,
+        decoded_format: DecodedFormat::P010,
     },
     FormatMap {
         rt_format: libva::VA_RT_FORMAT_YUV420_12,
@@ -148,7 +148,7 @@ impl TryFrom<&libva::VAImageFormat> for DecodedFormat {
         match value.fourcc {
             libva::VA_FOURCC_I420 => Ok(DecodedFormat::I420),
             libva::VA_FOURCC_NV12 => Ok(DecodedFormat::NV12),
-            libva::VA_FOURCC_P010 => Ok(DecodedFormat::I010),
+            libva::VA_FOURCC_P010 => Ok(DecodedFormat::P010),
             libva::VA_FOURCC_P012 => Ok(DecodedFormat::I012),
             libva::VA_FOURCC_Y210 => Ok(DecodedFormat::I210),
             libva::VA_FOURCC_Y212 => Ok(DecodedFormat::I212),

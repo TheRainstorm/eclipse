@@ -50,7 +50,7 @@ impl<V: VideoFrame> DecodedHandleTrait for DecodedHandle<V> {
     }
 
     fn display_resolution(&self) -> Resolution {
-        self.borrow().display_resolution
+        self.borrow().visible_rect.into()
     }
 
     fn timestamp(&self) -> u64 {
@@ -73,7 +73,6 @@ pub(crate) trait VaStreamInfo {
     /// Returns the VA profile of the stream.
     fn va_profile(&self) -> anyhow::Result<i32>;
     /// Returns the RT format of the stream.
-    #[allow(dead_code)]
     fn rt_format(&self) -> anyhow::Result<u32>;
     /// Returns the minimum number of surfaces required to decode the stream.
     fn min_num_surfaces(&self) -> usize;
@@ -151,19 +150,19 @@ impl<M: SurfaceMemoryDescriptor> PictureState<M> {
 pub struct VaapiDecodedHandle<V: VideoFrame> {
     backing_frame: Arc<V>,
     state: PictureState<<V as VideoFrame>::MemDescriptor>,
-    /// Actual resolution of the visible rectangle in the decoded buffer.
-    display_resolution: Resolution,
+    /// Crop frozen with this decoded picture, including its luma origin.
+    visible_rect: Rect,
 }
 
 impl<V: VideoFrame> VaapiDecodedHandle<V> {
     /// Creates a new pending handle on `surface_id`.
-    fn new(picture: VaapiPicture<V>, display_resolution: Resolution) -> anyhow::Result<Self> {
+    fn new(picture: VaapiPicture<V>, visible_rect: Rect) -> anyhow::Result<Self> {
         let backing_frame = picture.backing_frame;
         let picture = picture.picture.begin()?.render()?.end()?;
         Ok(Self {
             backing_frame: backing_frame,
             state: PictureState::Pending(picture),
-            display_resolution: display_resolution,
+            visible_rect,
         })
     }
 
@@ -178,6 +177,10 @@ impl<V: VideoFrame> VaapiDecodedHandle<V> {
             picture: self.state.new_from_same_surface(timestamp),
             backing_frame: self.backing_frame.clone(),
         }
+    }
+
+    pub fn visible_rect(&self) -> Rect {
+        self.visible_rect
     }
 
     /// Borrow the actual decoded surface for readback/export without importing
@@ -197,6 +200,7 @@ pub struct VaapiBackend<V: VideoFrame> {
     pub display: Rc<Display>,
     pub context: Rc<Context>,
     stream_info: StreamInfo,
+    visible_rect: Rect,
     // TODO: We should try to support context reuse
     _supports_context_reuse: bool,
     _phantom_data: PhantomData<V>,
@@ -233,6 +237,7 @@ impl<V: VideoFrame> VaapiBackend<V> {
             display: display,
             context: context,
             _supports_context_reuse: supports_context_reuse,
+            visible_rect: init_stream_info.display_resolution.into(),
             stream_info: init_stream_info,
             _phantom_data: Default::default(),
         }
@@ -245,18 +250,33 @@ impl<V: VideoFrame> VaapiBackend<V> {
     where
         for<'a> &'a StreamData: VaStreamInfo,
     {
-        self.stream_info.display_resolution = Resolution::from(stream_params.visible_rect());
+        let rt_format = stream_params.rt_format()?;
+        let format = match rt_format {
+            libva::VA_RT_FORMAT_YUV420 => DecodedFormat::NV12,
+            libva::VA_RT_FORMAT_YUV420_10 => DecodedFormat::P010,
+            other => return Err(anyhow!("Unsupported VA render target format {other:#x}").into()),
+        };
+        let visible = stream_params.visible_rect();
+        let coded = stream_params.coded_size();
+        if visible.x % 2 != 0 || visible.y % 2 != 0 ||
+             visible.width <= visible.x || visible.height <= visible.y ||
+             visible.width > coded.width || visible.height > coded.height
+        {
+            return Err(anyhow!("Unsupported decoded visible rectangle {visible:?} in {coded:?}").into());
+        }
+        self.visible_rect = visible;
+        self.stream_info.format = format;
+        self.stream_info.display_resolution = Resolution::from(visible);
         self.stream_info.coded_resolution = stream_params.coded_size().clone();
         self.stream_info.min_num_frames = stream_params.min_num_surfaces();
 
         // TODO: Handle context re-use
-        // TODO: We should obtain RT_FORMAT from stream_info
         let config = self
             .display
             .create_config(
                 vec![libva::VAConfigAttrib {
                     type_: libva::VAConfigAttribType::VAConfigAttribRTFormat,
-                    value: libva::VA_RT_FORMAT_YUV420,
+                    value: rt_format,
                 }],
                 stream_params.va_profile()?,
                 libva::VAEntrypoint::VAEntrypointVLD,
@@ -287,7 +307,7 @@ impl<V: VideoFrame> VaapiBackend<V> {
     {
         Ok(Rc::new(RefCell::new(VaapiDecodedHandle::new(
             picture,
-            self.stream_info.display_resolution.clone(),
+            self.visible_rect,
         )?)))
     }
 }

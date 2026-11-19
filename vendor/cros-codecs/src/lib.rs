@@ -202,6 +202,8 @@ pub enum DecodedFormat {
     I420,
     /// One Y and one interleaved UV plane, 4:2:0 sampling, 8 bits per sample.
     NV12,
+    /// One Y and one interleaved UV plane, 4:2:0, 10-bit samples in the high bits of LE u16.
+    P010,
     /// Y, U and V planes, 4:2:2 sampling, 8 bits per sample.
     I422,
     /// Y, U and V planes, 4:4:4 sampling, 8 bits per sample.
@@ -233,6 +235,7 @@ impl FromStr for DecodedFormat {
             "i444" | "I444" => Ok(DecodedFormat::I444),
             "nv12" | "NV12" => Ok(DecodedFormat::NV12),
             "i010" | "I010" => Ok(DecodedFormat::I010),
+            "p010" | "P010" => Ok(DecodedFormat::P010),
             "i012" | "I012" => Ok(DecodedFormat::I012),
             "i210" | "I210" => Ok(DecodedFormat::I210),
             "i212" | "I212" => Ok(DecodedFormat::I212),
@@ -240,7 +243,7 @@ impl FromStr for DecodedFormat {
             "i412" | "I412" => Ok(DecodedFormat::I412),
             "mm21" | "MM21" => Ok(DecodedFormat::MM21),
             _ => Err("unrecognized output format. \
-                Valid values: i420, nv12, i422, i444, i010, i012, i210, i212, i410, i412, mm21"),
+                Valid values: i420, nv12, p010, i422, i444, i010, i012, i210, i212, i410, i412, mm21"),
         }
     }
 }
@@ -250,6 +253,7 @@ impl From<Fourcc> for DecodedFormat {
         match fourcc.to_string().as_str() {
             "I420" => DecodedFormat::I420,
             "NV12" | "NM12" => DecodedFormat::NV12,
+            "P010" => DecodedFormat::P010,
             "MM21" => DecodedFormat::MM21,
             _ => todo!("Fourcc {} not yet supported", fourcc),
         }
@@ -262,6 +266,7 @@ impl From<DecodedFormat> for Fourcc {
             DecodedFormat::I420 => Fourcc::from(b"I420"),
             DecodedFormat::NV12 => Fourcc::from(b"NV12"),
             DecodedFormat::MM21 => Fourcc::from(b"MM21"),
+            DecodedFormat::P010 => Fourcc::from(b"P010"),
             _ => todo!(),
         }
     }
@@ -402,7 +407,7 @@ pub fn decoded_frame_size(format: DecodedFormat, width: usize, height: usize) ->
             u_size + uv_size
         }
         DecodedFormat::I444 => (width * height) * 3,
-        DecodedFormat::I010 | DecodedFormat::I012 => {
+        DecodedFormat::P010 | DecodedFormat::I010 | DecodedFormat::I012 => {
             decoded_frame_size(DecodedFormat::I420, width, height) * 2
         }
         DecodedFormat::I210 | DecodedFormat::I212 => {

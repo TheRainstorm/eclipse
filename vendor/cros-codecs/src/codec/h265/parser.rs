@@ -988,16 +988,16 @@ impl Sps {
 
         let crop_unit_y = SUB_HEIGHT_C[usize::from(self.chroma_array_type)];
         let crop_unit_x = SUB_WIDTH_C[usize::from(self.chroma_array_type)];
-        let crop_left = crop_unit_x * self.conf_win_left_offset;
-        let crop_right = crop_unit_x * self.conf_win_right_offset;
-        let crop_top = crop_unit_y * self.conf_win_top_offset;
-        let crop_bottom = crop_unit_y * self.conf_win_bottom_offset;
+        let crop_left = crop_unit_x.saturating_mul(self.conf_win_left_offset);
+        let crop_right = crop_unit_x.saturating_mul(self.conf_win_right_offset);
+        let crop_top = crop_unit_y.saturating_mul(self.conf_win_top_offset);
+        let crop_bottom = crop_unit_y.saturating_mul(self.conf_win_bottom_offset);
 
         Rect {
             min: Point { x: crop_left, y: crop_top },
             max: Point {
-                x: u32::from(self.width()) - crop_left - crop_right,
-                y: u32::from(self.height()) - crop_top - crop_bottom,
+                x: u32::from(self.width()).saturating_sub(crop_right),
+                y: u32::from(self.height()).saturating_sub(crop_bottom),
             },
         }
     }

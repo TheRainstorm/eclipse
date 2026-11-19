@@ -112,6 +112,7 @@ enum RenegotiationType<'a> {
 /// Keeps track of the last values seen for negotiation purposes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct NegotiationInfo {
+    visible_rect: crate::codec::h264::parser::Rect<u32>,
     /// The current coded resolution
     coded_resolution: Resolution,
     general_profile_idc: u8,
@@ -123,6 +124,7 @@ struct NegotiationInfo {
 impl From<&Sps> for NegotiationInfo {
     fn from(sps: &Sps) -> Self {
         NegotiationInfo {
+            visible_rect: sps.visible_rectangle(),
             coded_resolution: Resolution { width: sps.width().into(), height: sps.height().into() },
             general_profile_idc: sps.profile_tier_level.general_profile_idc,
             bit_depth_luma_minus8: sps.bit_depth_luma_minus8,
