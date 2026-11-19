@@ -40,7 +40,7 @@ pub struct RawFrame {
     /// Pixels reside in a typed GPU lease below; `data` is empty.
     /// Conversion and copies stay on the GPU until explicit readback.
     pub gpu: bool,
-    /// Typed, leased NV12 GPU storage; CPU frames leave this empty.
+    /// Typed, leased Linux decoder surface; CPU frames leave this empty.
     pub dma_buf: Option<std::sync::Arc<crate::dma_buf::Frame>>,
     /// Windows decoder sample lease; retains its texture-array slot.
     pub d3d11: Option<std::sync::Arc<crate::d3d11_frame::Frame>>,
@@ -118,7 +118,7 @@ impl RawFrame {
     /// Validate that the buffer can actually hold a full frame.
     pub fn is_consistent(&self) -> bool {
         if self.gpu {
-            self.dma_buf.as_ref().is_some_and(|dma|dma.valid([self.width,self.height]))
+            self.dma_buf.as_ref().is_some_and(|dma|dma.format == self.format && dma.valid([self.width,self.height]))
                 || self.d3d11.as_ref().is_some_and(|frame|frame.valid([self.width,self.height]))
         } else {self.data.len() >= self.expected_len()}
     }

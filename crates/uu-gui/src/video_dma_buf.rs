@@ -1,4 +1,4 @@
-//! EGL imports of leased, already-synchronized NV12 decoder surfaces.
+//! EGL imports of leased, already-synchronized NV12 and P010 decoder surfaces.
 //! No VA handles cross threads; no CPU map or texture upload on this path.
 use eframe::glow::{self, HasContext};
 use std::os::unix::{
@@ -11,7 +11,7 @@ use std::{
     os::fd::AsRawFd,
     sync::Arc,
 };
-use uu_core::display_frames::{dma_buf, RawFrame};
+use uu_core::display_frames::{dma_buf, PixelFormat, RawFrame};
 type Display = usize;
 type Create =
     unsafe extern "C" fn(*mut c_void, *mut c_void, u32, *mut c_void, *const i32) -> *mut c_void;
@@ -125,7 +125,7 @@ unsafe fn texture_modifiers(
 }
 
 impl Api {
-    unsafe fn render_target(&self) -> Option<dma_buf::RenderTarget> {
+    unsafe fn render_target(&self, gl: &glow::Context) -> Option<dma_buf::RenderTarget> {
         type QueryDisplay = unsafe extern "C" fn(*mut c_void, i32, *mut isize) -> u32;
         type QueryDevice = unsafe extern "C" fn(*mut c_void, i32) -> *const c_char;
         type QueryString = unsafe extern "C" fn(*mut c_void, i32) -> *const c_char;
@@ -175,15 +175,29 @@ impl Api {
         if !stat.file_type().is_char_device() {
             return None;
         }
-        let [y_linear, y_tiled] = texture_modifiers(query_modifiers, display, *b"R8  ")?;
-        let [uv_linear, uv_tiled] = texture_modifiers(query_modifiers, display, *b"GR88")?;
-        let linear = y_linear && uv_linear;
-        let intel_y = y_tiled && uv_tiled;
-        (linear || intel_y).then_some(dma_buf::RenderTarget {
-            device: stat.rdev(),
-            linear,
-            intel_y,
-        })
+        let planes = |luma, chroma| {
+            let y = texture_modifiers(query_modifiers, display, luma).unwrap_or_default();
+            let uv = texture_modifiers(query_modifiers, display, chroma).unwrap_or_default();
+            dma_buf::Modifiers {
+                linear: y[0] && uv[0],
+                intel_y: y[1] && uv[1],
+            }
+        };
+        let nv12 = planes(*b"R8  ", *b"GR88");
+        let p010 = if !gl.version().is_embedded
+            || gl.supported_extensions().contains("GL_EXT_texture_norm16")
+        {
+            planes(*b"R16 ", *b"GR32")
+        } else {
+            dma_buf::Modifiers::default()
+        };
+        (nv12.linear || nv12.intel_y || p010.linear || p010.intel_y).then_some(
+            dma_buf::RenderTarget {
+                device: stat.rdev(),
+                nv12,
+                p010,
+            },
+        )
     }
 }
 
@@ -195,11 +209,9 @@ pub fn enable(gl: &glow::Context) {
     let api = (auto || force)
         .then(|| unsafe { Api::load(gl).ok() })
         .flatten();
-    let target = if auto {
-        api.as_ref().and_then(|api| unsafe { api.render_target() })
-    } else {
-        None
-    };
+    let target = api
+        .as_ref()
+        .and_then(|api| unsafe { api.render_target(gl) });
     dma_buf::configure_target(target, force && api.is_some());
 }
 /// A failed import still owns the synchronized decoded surface. Preserve its
@@ -210,11 +222,14 @@ pub fn recover_frame(frame: &mut RawFrame) -> Result<(), String> {
         .as_ref()
         .ok_or("GPU frame lacks an exported surface")?;
     dma.reject_import();
+    if frame.format != dma.format {
+        return Err("decoded frame and exported surface formats differ".into());
+    }
     #[cfg(feature = "vaapi")]
     {
-        let pixels = dma.read_visible_nv12([frame.width, frame.height])?;
+        let pixels = dma.read_visible([frame.width, frame.height])?;
         frame.data = pixels;
-        frame.stride = frame.width;
+        frame.stride = frame.format.row_bytes(frame.width);
         frame.gpu = false;
         frame.dma_buf = None;
         Ok(())
@@ -321,6 +336,7 @@ pub struct Importer {
     current: Option<Imported>,
     retired: Vec<Imported>,
     target: Option<dma_buf::RenderTarget>,
+    force_nv12: bool,
     sync_ok: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Importer {
@@ -330,14 +346,15 @@ impl Importer {
         }
         let api = Api::load(&gl).ok()?;
         // A detached viewport may be bound to a different current EGL display.
-        let target = if std::env::var_os("UU_GPU_VIDEO").as_deref() == Some("1".as_ref()) {
-            None
-        } else {
-            Some(api.render_target()?)
-        };
+        let force_nv12 = std::env::var_os("UU_GPU_VIDEO").as_deref() == Some("1".as_ref());
+        let target = api.render_target(&gl);
+        if !force_nv12 && target.is_none() {
+            return None;
+        }
         Some(Self {
             api: Arc::new(api),
             target,
+            force_nv12,
             sync_ok: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             gl,
             current: None,
@@ -363,9 +380,14 @@ impl Importer {
         let dma = frame.dma_buf.as_ref().ok_or("GPU frame has no DMA-BUF")?;
         if !self.sync_ok.load(std::sync::atomic::Ordering::Acquire)
             || !dma.import_enabled()
-            || self
-                .target
-                .is_some_and(|target| !target.supports(dma.device, dma.modifier))
+            || frame.format != dma.format
+            || !dma_buf::accepts_import(
+                self.target,
+                self.force_nv12,
+                frame.format,
+                dma.device,
+                dma.modifier,
+            )
         {
             return Err("EGL context cannot import this VA surface pool".into());
         }
@@ -392,11 +414,12 @@ impl Importer {
                 0x3056,
                 (dma.height / shift) as i32,
                 0x3271,
-                if p == 0 {
-                    u32::from_le_bytes(*b"R8  ") as i32
-                } else {
-                    u32::from_le_bytes(*b"GR88") as i32
-                },
+                i32::from_le_bytes(match (frame.format, p) {
+                    (PixelFormat::P010, 0) => *b"R16 ",
+                    (PixelFormat::P010, _) => *b"GR32",
+                    (_, 0) => *b"R8  ",
+                    (_, _) => *b"GR88",
+                }),
                 0x3272,
                 dma.file.as_raw_fd(),
                 0x3273,
@@ -453,6 +476,17 @@ impl Importer {
             self.retired.push(old);
         }
         Ok(true)
+    }
+    pub fn origin(&self) -> [f32; 2] {
+        self.current
+            .as_ref()
+            .and_then(|f| f._frame.dma_buf.as_ref())
+            .map_or([0., 0.], |d| {
+                [
+                    d.origin[0] as f32 / d.width as f32,
+                    d.origin[1] as f32 / d.height as f32,
+                ]
+            })
     }
     pub unsafe fn bind(&self) -> [f32; 4] {
         let Some(frame) = &self.current else {
@@ -523,6 +557,44 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn mismatched_surface_is_rejected_before_same_frame_readback() {
+        let dma = Arc::new(dma_buf::Frame {
+            file: std::fs::File::open(std::env::current_exe().unwrap()).unwrap(),
+            format: PixelFormat::Nv12,
+            origin: [0, 0],
+            device: None,
+            allocation_size: 6,
+            width: 2,
+            height: 2,
+            pitch: [2, 2],
+            offset: [0, 4],
+            modifier: 0,
+            keep_alive: Arc::new(()),
+            importable: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        });
+        let mut frame = RawFrame {
+            width: 2,
+            height: 2,
+            format: PixelFormat::P010,
+            stride: 4,
+            data: Default::default(),
+            pts: uu_media::Timestamp(19),
+            gpu: true,
+            dma_buf: Some(dma.clone()),
+            d3d11: None,
+        };
+        assert!(!frame.is_consistent());
+        assert_eq!(
+            recover_frame(&mut frame).unwrap_err(),
+            "decoded frame and exported surface formats differ"
+        );
+        assert!(!dma.import_enabled());
+        assert!(frame.gpu && frame.data.is_empty());
+        assert!(Arc::ptr_eq(frame.dma_buf.as_ref().unwrap(), &dma));
+        assert_eq!(frame.pts.0, 19);
     }
 
     #[test]

@@ -282,17 +282,18 @@ impl Decoder {
                     let rect = handle.borrow().visible_rect();
                     let origin = [rect.x, rect.y];
                     let native_nv12 = format == PixelFormat::Nv12 && origin == [0, 0];
-                    if native_nv12 && crate::dma_buf::rendering() && self.importable.load(Ordering::Acquire) {
+                    if (native_nv12 || format == PixelFormat::P010) && crate::dma_buf::rendering() && self.importable.load(Ordering::Acquire) {
                         let exported = handle.borrow().surface().export_prime();
                         if let Ok(mut descriptor) = exported {
-                            if descriptor.fourcc == cros_libva::VA_FOURCC_NV12
+                            if descriptor.fourcc == u32::from(frame.fourcc())
                                 && descriptor.objects.len()==1 && descriptor.layers.len()==1
+                                && descriptor.layers[0].drm_format == descriptor.fourcc
                                 && descriptor.layers[0].num_planes==2
                                 && descriptor.layers[0].object_index[..2]==[0,0] {
                                 let layer=&descriptor.layers[0];
                                 let object=descriptor.objects.remove(0);
                                 let gpu=crate::dma_buf::Frame {
-                                    file:object.fd.into(),allocation_size:object.size,device:self.drm_device,
+                                    format, origin, file:object.fd.into(),allocation_size:object.size,device:self.drm_device,
                                     width:descriptor.width,height:descriptor.height,
                                     pitch:[layer.pitch[0],layer.pitch[1]],offset:[layer.offset[0],layer.offset[1]],
                                     modifier:object.drm_format_modifier,keep_alive:frame.clone(),importable:self.importable.clone(),
@@ -300,7 +301,7 @@ impl Decoder {
                                 if gpu.valid([resolution.width,resolution.height]) {
                                     if self.profile.enabled {self.profile.frames+=1;self.profile.gpu_frames+=1;}
                                     self.pending.push_back(RawFrame {width:resolution.width,height:resolution.height,
-                                        format:PixelFormat::Nv12,stride:resolution.width,data:Bytes::new(),
+                                        format,stride:format.row_bytes(resolution.width),data:Bytes::new(),
                                         pts:Timestamp(if self.codec==VideoCodec::Av1 {display_timestamp}else{handle.timestamp()}),gpu:true,dma_buf:Some(std::sync::Arc::new(gpu)),d3d11:None});
                                     continue;
                                 }
@@ -464,7 +465,8 @@ impl Decoder {
         while prepared.len() < pool_info.min_num_frames {
             match prepare() {
                 Ok((frame, modifier)) => {
-                    let supported = info.format == DecodedFormat::NV12 && crate::dma_buf::supports_pool(self.drm_device, modifier);
+                    let format = if info.format == DecodedFormat::P010 { PixelFormat::P010 } else { PixelFormat::Nv12 };
+                    let supported = crate::dma_buf::supports_pool(format, self.drm_device, modifier);
                     if prepared.is_empty() && supported {
                         // Allow a visible picture, a pending frame and bounded GL retirement.
                         importable = true;

@@ -162,7 +162,10 @@ impl VideoTexture {
                     // Normalized 16-bit planes require EXT_texture_norm16 on
                     // GLES. Desktop GL supports them; other GLES clients use
                     // explicit CPU tone mapping rather than an invalid upload.
-                    let supported=frame.gpu || frame.format!=PixelFormat::P010 || !state.gl.version().is_embedded || state.gl.supported_extensions().contains("GL_EXT_texture_norm16");
+                    let supported = frame.d3d11.is_some()
+                        || frame.format != PixelFormat::P010
+                        || !state.gl.version().is_embedded
+                        || state.gl.supported_extensions().contains("GL_EXT_texture_norm16");
                     if supported {
                         self.size = [frame.width as usize, frame.height as usize];
                         state.pending = Some((frame.clone(), *color,observation));
@@ -455,6 +458,7 @@ struct Planes {
     latch_counts: [u64; 2],
     observation:Option<FrameObservation>,
     uv_scale_uniform: Option<glow::UniformLocation>,
+    uv_origin_uniform: Option<glow::UniformLocation>,
     dma_active: bool,
     d3d_active: bool,
     #[cfg(windows)]
@@ -549,6 +553,7 @@ impl Planes {
         let importer = dma_buf_renderer::Importer::new(gl.clone());
         #[cfg(windows)]
         let d3d_importer = d3d11_renderer::Importer::new(gl.clone());
+        let uv_origin_uniform = gl.get_uniform_location(program, "video_uv_origin");
         let uv_scale_uniform = gl.get_uniform_location(program, "video_uv_layout");
         Ok(Self {
             cursor,
@@ -574,6 +579,7 @@ impl Planes {
             latch_counts: [0; 2],
             observation:None,
             uv_scale_uniform,
+            uv_origin_uniform,
             dma_active: false,
             d3d_active: false,
             #[cfg(windows)]
@@ -1071,6 +1077,14 @@ impl Planes {
         } else {
             uv_scale
         };
+        let origin = [0., 0.];
+        #[cfg(target_os = "linux")]
+        let origin = if self.dma_active {
+            self.importer.as_ref().map_or(origin, |importer| importer.origin())
+        } else {
+            origin
+        };
+        gl.uniform_2_f32(self.uv_origin_uniform.as_ref(), origin[0], origin[1]);
         gl.uniform_4_f32(
             self.uv_scale_uniform.as_ref(),
             uv_scale[0],

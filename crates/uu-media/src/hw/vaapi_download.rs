@@ -134,13 +134,14 @@ pub(super) fn download(
         return Err("DMA-BUF modifier requires the driver download path".into());
     }
     let layer = &descriptor.layers[0];
-    read_nv12(
+    read_semiplanar(
         &File::from(object.fd),
         object.size as usize,
         &layer.offset[..2],
         &layer.pitch[..2],
         object.drm_format_modifier,
         [width, height],
+        1,
         mappings,
         pool,
     )
@@ -152,33 +153,55 @@ pub(crate) fn read_export(
     size: [u32; 2],
 ) -> Result<bytes::Bytes, String> {
     if !frame.valid(size) {
-        return Err("invalid exported NV12 surface".into());
+        return Err("invalid exported two-plane surface".into());
     }
-    read_nv12(
+    let [x, y] = frame.origin;
+    let [width, height] = size;
+    let bytes = frame.format.row_bytes(1);
+    let bounding = [x + width, y + height]; // valid() already checked all extents.
+    let pixels = read_semiplanar(
         &frame.file,
         frame.allocation_size as usize,
         &frame.offset,
         &frame.pitch,
         frame.modifier,
-        size,
+        bounding,
+        bytes,
         &mut Mappings::default(),
         &Default::default(),
+    )?;
+    if frame.origin == [0, 0] {
+        return Ok(pixels);
+    }
+    // Only an import failure takes this path. Crop the tightly packed bounding
+    // rectangle after detiling, respecting the original chroma plane boundary.
+    let stride = (bounding[0] * bytes) as usize;
+    let (luma, chroma) = pixels.split_at(stride * bounding[1] as usize);
+    super::pack_420(
+        &[luma, chroma],
+        &[stride, stride],
+        width,
+        height,
+        frame.format,
+        frame.origin,
     )
+    .map(bytes::Bytes::from)
 }
 
-fn read_nv12(
+fn read_semiplanar(
     file: &File,
     allocation_size: usize,
     offset: &[u32],
     pitch: &[u32],
     modifier: u64,
     [width, height]: [u32; 2],
+    bytes_per_component: u32,
     mappings: &mut Mappings,
     pool: &crate::hw::pixels::Pool,
 ) -> Result<bytes::Bytes, String> {
-    let length = nv12_size(width as usize, height as usize)?;
+    let length = sample_count(width as usize, height as usize)? * bytes_per_component as usize;
     // Validate both planes before any mapping or destination modification.
-    let (w, h) = (width as usize, height as usize);
+    let (w, h) = ((width * bytes_per_component) as usize, height as usize);
     let mut visible_end = 0;
     for (p, rows) in [h, h / 2].into_iter().enumerate() {
         visible_end = visible_end.max(validate_plane(
@@ -209,9 +232,9 @@ fn read_nv12(
     Ok(bytes::Bytes::from_owner(pixels))
 }
 
-fn nv12_size(w: usize, h: usize) -> Result<usize, String> {
+fn sample_count(w: usize, h: usize) -> Result<usize, String> {
     if w == 0 || h == 0 || w % 2 != 0 || h % 2 != 0 || w > 8192 || h > 8192 {
-        return Err("NV12 download dimensions must be even and within 8192".into());
+        return Err("4:2:0 download dimensions must be even and within 8192".into());
     }
     Ok(w * h * 3 / 2)
 }
@@ -417,7 +440,7 @@ mod tests {
             assert!(copy_plane(&[0; 32], offset, pitch, w, h, modifier, &mut destination).is_err());
             assert!(destination.iter().all(|b| *b == 77));
         }
-        assert!(nv12_size(0, 2).is_err());
-        assert!(nv12_size(8194, 2).is_err());
+        assert!(sample_count(0, 2).is_err());
+        assert!(sample_count(8194, 2).is_err());
     }
 }

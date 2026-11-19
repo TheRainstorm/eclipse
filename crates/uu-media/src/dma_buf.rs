@@ -1,4 +1,5 @@
 //! Owned DMA-BUF metadata. Driver/VA objects never cross the decoder thread.
+use crate::PixelFormat;
 use std::{
     fs::File,
     sync::{
@@ -15,43 +16,70 @@ pub fn rendering() -> bool {
     RENDERING.load(Ordering::Acquire)
 }
 
-/// Formats the current EGL display supports as ordinary 2D textures for both NV12 planes.
+/// Layouts both exported planes can use as ordinary EGL 2D textures.
 #[cfg(target_os = "linux")]
-#[derive(Clone, Copy, Debug)]
-pub struct RenderTarget {
-    pub device: u64,
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Modifiers {
     pub linear: bool,
     pub intel_y: bool,
 }
 
 #[cfg(target_os = "linux")]
-static TARGET: std::sync::RwLock<Option<RenderTarget>> = std::sync::RwLock::new(None);
-
-#[cfg(target_os = "linux")]
-pub fn configure_target(target: Option<RenderTarget>, force: bool) {
-    *TARGET.write().unwrap() = target;
-    set_rendering(force || target.is_some());
+#[derive(Clone, Copy, Debug)]
+pub struct RenderTarget {
+    pub device: u64,
+    pub nv12: Modifiers,
+    pub p010: Modifiers,
 }
 
-/// Read once at pool creation; no device queries or locks on the frame path.
+// An explicit legacy NV12 override may try the real import without a modifier
+// query. It cannot opt a 10-bit surface into an unknown EGL device or layout.
 #[cfg(target_os = "linux")]
-pub(crate) fn supports_pool(device: Option<u64>, modifier: u64) -> bool {
-    rendering()
-        && TARGET
-            .read()
-            .unwrap()
-            .is_none_or(|t| t.supports(device, modifier))
+static TARGET: std::sync::RwLock<(Option<RenderTarget>, bool)> =
+    std::sync::RwLock::new((None, false));
+
+#[cfg(target_os = "linux")]
+pub fn configure_target(target: Option<RenderTarget>, force_nv12: bool) {
+    *TARGET.write().unwrap() = (target, force_nv12);
+    set_rendering(force_nv12 || target.is_some());
+}
+
+/// Read at pool creation. No device query or target lock is needed per frame.
+#[cfg(target_os = "linux")]
+pub(crate) fn supports_pool(format: PixelFormat, device: Option<u64>, modifier: u64) -> bool {
+    let (target, force_nv12) = *TARGET.read().unwrap();
+    rendering() && accepts_import(target, force_nv12, format, device, modifier)
+}
+
+/// Both the decoder pool and the current GL context must admit this layout.
+#[cfg(target_os = "linux")]
+pub fn accepts_import(
+    target: Option<RenderTarget>,
+    force_nv12: bool,
+    format: PixelFormat,
+    device: Option<u64>,
+    modifier: u64,
+) -> bool {
+    (force_nv12 && format == PixelFormat::Nv12)
+        || target.is_some_and(|target| target.supports(format, device, modifier))
 }
 
 #[cfg(target_os = "linux")]
 impl RenderTarget {
-    pub fn supports(self, device: Option<u64>, modifier: u64) -> bool {
-        device == Some(self.device)
-            && match modifier {
-                0 => self.linear,
-                0x0100_0000_0000_0002 => self.intel_y,
-                _ => false,
-            }
+    pub fn supports(self, format: PixelFormat, device: Option<u64>, modifier: u64) -> bool {
+        if device != Some(self.device) {
+            return false;
+        }
+        let formats = match format {
+            PixelFormat::Nv12 => self.nv12,
+            PixelFormat::P010 => self.p010,
+            _ => return false,
+        };
+        match modifier {
+            0 => formats.linear,
+            0x0100_0000_0000_0002 => formats.intel_y,
+            _ => false,
+        }
     }
 }
 
@@ -63,6 +91,8 @@ impl<T: std::fmt::Debug + Send + Sync> Lease for T {}
 #[derive(Debug)]
 pub struct Frame {
     pub file: File,
+    pub format: PixelFormat,
+    pub origin: [u32; 2],
     pub device: Option<u64>,
     pub allocation_size: u32,
     pub width: u32,
@@ -84,11 +114,19 @@ impl Frame {
     }
 
     #[cfg(all(target_os = "linux", feature = "vaapi"))]
-    pub fn read_visible_nv12(&self, size: [u32; 2]) -> Result<bytes::Bytes, String> {
+    pub fn read_visible(&self, size: [u32; 2]) -> Result<bytes::Bytes, String> {
         crate::hw::vaapi::download::read_export(self, size)
     }
 
-    /// Initially support only uncompressed linear/Intel Y NV12. Auxiliary
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    pub fn read_visible_nv12(&self, size: [u32; 2]) -> Result<bytes::Bytes, String> {
+        if self.format != PixelFormat::Nv12 {
+            return Err("expected an exported NV12 surface".into());
+        }
+        self.read_visible(size)
+    }
+
+    /// Accept only linear or Intel Y NV12/P010 surfaces. Auxiliary
     /// compression planes and unfamiliar modifiers retain CPU readback.
     pub fn valid(&self, visible: [u32; 2]) -> bool {
         let [w, h] = visible;
@@ -96,8 +134,13 @@ impl Frame {
             || h < 2
             || w % 2 != 0
             || h % 2 != 0
-            || self.width < w
-            || self.height < h
+            || !matches!(self.format, PixelFormat::Nv12 | PixelFormat::P010)
+            || self.origin[0] % 2 != 0
+            || self.origin[1] % 2 != 0
+            || self.origin[0].checked_add(w).is_none_or(|r| r > self.width)
+            || self.origin[1]
+                .checked_add(h)
+                .is_none_or(|b| b > self.height)
             || self.width > 8192
             || self.height > 8192
             || self.width % 2 != 0
@@ -111,8 +154,10 @@ impl Frame {
         for p in 0..2 {
             let rows = self.height / if p == 0 { 1 } else { 2 };
             let pitch = self.pitch[p] as u64;
-            if pitch < self.width as u64
+            if pitch < self.format.row_bytes(self.width) as u64
                 || pitch > i32::MAX as u64
+                || (self.format == PixelFormat::P010
+                    && (pitch % (2 << p) != 0 || self.offset[p] % (2 << p) != 0))
                 || self.offset[p] > i32::MAX as u32
             {
                 return false;
@@ -125,7 +170,8 @@ impl Frame {
                 }
                 (rows as u64 + 31) / 32 * 32
             };
-            if self.offset[p] as u64 + pitch * rows > self.allocation_size as u64 {
+            let end = self.offset[p] as u64 + pitch * rows;
+            if end > self.allocation_size as u64 || (p == 0 && end > self.offset[1] as u64) {
                 return false;
             }
         }
@@ -139,6 +185,8 @@ mod tests {
     fn fixture() -> Frame {
         Frame {
             device: None,
+            format: PixelFormat::Nv12,
+            origin: [0, 0],
             file: File::open(std::env::current_exe().unwrap()).unwrap(),
             allocation_size: 64 * 32 * 3 / 2,
             width: 64,
@@ -178,19 +226,89 @@ mod tests {
         f.offset[1] += 1;
         assert!(!f.valid([64, 32]));
     }
+    #[test]
+    fn ten_bit_layout_checks_each_plane_and_visible_origin() {
+        let mut f = fixture();
+        f.format = PixelFormat::P010;
+        assert!(!f.valid([64, 32]));
+        f.pitch = [128, 128];
+        f.offset[1] = 4096;
+        f.allocation_size *= 2;
+        f.origin = [4, 2];
+        assert!(f.valid([60, 30]));
+        assert!(!f.valid([62, 30]));
+        f.origin = [2, u32::MAX - 1];
+        assert!(!f.valid([16, 4]));
+        f.origin = [3, 2];
+        assert!(!f.valid([16, 4]));
+        f.origin = [4, 2];
+        f.offset[1] -= 4;
+        assert!(!f.valid([16, 4]));
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn render_target_checks_the_device_and_exact_plane_modifier() {
         let target = RenderTarget {
             device: 17,
-            linear: false,
-            intel_y: true,
+            nv12: Modifiers {
+                linear: false,
+                intel_y: true,
+            },
+            p010: Modifiers {
+                linear: true,
+                intel_y: false,
+            },
         };
-        assert!(target.supports(Some(17), 0x0100_0000_0000_0002));
-        assert!(!target.supports(Some(18), 0x0100_0000_0000_0002));
-        assert!(!target.supports(None, 0x0100_0000_0000_0002));
-        assert!(!target.supports(Some(17), 0));
-        assert!(!target.supports(Some(17), u64::MAX));
+        assert!(target.supports(PixelFormat::Nv12, Some(17), 0x0100_0000_0000_0002));
+        assert!(!target.supports(PixelFormat::Nv12, Some(18), 0x0100_0000_0000_0002));
+        assert!(!target.supports(PixelFormat::Nv12, None, 0x0100_0000_0000_0002));
+        assert!(!target.supports(PixelFormat::Nv12, Some(17), 0));
+        assert!(!target.supports(PixelFormat::Nv12, Some(17), u64::MAX));
+        assert!(target.supports(PixelFormat::P010, Some(17), 0));
+        assert!(!target.supports(PixelFormat::P010, Some(17), 0x0100_0000_0000_0002));
+        assert!(!target.supports(PixelFormat::P010, Some(18), 0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn forcing_nv12_never_opts_an_unverified_ten_bit_surface_into_import() {
+        for force in [false, true] {
+            assert_eq!(
+                accepts_import(None, force, PixelFormat::Nv12, None, 0),
+                force
+            );
+            assert!(!accepts_import(None, force, PixelFormat::P010, None, 0));
+            assert!(!accepts_import(None, force, PixelFormat::Bgra8, None, 0));
+            let target = RenderTarget {
+                device: 42,
+                nv12: Modifiers::default(),
+                p010: Modifiers {
+                    linear: true,
+                    intel_y: false,
+                },
+            };
+            assert!(accepts_import(
+                Some(target),
+                force,
+                PixelFormat::P010,
+                Some(42),
+                0
+            ));
+            assert!(!accepts_import(
+                Some(target),
+                force,
+                PixelFormat::P010,
+                Some(43),
+                0
+            ));
+            assert!(!accepts_import(
+                Some(target),
+                force,
+                PixelFormat::P010,
+                Some(42),
+                u64::MAX
+            ));
+        }
     }
 
     #[test]
