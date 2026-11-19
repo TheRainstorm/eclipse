@@ -114,6 +114,7 @@ fn combo(ui: &mut egui::Ui, id: &str, selected: &str, body: impl FnOnce(&mut egu
 fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
     group(ui, uu_i18n::text("画面"), |ui| {
         egui::Grid::new("settings-video-grid")
+            .num_columns(2)
             .spacing([24.0, 14.0])
             .show(ui, |ui| {
                 ui.label(uu_i18n::text("目标帧率"));
@@ -647,6 +648,35 @@ mod language_tests {
 #[cfg(test)]
 mod parameter_tests {
     use super::*;
+
+    #[test]
+    fn saved_video_choices_are_readable_in_the_settings_grid() {
+        for color in theme::COLOR_THEMES {
+            for width in [360.0, 780.0] {
+                let ctx = egui::Context::default();
+                theme::apply_color_theme(&ctx, color);
+                let mut settings = super::super::settings::ClientSettings::default();
+                let mut section = Section::Video;
+                for frame in 0..3 {
+                    let output = ctx.run(egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 800.))),
+                        ..Default::default()
+                    }, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| client_editor(ui, &mut settings, &mut section));
+                    });
+                    if frame == 2 {
+                        for label in ["保持远端帧率", "保持远端分辨率"] {
+                            assert!(output.shapes.iter().any(|shape| match &shape.shape {
+                                egui::Shape::Text(value) => value.galley.text() == uu_i18n::text(label) && !value.galley.elided
+                                    && shape.clip_rect.contains_rect(egui::Rect::from_min_size(value.pos, value.galley.size())),
+                                _ => false,
+                            }), "hidden selected value {label} at {width} points");
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn device_parameters_are_visible_without_expanding_and_preserve_saved_values() {

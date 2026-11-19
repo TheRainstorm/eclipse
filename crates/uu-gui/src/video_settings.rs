@@ -29,7 +29,7 @@ fn resolution_choice(s: &ClientSettings) -> Resolution {
 fn select(ui: &Ui, id: &str, label: impl Into<egui::WidgetText>) -> crate::theme::Select {
     crate::theme::Select::from_id_salt(ui.make_persistent_id(id))
         .width(210.0_f32.min(ui.available_width()))
-        .height(320.0).selected_text(label).truncate()
+        .height(320.0).selected_text(label)
 }
 
 pub(super) fn frame_rate(ui: &mut Ui, s: &mut ClientSettings, max_fps: u32) {
