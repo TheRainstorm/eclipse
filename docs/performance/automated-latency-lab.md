@@ -108,3 +108,17 @@ The correctness probe accepts `--mode serial|overlap|separate [--monitor NAME]`;
 private workers set and record `capture_separate_device` alongside
 `capture_overlap`. Device proofs and bounded handle/view/lock closing counters
 supplement frame Weak checks, which alone do not prove complete VRAM release.
+
+## 每轮优化的延迟占比
+
+开启 `ECLIPSE_CONTINUOUS_TRACE=1` 并将 `ECLIPSE_PIPELINE_TRACE_DIR` 指向可写目录。正常结束单路串流后，取该目录下的终态 `pipeline-*.json`。把基线和候选按基线、候选、候选、基线交替采样，使用相同的动态源、码率、编解码器、帧率和 VSync 设置。以首个保留的视频包为每轮原点，比较相同的稳态窗口。例如，以下命令各去掉三秒热身，只统计之后的十二秒。
+
+```sh
+python3 tools/diagnostics/client_latency_shares.py --skip 3 --duration 12 \
+  --group baseline baseline-1/pipeline-*.json baseline-2/pipeline-*.json \
+  --group candidate candidate-1/pipeline-*.json candidate-2/pipeline-*.json
+```
+
+常规客户端使用默认的 `--until draw`，从客户端首个 RTP 包读取算到该帧首次绘制回调。只测解码时使用 `--until decoded`，终点为对应输出 PTS 的图像就绪。若后端只提交 GPU 工作，还需单独记录 GPU 完成的时点。屏幕扫描输出需要呈现回执或光学测量。主机采集和编码各用主机时钟单列。
+
+每轮报告附上实际协商值、接收和解码帧率、实际码率、解码错误数、有效帧数和排除原因。给出总耗时 P50、P95，列出每段的平均毫秒数、占比和相对基线变化的百分点。工具用同一批完整帧的各阶段累计耗时除以总累计耗时，并单独统计总耗时最慢的 5% 帧。同一阶段可以因其他阶段变快而占比上升，判断回归时要同时看绝对毫秒数。首包到末包的读取跨度含发送节拍、传输和接收线程调度。加 `--json` 可保留逐轮样本覆盖和完整统计。
