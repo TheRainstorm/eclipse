@@ -846,17 +846,41 @@ impl Painter {
     pub fn read_screen_rgba(&self, [w, h]: [u32; 2]) -> egui::ColorImage {
         crate::profile_function!();
 
-        let mut pixels = vec![0_u8; (w * h * 4) as usize];
+        if w == 0 || h == 0 {
+            return egui::ColorImage::new([w as usize, h as usize], egui::Color32::TRANSPARENT);
+        }
+        let row_len = w as usize * 4;
+        let mut pixels = vec![0_u8; row_len * h as usize];
         unsafe {
-            self.gl.read_pixels(
-                0,
-                0,
-                w as _,
-                h as _,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelPackData::Slice(&mut pixels),
-            );
+            let gl = &self.gl;
+            let float_attachment = if gl.version().is_embedded && gl.version().major >= 3 {
+                let buffer = gl.get_parameter_i32(glow::READ_BUFFER) as u32;
+                buffer != glow::NONE
+                    && gl.get_framebuffer_attachment_parameter_i32(
+                        glow::READ_FRAMEBUFFER, buffer, glow::FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE,
+                    ) as u32 == glow::FLOAT
+            } else { false };
+            if float_attachment {
+                // GLES float-color surfaces support RGBA/FLOAT. Read in strips to
+                // keep the temporary below 1 MiB for normal viewport widths.
+                let rows = ((256 * 1024 / row_len).max(1)).min(h as usize);
+                let mut strip = vec![0.0_f32; rows * row_len];
+                for (index, destination) in pixels.chunks_mut(strip.len()).enumerate() {
+                    let values = &mut strip[..destination.len()];
+                    gl.read_pixels(
+                        0, (index * rows) as i32, w as i32, (values.len() / row_len) as i32,
+                        glow::RGBA, glow::FLOAT, glow::PixelPackData::Slice(bytemuck::cast_slice_mut(values)),
+                    );
+                    for (pixel, sample) in destination.iter_mut().zip(values.iter().copied()) {
+                        *pixel = (sample.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    }
+                }
+            } else {
+                gl.read_pixels(
+                    0, 0, w as i32, h as i32,
+                    glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(&mut pixels),
+                );
+            }
         }
         let mut flipped = Vec::with_capacity((w * h * 4) as usize);
         for row in pixels.chunks_exact((w * 4) as usize).rev() {
