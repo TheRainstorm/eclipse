@@ -35,27 +35,37 @@ impl Assembler {
         if payload.is_empty(){return Ok(());}
         let header=payload[0];let z=header&128!=0;let y=header&64!=0;let w=(header>>4)&3;
         if header&7!=0 || (header&8!=0 && z) || z!=self.fragment.is_some(){return Err(());}
-        let mut at=1;let mut elements=Vec::new();
-        while at<payload.len(){
-            let size=if w!=0 && elements.len()+1==w as usize{payload.len()-at}else{length(payload,&mut at)?};
-            if size==0 || elements.len()>=4096{return Err(());}
-            let end=at.checked_add(size).filter(|end|*end<=payload.len()).ok_or(())?;
-            elements.push(&payload[at..end]);at=end;
-            if w!=0 && elements.len()==w as usize{break;}
-        }
-        if elements.is_empty() || at!=payload.len() || (w!=0 && elements.len()!=w as usize){return Err(());}
-        for (index,element) in elements.iter().enumerate(){
-            let continues=y && index+1==elements.len();
-            if index==0 && z {
-                let fragment=self.fragment.as_mut().ok_or(())?;
-                if self.data.len()+fragment.len()+element.len()>MAX_AU{return Err(());}
+        let mut at = 1;
+        let mut count = 0;
+        while at < payload.len() {
+            count += 1;
+            if count > 4096 { return Err(()); }
+            let size = if w != 0 && count == usize::from(w) {
+                payload.len() - at
+            } else {
+                length(payload, &mut at)?
+            };
+            if size == 0 { return Err(()); }
+            let end = at.checked_add(size).ok_or(())?;
+            let element = payload.get(at..end).ok_or(())?;
+            at = end;
+            let continues = y && at == payload.len();
+            if count == 1 && z {
+                let fragment = self.fragment.as_mut().ok_or(())?;
+                if self.data.len() + fragment.len() + element.len() > MAX_AU { return Err(()); }
                 fragment.extend_from_slice(element);
-                if !continues{let bytes=self.fragment.take().ok_or(())?;self.obu(&bytes)?;}
-            }else if continues{
-                if self.fragment.is_some() || self.data.len()+element.len()>MAX_AU{return Err(());}
-                self.fragment=Some(element.to_vec());
-            }else{self.obu(element)?;}
+                if !continues {
+                    let bytes = self.fragment.take().ok_or(())?;
+                    self.obu(&bytes)?;
+                }
+            } else if continues {
+                if self.fragment.is_some() || self.data.len() + element.len() > MAX_AU { return Err(()); }
+                self.fragment = Some(element.to_vec());
+            } else {
+                self.obu(element)?;
+            }
         }
+        if count == 0 || (w != 0 && count != usize::from(w)) { return Err(()); }
         Ok(())
     }
     pub fn finish(self)->Result<(Vec<u8>,bool),()>{if self.fragment.is_some(){Err(())}else{Ok((self.data,self.frame))}}
@@ -65,6 +75,66 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use webrtc::rtp::packetizer::Payloader;
+    #[test]
+    fn aggregation_count_and_fragment_flags_preserve_element_boundaries() {
+        // W=0 means every element has a length. With W=1,2,3 only the
+        // last element omits its length, and Y applies only to that element.
+        let frame = [0x30, 7];
+        for w in 0..=3u8 {
+            let elements = if w == 0 { 4 } else { w };
+            let mut first = vec![w << 4 | 0x40];
+            let mut expected = Vec::new();
+            for index in 0..elements {
+                let last = index + 1 == elements;
+                if w == 0 || !last { first.push(2); }
+                first.extend(frame);
+                if last { expected.extend([0x32, 3, 7, 8, 9]); }
+                else { expected.extend([0x32, 1, 7]); }
+            }
+            let mut a = Assembler::default();
+            a.push(&first).unwrap();
+            a.push(&[0x90, 8, 9]).unwrap();
+            assert_eq!(a.finish().unwrap(), (expected, true));
+        }
+    }
+
+    #[test]
+    fn incremental_elements_keep_the_existing_count_and_frame_size_limits() {
+        let mut packet = vec![0]; // W=0, every element has an explicit size
+        for _ in 0..4096 { packet.extend([1, 0x30]); }
+        assert!(Assembler::default().push(&packet).is_ok());
+        packet.extend([1, 0x30]);
+        assert!(Assembler::default().push(&packet).is_err());
+
+        let mut a = Assembler { data: vec![0; MAX_AU - 3], ..Default::default() };
+        a.push(&[0x50, 0x30, 1, 2]).unwrap(); // Fragment fills the remaining three bytes.
+        assert!(a.push(&[0x90, 3]).is_err());
+    }
+
+    #[test]
+    fn malformed_late_element_retires_the_whole_access_unit() {
+        use crate::video_receiver::VideoReceiver;
+        use std::time::{Duration, Instant};
+        use uu_proto::media::VideoCodec;
+        use webrtc::rtp::{header::Header, packet::Packet};
+
+        let mut rx = VideoReceiver::with_codec(Duration::from_millis(20), VideoCodec::Av1);
+        let mut receive = |sequence_number, timestamp, marker, payload: &'static [u8]| {
+            rx.push(Packet {
+                header: Header { sequence_number, timestamp, marker, ..Default::default() },
+                payload: Bytes::from_static(payload),
+            }, Instant::now())
+        };
+        // W=3 advertises a third element, but two complete length-prefixed
+        // frame OBUs use up the packet. Later legal OBUs cannot repair it.
+        assert!(receive(1, 100, false, &[0x30, 2, 0x30, 1, 2, 0x30, 2]).is_empty());
+        assert!(receive(2, 100, true, &[0x10, 0x30, 3]).is_empty());
+        let next = receive(3, 200, true, &[0x10, 0x30, 4]);
+        assert_eq!(next.len(), 1);
+        assert_eq!(&next[0].data[..], &[0x32, 1, 4]);
+        assert_eq!(rx.stats.damaged, 1);
+    }
+
     #[test]
     fn actual_av1_packetizer_roundtrips_fragmented_generated_sequence(){
         for mtu in [5,9,16,1200]{
