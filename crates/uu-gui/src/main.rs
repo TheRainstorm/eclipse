@@ -42,6 +42,8 @@ mod shortcuts_ui;
 mod hud;
 mod hud_panel;
 mod video_texture;
+#[cfg(all(target_os="linux", feature="vaapi"))]
+mod video_wayland_hdr;
 #[cfg(windows)]
 mod wgl_interop;
 #[cfg(windows)]
@@ -1501,7 +1503,7 @@ impl App {
             h.stats.remote_screens.lock().unwrap().for_track(self.selected_track).map(|s|s.refresh_hz).filter(|hz|*hz>1).map_or(fps,|hz|fps.min(hz))
         });
         for (track,texture) in &self.textures {texture.set_continuity_active(observed&&*track==self.selected_track,expected);}
-        self.sample_hud();
+        self.sample_hud(ctx);
         #[cfg(windows)]
         {
             let gpu_video=self.textures.get(&self.selected_track).is_some_and(|t|t.native_gpu_source());
@@ -1518,6 +1520,20 @@ impl App {
                 if let Some(gl)=self.video_gl.clone(){let _=video_hdr::enable(ctx,gl,self.preferences.vsync);}
             }
             eframe::glow_presentation::set_active(ctx,ctx.viewport_id(),hdr||(gpu_video&&eframe::glow_presentation::native_video_available(ctx,ctx.viewport_id())),self.preferences.vsync);
+        }
+        #[cfg(all(target_os="linux", feature="vaapi"))]
+        if self.uses_engine_controls() {
+            let pending=self.native_ui.hdr_output.as_mut().is_some_and(|requests| requests.pending());
+            let negotiated=self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_response.lock().unwrap().is_some());
+            let active=self.active_session && !self.controller.closing() && (pending||negotiated);
+            let evidence=video_wayland_hdr::update(ctx,active,pending,self.preferences.vsync);
+            if pending {
+                if let Some(supported)=evidence {
+                    self.native_ui.hdr_output.as_mut().unwrap().answer(supported);
+                }else{
+                    ctx.request_repaint_after(std::time::Duration::from_millis(8));
+                }
+            }
         }
         let video_px = self.textures.get(&self.selected_track)
             .map(|texture| texture.size_vec2());

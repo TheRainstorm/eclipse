@@ -1208,7 +1208,7 @@
   "输出分辨率只调整串流编码尺寸，不修改远端桌面。实际帧率取决于被控端、屏幕和网络。": "Output resolution changes encoded video size only, not the remote desktop. Actual FPS depends on the host, display and network.",
   "呈现与解码": "Presentation and decoding",
   "原生串流：优先 HDR": "Native streaming: prefer HDR",
-  "双方显示器均启用 HDR 且支持 10 位 HEVC / AV1 时自动协商。HDR 和编码切换需要重新连接；其它情况使用 SDR。当前 Linux 客户端以 SDR 呈现。": "Negotiated when both displays enable HDR and support 10-bit HEVC / AV1. HDR and codec changes require reconnecting; otherwise SDR is used. Linux clients currently present SDR.",
+  "两端显示器都启用 HDR，并支持 10 位 HEVC 或 AV1 时，重新连接可使用 HDR。Linux 需要支持 HDR 色彩管理的 Wayland 桌面。条件不满足时使用 SDR。": "Reconnect to use HDR when both displays have HDR enabled and both ends support 10-bit HEVC or AV1. Linux requires a Wayland desktop with HDR color management. Otherwise the stream uses SDR.",
   "保存后立即应用到当前窗口。关闭可减少呈现等待，也可能出现撕裂。": "Applies to the current window after saving. Disabling can reduce presentation waits but may cause tearing.",
   "保存后应用新的垂直同步设置": "Apply vertical sync setting after saving",
   "使用软件解码": "Use software decoding",

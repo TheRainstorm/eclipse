@@ -1,6 +1,7 @@
 //! Embed the application icon and product identity into Windows executables.
 use std::{env, fs, path::PathBuf, process::Command};
 mod build_support;
+mod build_wayland_hdr;
 
 fn embed_provenance() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../..");
@@ -73,6 +74,10 @@ fn embed_provenance() {
 }
 
 fn main() {
+    println!("cargo:rerun-if-changed=build_wayland_hdr.rs");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") && env::var_os("CARGO_FEATURE_VAAPI").is_some() {
+        build_wayland_hdr::compile();
+    }
     embed_provenance();
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
     let built_at=match env::var("SOURCE_DATE_EPOCH") {

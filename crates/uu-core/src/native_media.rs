@@ -254,6 +254,8 @@ pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
 }
 
 pub(crate) struct NativePeer {
+    /// Frozen for this offer, independently of later output changes or media epochs.
+    pub hdr_codecs: Vec<VideoCodec>,
     pub diagnostics: Arc<crate::native_diagnostics::Diagnostics>,
     _diagnostic_monitor: crate::native_diagnostics::Monitor,
     pub tasks: Arc<crate::native_tasks::Tasks>,
@@ -431,7 +433,16 @@ impl NativePeer {
             },RTPCodecType::Video)?;
         }
         let hdr_codecs=if sender {vec![VideoCodec::Hevc,VideoCodec::Av1]}else if let Some(stats)=&stats {
-            if stats.native_hdr_capable.load(Ordering::Acquire) {
+            let output_available = match (stats.native_hdr_requested.get(),stats.native_hdr_output.get()) {
+                (Some(false), _) => false,
+                (_, Some(window)) => {
+                    let status=window.supported().await;
+                    stats.diagnostics.record(serde_json::json!({"event":"native_hdr_output_probe","status":status}));
+                    status==crate::native_color::output::OutputStatus::PresentedHdr
+                },
+                (_, None) => stats.native_hdr_capable.load(Ordering::Acquire),
+            };
+            if output_available {
                 if let Some(cached)=stats.native_hdr_codecs.get(){cached.clone()}else{
                     let probe=|codec|async move {
                         let kind=stats.decoder_kind();
@@ -497,6 +508,7 @@ impl NativePeer {
             Box::pin(async {})
         }));
         Ok(Self {
+            hdr_codecs,
             _diagnostic_monitor:diagnostics.monitor(&pc),
             diagnostics,
             tasks: Arc::default(),
@@ -974,6 +986,32 @@ mod tests {
         ] {
             let sdp=RTCSessionDescription::offer(format!("{base}{media}")).unwrap();
             assert_eq!(offers_hdr_codec(&sdp,VideoCodec::Hevc),expected);
+        }
+    }
+    #[tokio::test]
+    async fn each_offer_rechecks_its_window_before_reusing_main10_decoder_evidence() {
+        let local = "127.0.0.14".parse().unwrap();
+        let stats = Arc::new(MediaStats::default());
+        stats.native_codec_capabilities.set(vec![VideoCodec::Hevc]).unwrap();
+        stats.native_hdr_codecs.set(vec![VideoCodec::Hevc]).unwrap();
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let event = wake.clone();
+        let (request, mut window) = crate::native_color::output::channel(move || event.notify_one());
+        assert!(stats.native_hdr_output.set(request).is_ok());
+        for accepted in [true, false] {
+            let owner = async {
+                wake.notified().await;
+                assert!(window.pending());
+                window.answer(accepted);
+            };
+            let (peer, ()) = tokio::join!(NativePeer::new(local,Some(stats.clone()),false),owner);
+            let mut peer = peer.unwrap();
+            let (frames, _receiver) = crate::media::frame_channel();
+            peer.receiver(frames,stats.clone()).await.unwrap();
+            let offer = peer.description(true).await.unwrap();
+            assert_eq!(peer.hdr_codecs.contains(&VideoCodec::Hevc), accepted);
+            assert_eq!(offers_hdr_codec(&offer, VideoCodec::Hevc), accepted);
+            peer.close().await;
         }
     }
     #[tokio::test]

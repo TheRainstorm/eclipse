@@ -1,5 +1,6 @@
 //! Authenticated, optional HDR10 negotiation. Absence always means SDR.
 //! Independent attributes preserve older strict video-setting envelopes.
+pub mod output;
 use crate::native_quality::{get, put};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};

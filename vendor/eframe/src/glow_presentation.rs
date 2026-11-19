@@ -11,6 +11,10 @@ pub struct ColorTarget {
     pub sdr_white_nits: f32,
 }
 pub trait Presenter: Send {
+    /// Whether this viewport's HDR output was presented. None means the native
+    /// backend is still resolving the output; this must not wait for the server.
+    fn verified_hdr_output(&mut self) -> Option<bool> { Some(false) }
+
     /// Optional native image metadata, scoped to this viewport and paint frame.
     fn native_video(&mut self,_:Arc<dyn std::any::Any+Send+Sync>)->Result<bool,String>{Ok(false)}
     fn supports_native_video(&self)->bool{false}
@@ -88,6 +92,14 @@ pub fn available_color_for(ctx: &Context, viewport: ViewportId) -> Option<ColorT
     let surface = ctx.data(|data| data.get_temp::<Surface>(key(viewport)))?;
     let color = surface.0.lock().unwrap().color;
     Some(color)
+}
+/// Ask the current native owner about this viewport's actual output.
+pub fn verified_hdr_output(ctx: &Context, viewport: ViewportId) -> Option<bool> {
+    let Some(surface) = ctx.data(|data| data.get_temp::<Surface>(key(viewport))) else {
+        return Some(false);
+    };
+    let mut state = surface.0.lock().unwrap();
+    if state.active {state.presenter.verified_hdr_output()} else {Some(false)}
 }
 pub fn native_video_available(ctx:&Context,viewport:ViewportId)->bool{
     ctx.data(|d|d.get_temp::<Surface>(key(viewport))).is_some_and(|s|s.0.lock().unwrap().presenter.supports_native_video())

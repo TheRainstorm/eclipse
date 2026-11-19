@@ -34,7 +34,7 @@ python3 tools/linux/set_pairing_password.py
 新版原生两端可协商有预算上限的XOR视频FEC，每组最多恢复一个丢失包；不兼容UU官方FEC。
 原生手柄和陀螺仪使用 SDL 读取，主机通过虚拟 DS4 注入；Linux 主机需可访问 /dev/uhid，应用不会自动改设备权限或安装驱动。
 
-运行需要 libva、libgbm、libpulse、libpipewire-0.3、libxkbcommon、libxkbcommon-x11、ALSA（桌面推荐 PipeWire ALSA 插件）、OpenGL/EGL。
+运行需要 libva、libgbm、libepoxy、libwayland-client、libpulse、libpipewire-0.3、libxkbcommon、libxkbcommon-x11、ALSA（桌面推荐 PipeWire ALSA 插件）、OpenGL/EGL。
 登录/设置：$XDG_DATA_HOME/eclipse 或 ~/.local/share/eclipse。
 首次使用新目录时复制旧 uu-remote 配置并保留原目录，已有 Eclipse 配置不会被覆盖。
 便携模式：将完整包解压到可写的独立目录，在实际 eclipse 程序旁创建空的 eclipse-data

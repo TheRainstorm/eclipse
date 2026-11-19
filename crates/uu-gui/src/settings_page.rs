@@ -135,8 +135,8 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
 
     });
     group(ui, uu_i18n::text("呈现与解码"), |ui| {
-        ui.add_enabled_ui(cfg!(windows),|ui|{theme::switch(ui,&mut s.hdr,uu_i18n::text("原生串流：优先 HDR"));});
-        note(ui,uu_i18n::text("双方显示器均启用 HDR 且支持 10 位 HEVC / AV1 时自动协商。HDR 和编码切换需要重新连接；其它情况使用 SDR。当前 Linux 客户端以 SDR 呈现。"));
+        ui.add_enabled_ui(super::native_ui::HAS_HDR_OUTPUT,|ui|{theme::switch(ui,&mut s.hdr,uu_i18n::text("原生串流：优先 HDR"));});
+        note(ui,uu_i18n::text("两端显示器都启用 HDR，并支持 10 位 HEVC 或 AV1 时，重新连接可使用 HDR。Linux 需要支持 HDR 色彩管理的 Wayland 桌面。条件不满足时使用 SDR。"));
         theme::switch(ui,&mut s.vsync, uu_i18n::text("垂直同步"));
         note(
             ui,

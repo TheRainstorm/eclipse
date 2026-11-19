@@ -7,7 +7,45 @@ use eframe::egui;
 use std::{path::PathBuf, sync::Arc};
 use uu_core::capabilities::Capability;
 
+pub(super) const HAS_HDR_OUTPUT: bool = cfg!(any(windows, all(target_os = "linux", feature = "vaapi")));
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StreamColor {
+    Waiting,
+    Sdr,
+    Hdr10,
+    ToneMapped,
+}
+
+impl StreamColor {
+    fn from_signal(negotiated_hdr: bool, hdr_output: bool) -> Self {
+        match (negotiated_hdr, hdr_output) {
+            (false, _) => Self::Sdr,
+            (true, false) => Self::ToneMapped,
+            (true, true) => Self::Hdr10,
+        }
+    }
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Waiting => "—",
+            Self::Sdr => "SDR",
+            Self::Hdr10 => "HDR10",
+            Self::ToneMapped => "HDR10 → SDR",
+        }
+    }
+    pub(super) fn description(self) -> &'static str {
+        match self {
+            Self::Waiting => uu_i18n::text("连接中…"),
+            Self::Sdr => uu_i18n::text("当前 SDR；HDR 需要两端显示输出和编解码支持"),
+            Self::Hdr10 => uu_i18n::text("当前 HDR10 · 10 位 PQ / BT.2020"),
+            Self::ToneMapped => uu_i18n::text("当前 HDR10 → SDR 映射"),
+        }
+    }
+}
+
 pub(super) struct NativeUi {
+    #[cfg(all(target_os="linux", feature="vaapi"))]
+    pub(super) hdr_output: Option<uu_core::native_color::output::WindowRequests>,
     pub open: bool,
     path: String,
     notice: String,
@@ -17,7 +55,7 @@ pub(super) struct NativeUi {
     rate_preference:Option<Option<uu_core::native_quality::RateMode>>,
 }
 impl Default for NativeUi {
-    fn default()->Self{Self{open:false,path:String::new(),notice:String::new(),request_control:true,fallback:None,feedback:Default::default(),rate_preference:None}}
+    fn default()->Self{Self{#[cfg(all(target_os="linux", feature="vaapi"))] hdr_output:None,open:false,path:String::new(),notice:String::new(),request_control:true,fallback:None,feedback:Default::default(),rate_preference:None}}
 }
 impl NativeUi {
     pub(super) fn live_rate(&mut self,requested:Option<uu_core::native_quality::RateMode>,initial:Option<uu_core::native_quality::RateMode>,response:uu_core::native_quality::RateResponse,current:Option<uu_core::native_quality::RateMode>)->uu_core::native_quality::RateMode {
@@ -30,6 +68,14 @@ pub(super) fn fallback_message(fallback:uu_core::native_quality::Fallback)->Stri
     uu_i18n::format!("优先设置暂不可用，已自动使用 {} / {}",codec,fallback.applied_rate.label())
 }
 impl App {
+    pub(super) fn stream_color(&self, ctx: &egui::Context) -> StreamColor {
+        let Some(controller) = self.controller.as_ref() else { return StreamColor::Waiting };
+        let hdr = controller.stats.native_hdr_response.lock().unwrap().is_some();
+        let hdr_target = hdr && eframe::glow_presentation::color_target_for(ctx, ctx.viewport_id())
+            .is_some_and(|target| target.hdr);
+        StreamColor::from_signal(hdr, hdr_target)
+    }
+
     pub(super) fn client_stats(&mut self,transport:&str)->Arc<uu_core::media::MediaStats> {
         self.native_ui.fallback=None;self.native_ui.feedback.clear();
         self.native_ui.rate_preference=None;
@@ -43,6 +89,17 @@ impl App {
         let _=stats.native_quality_request.set(self.native_quality_request());
         let _=stats.native_rate_request.set(uu_core::native_quality::RateRequest{selection:self.preferences.rate_control});
         let _=stats.native_hdr_requested.set(self.preferences.hdr);
+        #[cfg(all(target_os="linux", feature="vaapi"))]
+        {
+            self.native_ui.hdr_output=None;
+            if transport=="native" && self.preferences.hdr && kind!=uu_core::media::DecoderKind::Software
+                && !matches!(self.preferences.codec, super::settings::CodecPreference::H264 | super::settings::CodecPreference::Pyrowave) {
+                let route=self.context.clone();
+                let (request, window) = uu_core::native_color::output::channel(move || route.request_repaint());
+                let _=stats.native_hdr_output.set(request);
+                self.native_ui.hdr_output=Some(window);
+            }
+        }
         #[cfg(windows)]
         if self.preferences.hdr && kind!=uu_core::media::DecoderKind::Software && !matches!(self.preferences.codec,super::settings::CodecPreference::H264|super::settings::CodecPreference::Pyrowave) {
             if let Some(gl)=self.video_gl.clone() {
@@ -270,6 +327,14 @@ impl App {
 mod tests {
     use super::*;
     use uu_core::native_quality::{RateMode::{Cbr,Vbr},RateResponse};
+    #[test]
+    fn negotiated_video_and_current_output_determine_color_label() {
+        use super::StreamColor;
+        assert_eq!(StreamColor::from_signal(false, true).label(), "SDR");
+        assert_eq!(StreamColor::from_signal(true, true).label(), "HDR10");
+        assert_eq!(StreamColor::from_signal(true, false).label(), "HDR10 → SDR");
+        assert_eq!(StreamColor::Waiting.label(), "—");
+    }
     #[test]
     fn unrelated_quality_updates_keep_the_applied_fallback_rate_and_explicit_changes_retry() {
         let mut ui=NativeUi::default();let response=RateResponse{default:Vbr,applied:Cbr};

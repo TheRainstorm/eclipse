@@ -929,8 +929,8 @@ async fn receive_session(
     });
     if let Some(request)=rate_request {crate::native_quality::put(&mut description,crate::native_quality::RATE_ATTRIBUTE,&request)?;}
     crate::native_quality::put(&mut description,crate::native_quality::FALLBACK_REQUEST,&true)?;
-    if let Some(codecs)=stats.native_hdr_codecs.get().filter(|codecs|!codecs.is_empty()) {
-        crate::native_color::Request{codecs:codecs.clone()}.add(&mut description)?;
+    if !peer.hdr_codecs.is_empty() {
+        crate::native_color::Request{codecs:peer.hdr_codecs.clone()}.add(&mut description)?;
     }
     let virtual_setup=crate::native_displays::InitialRequest::read(&description)?.is_some_and(|r|r.virtual_spec().is_some());
     stream.send(serde_json::to_value(Offer {
@@ -985,8 +985,7 @@ async fn receive_session(
     *stats.native_rate_response.lock().unwrap()=rate;
     let hdr=crate::native_color::Response::read(&answer.sdp)?;
     if let Some(response)=&hdr {
-        ensure!(response.codec==answer.codec && crate::native_media::offers_hdr_codec(&answer.sdp,answer.codec) && stats.native_hdr_capable.load(Ordering::Acquire)
-            && stats.native_hdr_codecs.get().is_some_and(|codecs|codecs.contains(&answer.codec)),"{}", uu_i18n::format!("主机返回未协商的 HDR10 格式"));
+        ensure!(response.codec==answer.codec && crate::native_media::offers_hdr_codec(&answer.sdp,answer.codec) && peer.hdr_codecs.contains(&answer.codec),"{}", uu_i18n::format!("主机返回未协商的 HDR10 格式"));
     }
     *stats.native_hdr_response.lock().unwrap()=hdr;
     stats.diagnostics.record(serde_json::json!({"event":"native_color_negotiated","hdr":hdr}));

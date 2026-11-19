@@ -569,11 +569,13 @@ impl super::App {
     fn picture_menu(&mut self, ui: &mut egui::Ui) {
         let managed=self.server_managed_media();
         if self.uses_engine_controls() {
-            let hdr=self.controller.as_ref().and_then(|h|*h.stats.native_hdr_response.lock().unwrap()).is_some();
-            let displaying=eframe::glow_presentation::color_target_for(ui.ctx(),ui.ctx().viewport_id()).is_some_and(|c|c.hdr);
-            let status=if self.controller.is_none(){"—"}else if hdr&&displaying{"HDR10"}else if hdr{"HDR → SDR"}else{"SDR"};
-            let tip=if hdr&&displaying {uu_i18n::text("当前 HDR10 · 10 位 PQ / BT.2020")}else if hdr {uu_i18n::text("当前 HDR10 → SDR 映射")}else{uu_i18n::text("当前 SDR；HDR 需要两端显示输出和编解码支持")};
-            ui.add_enabled_ui(cfg!(windows)&&!managed,|ui|{if menu_toggle(ui,uu_i18n::text("优先 HDR"),self.preferences.hdr,status).on_hover_text(format!("{tip}\n{}",uu_i18n::text("需要两端显示输出、采集和编解码支持；连接时协商，无法使用时回退SDR。"))).clicked(){self.preferences.hdr=!self.preferences.hdr;self.persist_preferences();self.send_capture_settings();}});
+            let color=self.stream_color(ui.ctx());
+            ui.add_enabled_ui(super::native_ui::HAS_HDR_OUTPUT && !managed,|ui|{
+                if menu_toggle(ui,uu_i18n::text("优先 HDR"),self.preferences.hdr,color.label())
+                    .on_hover_text(format!("{}\n{}",color.description(),uu_i18n::text("需要两端显示输出、采集和编解码支持；连接时协商，无法使用时回退SDR。"))).clicked() {
+                    self.preferences.hdr=!self.preferences.hdr;self.persist_preferences();self.send_capture_settings();
+                }
+            });
             separator(ui);
         }
         if managed {ui.label(uu_i18n::text("画质由被控端服务面板控制"));}

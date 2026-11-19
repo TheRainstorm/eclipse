@@ -208,7 +208,7 @@ pub fn probe_decoder(
     kind: crate::DecoderKind,
 ) -> Result<(), crate::CodecError> {
     use uu_proto::media::VideoCodec;
-    if kind == crate::DecoderKind::Software || !cfg!(windows) {
+    if kind == crate::DecoderKind::Software || !cfg!(any(windows, all(target_os = "linux", feature = "vaapi"))) {
         return Err(crate::CodecError::Backend(
             "HDR requires a supported 10-bit hardware decoder".into(),
         ));

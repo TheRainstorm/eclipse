@@ -38,6 +38,7 @@ pub struct MediaStats {
     pub refresh_modifiers:std::sync::atomic::AtomicBool,
     pub native_cursor:crate::native_cursor::Client,
     pub native_hdr_requested:std::sync::OnceLock<bool>,
+    pub native_hdr_output:std::sync::OnceLock<crate::native_color::output::OutputRequest>,
     pub native_hdr_capable:std::sync::atomic::AtomicBool,
     pub native_hdr_codecs:std::sync::OnceLock<Vec<uu_proto::media::VideoCodec>>,
     pub native_hdr_response:std::sync::Mutex<Option<crate::native_color::Response>>,

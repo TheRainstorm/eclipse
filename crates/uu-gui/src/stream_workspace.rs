@@ -605,6 +605,10 @@ impl Window {
     ) {
         #[cfg(test)]
         tests::observe_screenshot(ctx);
+        #[cfg(all(target_os="linux",feature="vaapi"))]
+        if self.closing || local_desktop || self.sessions.iter().all(|s| s.id != self.active) {
+            crate::video_wayland_hdr::update(ctx, false, false, vsync);
+        }
         if self.closing {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             if self.close_hidden {

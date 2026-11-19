@@ -6,6 +6,8 @@ license.workspace = true
 description = "Eclipse — open-source remote desktop streaming"
 
 [build-dependencies]
+cc = "1.2"
+pkg-config = "0.3"
 time = "0.3"
 
 [[bin]]

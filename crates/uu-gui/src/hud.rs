@@ -28,7 +28,7 @@ impl Cache {
     }
 }
 impl super::App {
-    pub(super) fn sample_hud(&mut self) {
+    pub(super) fn sample_hud(&mut self, ctx: &egui::Context) {
         let Some(controller)=self.controller.as_ref() else{return;};
         let s=&controller.stats;
         let (w,h)=self.textures.get(&self.selected_track).map(|t|(t.size()[0] as u32,t.size()[1] as u32)).unwrap_or_else(||s.res());
@@ -51,7 +51,7 @@ impl super::App {
                 fps:[received.then(||s.src_fps()),decoded.then(||s.dec_fps()),self.fps.get(&self.selected_track).copied()],
                 target_fps:if configured>0{configured}else{self.target_fps},
                 source_hz:s.remote_screens.lock().unwrap().for_track(self.selected_track).map(|v|v.refresh_hz).filter(|hz|*hz>1),
-                codec:{let codec=s.codec.lock().unwrap().rsplit('/').next().unwrap_or("").to_uppercase();if codec.is_empty(){String::new()}else{format!("{codec} {}",if s.native_hdr_response.lock().unwrap().is_some(){"10-bit HDR"}else{"SDR"})}},
+                codec:{let codec=s.codec.lock().unwrap().rsplit('/').next().unwrap_or("").to_uppercase();if codec.is_empty(){String::new()}else{format!("{codec} {}",self.stream_color(ctx).label())}},
                 mode:s.native_quality_current.lock().unwrap().and_then(|v|v.rate_control).map_or_else(String::new,|r|r.label().into()),
                 backend:s.backend(),
                 bitrate:received.then(||s.bitrate_kbps.load(Relaxed) as f32/1000.),
@@ -112,7 +112,7 @@ impl super::App {
     pub(super) fn paint_hud(&mut self,ui:&egui::Ui,rect:Rect)->bool {
         if !self.hud {self.hud_cache.hide();return false;}
         if self.controller.is_none(){return false;}
-        self.sample_hud();
+        self.sample_hud(ui.ctx());
         let [w,h]=self.hud_cache.metrics.size;
         let width=(rect.width()-32.).max(1.);
         let key=(self.selected_track,width.to_bits(),ui.ctx().pixels_per_point().to_bits(),w,h,uu_i18n::epoch());
@@ -128,7 +128,7 @@ impl super::App {
             // Read current counters at the click, so the next sample measures
             // only activity after Clear. Media counters and live telemetry
             // belong to the engine and are never reset by this local view.
-            self.hud_cache.updated=None;self.sample_hud();
+            self.hud_cache.updated=None;self.sample_hud(ui.ctx());
             let epoch=self.controller.as_ref().unwrap().stats.native_media_epoch.load(Relaxed);
             self.hud_cache.clear_history(Instant::now(),[epoch,u64::from(self.selected_track)]);
             for texture in self.textures.values(){texture.clear_continuity();}
