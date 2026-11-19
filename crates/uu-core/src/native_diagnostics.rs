@@ -1,6 +1,9 @@
 //! Always-on, bounded transport metadata. No addresses, SDP, credentials,
 //! clipboard, input contents or media bytes are retained. Packet paths only
 //! update atomics; a connection-owned sampler writes a summary every 5 seconds.
+#[cfg(target_os = "linux")]
+mod udp_memory;
+
 use serde_json::{json, Value};
 use std::{
     net::SocketAddr,
@@ -86,6 +89,10 @@ pub(crate) struct Diagnostics {
     closing: AtomicBool,
     exited: AtomicBool,
     socket_observed: AtomicBool,
+    #[cfg(target_os = "linux")]
+    udp_socket: std::sync::OnceLock<udp_memory::Bound>,
+    #[cfg(target_os = "linux")]
+    latest_udp: Mutex<Option<(Instant, crate::media::UdpReceiveMemory)>>,
     receive: Direction,
     send: Direction,
     captured: Mutex<Option<Arc<AtomicU64>>>,
@@ -125,6 +132,10 @@ impl Diagnostics {
             closing: AtomicBool::new(false),
             exited: AtomicBool::new(false),
             socket_observed: AtomicBool::new(false),
+            #[cfg(target_os = "linux")]
+            udp_socket: Default::default(),
+            #[cfg(target_os = "linux")]
+            latest_udp: Default::default(),
             receive: Direction::default(),
             send: Direction::default(),
             captured: Mutex::new(None),
@@ -202,6 +213,30 @@ impl Diagnostics {
             video: false,
         }
     }
+    #[cfg(target_os = "linux")]
+    fn udp_kernel_sample(&self) -> Value {
+        let result = self.udp_socket.get()
+            .ok_or(if self.socket_observed.load(Relaxed) { "socket_unavailable" } else { "ice_managed_sockets" })
+            .and_then(udp_memory::Bound::read);
+        *self.latest_udp.lock().unwrap() = result.ok().map(|v| (Instant::now(), v));
+        match result {
+            Ok(sample) => json!({"scope":"peer_udp_mux","sample":sample}),
+            Err(reason) => json!({"unavailable":reason}),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn udp_kernel_sample(&self) -> Value {
+        json!({"unavailable":"unsupported_platform"})
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn latest_udp_memory(&self) -> Option<crate::media::UdpReceiveMemory> {
+        if self.closing.load(Relaxed) { return None; }
+        self.latest_udp.lock().unwrap()
+            .filter(|(at, _)| at.elapsed() < Duration::from_secs(10)).map(|(_, sample)| sample)
+    }
+
     fn snapshot(&self, pc: &RTCPeerConnection) -> Value {
         let now = self.now();
         let capture = self
@@ -218,7 +253,7 @@ impl Diagnostics {
         json!({"event":"native_transport_sample","peer_state":pc.connection_state().to_string(),
             "ice_state":pc.ice_connection_state().to_string(),"dtls_state":pc.sctp().transport().state().to_string(),
             "sctp_state":pc.sctp().state().to_string(),"closing":self.closing.load(Relaxed),
-            "udp_observed":self.socket_observed.load(Relaxed),"udp_receive":self.receive.snapshot(now),"udp_send":self.send.snapshot(now),
+            "udp_observed":self.socket_observed.load(Relaxed),"udp_kernel_receive":self.udp_kernel_sample(),"udp_receive":self.receive.snapshot(now),"udp_send":self.send.snapshot(now),
             "captured":capture,"producer":producer,"input":input,"video_sent":self.sent.load(Relaxed),"video_send_pending_ms":(pending!=0).then(||now.saturating_sub(pending)),
             "audio_send_pending_ms":(audio_pending!=0).then(||now.saturating_sub(audio_pending)),
             "rtp_received":stats.as_ref().map(|s|s.packets.load(Relaxed)),
@@ -231,6 +266,10 @@ impl Diagnostics {
         self.record(self.snapshot(pc));
     }
     pub fn monitor(self: &Arc<Self>, pc: &Arc<RTCPeerConnection>) -> Monitor {
+        #[cfg(target_os = "linux")]
+        if let Some(stats) = self.stats.as_ref().and_then(Weak::upgrade) {
+            *stats.udp_diagnostics.lock().unwrap() = Arc::downgrade(self);
+        }
         let pc = Arc::downgrade(pc);
         let log = self.clone();
         Monitor(tokio::spawn(async move {
@@ -319,8 +358,22 @@ impl Drop for ReadCall<'_> {
 }
 
 pub(crate) struct Observed<C> {
-    pub socket: C,
+    #[cfg(target_os = "linux")]
+    socket: Arc<C>,
+    #[cfg(not(target_os = "linux"))]
+    socket: C,
     pub log: Arc<Diagnostics>,
+}
+impl<C: Conn + Send + Sync + 'static> Observed<C> {
+    fn new(socket: C, log: Arc<Diagnostics>) -> Self {
+        #[cfg(target_os = "linux")]
+        let socket = {
+            let socket = Arc::new(socket);
+            udp_memory::Bound::register(&log.udp_socket, &socket);
+            socket
+        };
+        Self { socket, log }
+    }
 }
 #[async_trait::async_trait]
 impl<C: Conn + Send + Sync> Conn for Observed<C> {
@@ -371,7 +424,7 @@ pub(crate) fn udp_params<C: Conn + Send + Sync + 'static>(
     log: Arc<Diagnostics>,
 ) -> webrtc::ice::udp_mux::UDPMuxParams {
     log.socket_observed.store(true, Relaxed);
-    let observed = Observed { socket, log };
+    let observed = Observed::new(socket, log);
     match trace {
         Some(trace) => webrtc::ice::udp_mux::UDPMuxParams::new(crate::socket_trace::Observed {
             socket: observed,
@@ -412,10 +465,7 @@ mod tests {
     async fn real_udp_and_cancelled_reads_preserve_socket_semantics_and_only_record_metadata() {
         let log = Diagnostics::new(None, false);
         let events = log.log.capture().unwrap();
-        let a = Observed {
-            socket: UdpSocket::bind("127.0.0.1:0").await.unwrap(),
-            log: log.clone(),
-        };
+        let a = Observed::new(UdpSocket::bind("127.0.0.1:0").await.unwrap(), log.clone());
         let b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let a_addr = a.local_addr().unwrap();
         let b_addr = b.local_addr().unwrap();
@@ -501,7 +551,9 @@ mod tests {
     async fn connected_peers_share_only_public_offer_nonce_and_keep_original_exit_before_cleanup() {
         use crate::native_media::NativePeer;
         let ip = "127.0.0.1".parse().unwrap();
-        let mut viewer = NativePeer::new(ip, None, false).await.unwrap();
+        let stats = Arc::new(crate::media::MediaStats::default());
+        stats.native_codec_capabilities.set(vec![uu_proto::media::VideoCodec::H264]).unwrap();
+        let mut viewer = NativePeer::new(ip, Some(stats.clone()), false).await.unwrap();
         let mut host = NativePeer::new(ip, None, true).await.unwrap();
         let viewer_events = viewer.diagnostics.log.capture().unwrap();
         let host_events = host.diagnostics.log.capture().unwrap();
@@ -518,10 +570,16 @@ mod tests {
         let (a, b) = tokio::join!(viewer.connected(), host.connected());
         a.unwrap();
         b.unwrap();
+        viewer.diagnostics.final_sample(&viewer.pc);
+        #[cfg(target_os = "linux")]
+        assert_eq!(stats.udp_receive_memory().unwrap().family, "ipv4");
+        #[cfg(not(target_os = "linux"))]
+        assert!(stats.udp_receive_memory().is_none());
         viewer.diagnostics.exit("test_transport_failure");
         viewer.diagnostics.exit("stop_requested");
         viewer.close().await;
         host.close().await;
+        assert!(stats.udp_receive_memory().is_none());
         let a: Vec<_> = viewer_events.try_iter().collect();
         let b: Vec<_> = host_events.try_iter().collect();
         for events in [&a, &b] {
@@ -538,6 +596,10 @@ mod tests {
             assert!(events
                 .iter()
                 .any(|e| e["event"] == "native_transport_closed"));
+            #[cfg(target_os = "linux")]
+            assert!(events.iter().any(|e| e["event"] == "native_transport_sample"
+                && e["udp_kernel_receive"]["sample"]["family"] == "ipv4"
+                && e["udp_kernel_receive"]["sample"]["capacity_bytes"].as_u64().is_some_and(|v| v > 0)));
             let text = serde_json::to_string(events).unwrap();
             assert!(
                 !text.contains("candidate:")
@@ -558,10 +620,7 @@ mod tests {
     async fn full_log_queue_never_blocks_socket_errors_or_overwrites_first_exit() {
         let log = Diagnostics::new(None, false);
         let events = log.log.capture().unwrap();
-        let socket = Observed {
-            socket: FailedReceive(UdpSocket::bind("127.0.0.1:0").await.unwrap()),
-            log: log.clone(),
-        };
+        let socket = Observed::new(FailedReceive(UdpSocket::bind("127.0.0.1:0").await.unwrap()), log.clone());
         let mut bytes = [0; 64];
         tokio::time::timeout(Duration::from_secs(2), async {
             for _ in 0..1000 {

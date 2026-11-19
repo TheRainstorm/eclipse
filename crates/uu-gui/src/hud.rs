@@ -59,6 +59,7 @@ impl super::App {
                 rtt_distribution:if fresh{s.rtt_distribution_us.lock().unwrap().map(|v|v.map(|n|n as f64/1000.))}else{None},
                 loss:network.as_ref().and_then(|v|v.loss_ppm).map(|v|v as f32/10000.),
                 unrecovered_loss:received.then(||s.loss_ppm.load(Relaxed) as f32/10000.),
+                udp_receive:s.udp_receive_memory(),
                 link:if self.hud && self.active_session{s.connection.link.request()}else{None},
                 statistics:Default::default(),statistics_coverage:[0.;3],
                 continuity_windows:std::array::from_fn(|i|self.textures.get(&self.selected_track).and_then(|t|t.continuity_window(crate::hud_panel::WINDOWS[i]))),

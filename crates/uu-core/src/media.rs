@@ -18,6 +18,16 @@ use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSender};
 pub use uu_media::DecoderKind;
 
+/// Kernel memory accounting for the entire bound peer UDP socket. The unsmoothed
+/// cumulative drop counter wraps at u32::MAX. Allocated bytes include kernel overhead.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct UdpReceiveMemory {
+    pub family: &'static str,
+    pub allocated_bytes: u32,
+    pub capacity_bytes: u32,
+    pub drops: u32,
+}
+
 /// Live media statistics shared between the decode task and the UI (HUD).
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
@@ -123,6 +133,8 @@ pub struct MediaStats {
     pub remote_screens_revision: AtomicU64,
     /// Unrecovered RTP packet loss in the current receive window, parts/million.
     pub loss_ppm: AtomicU32,
+    #[cfg(target_os = "linux")]
+    pub(crate) udp_diagnostics:std::sync::Mutex<std::sync::Weak<crate::native_diagnostics::Diagnostics>>,
     /// Original RTP before FEC/RTX; independent of the post-repair loss above.
     pub network_loss:std::sync::Mutex<Option<crate::network_loss::Snapshot>>,
     pub codec: std::sync::Mutex<String>,
@@ -152,6 +164,14 @@ pub struct MediaStats {
 enum RecoveryCause {ReceiveDamage,DecodeQueue,DecoderError,FormatChange}
 
 impl MediaStats {
+    /// Copy the last fresh sample for the current transport, without querying the socket on the UI thread.
+    pub fn udp_receive_memory(&self) -> Option<UdpReceiveMemory> {
+        #[cfg(target_os = "linux")]
+        { self.udp_diagnostics.lock().unwrap().upgrade()?.latest_udp_memory() }
+        #[cfg(not(target_os = "linux"))]
+        { None }
+    }
+
     fn recovery(&self,cause:RecoveryCause) {
         match cause {
             RecoveryCause::ReceiveDamage=>&self.recovery_receive_damage,

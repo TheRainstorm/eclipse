@@ -50,6 +50,9 @@ crc32fast.workspace = true
 [features]
 vaapi = ["uu-media/vaapi"]
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 x11rb = { version = "0.13", features = ["xtest"] }
 

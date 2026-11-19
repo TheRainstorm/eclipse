@@ -24,6 +24,7 @@ pub struct Metrics {
     pub loss: Option<f32>,
     pub unrecovered_loss: Option<f32>,
     pub network: Option<uu_core::network_loss::Snapshot>,
+    pub udp_receive: Option<uu_core::media::UdpReceiveMemory>,
     pub link: Option<uu_core::link_metrics::Snapshot>,
     pub statistics: [Counters;3],
     pub statistics_coverage: [f64;3],
@@ -379,6 +380,11 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     let ping=m.link.and_then(|v|v.ping_ms).map_or_else(||"—".into(),|v|if v<1.{"<1 ms".into()}else{format!("{v:.1} ms")});
     let mut network=vec![field("ICMP Ping",ping,ping_help),field(uu_i18n::text("链路吞吐"),format!("{} Mbps",number(m.throughput())),link_help),field("RX/TX",format!("{}/{} Mbps",number(m.link.and_then(|v|v.rx_mbps)),number(m.link.and_then(|v|v.tx_mbps))),link_help),field("RTT",m.rtt.map_or_else(||"—".into(),|v|format!("{}±{} ms",number(Some(v[0])),number(Some(v[1])))),uu_i18n::text("控制消息往返均值±标准差，最近32个样本。包含传输、排队和两端处理，不等于ICMP ping。")),field(uu_i18n::text("链路丢包"),pct(m.loss),uu_i18n::text("修复前的原始RTP缺包率。乱序宽限期后仍未到达的包计入，即使随后由FEC或RTX恢复也保留。它反映接收端看到的网络交付，不只代表物理线路。")),field(uu_i18n::text("修复后丢包"),pct(m.unrecovered_loss),uu_i18n::text("接收器超时后仍未恢复的RTP丢包率；FEC/重传成功会降低这个值。"))];
     if let Some(v)=m.rtt_distribution {network.push(field(uu_i18n::text("末/低/中/P95/高"),format!("{:.1}/{:.1}/{:.1}/{:.1}/{:.1} ms",v[0],v[1],v[2],v[3],v[4]),uu_i18n::text("最近一分钟内RTT的末值、最小值、中位数、95分位和最大值，用于观察波动。")));}
+    if let Some(sample) = m.udp_receive {
+        let help = uu_i18n::text("Linux 每 5 秒采样本次连接的 UDP 套接字，包含音视频、控制及 ICE 流量。丢包为该套接字自创建起的内核累计计数，缓冲为采样时已分配内存与接收上限。");
+        network.push(field(uu_i18n::text("本地 UDP 丢包"), sample.drops, help));
+        network.push(field(uu_i18n::text("接收缓冲"), format!("{:.0}/{:.0} KiB", sample.allocated_bytes as f64 / 1024., sample.capacity_bytes as f64 / 1024.), help));
+    }
     let mut receive=vec![];
     if let Some(n)=&m.network {
         receive.push(field(uu_i18n::text("窗口缺/应"),format!("{}/{}",n.window_lost,n.window_expected),uu_i18n::text("当前原始包窗口中的缺失数与期望数，二者用于计算链路丢包率。")));
@@ -987,6 +993,21 @@ mod tests {
         frame(&mut card,press(point,false),true);frame(&mut card,press(point,true),true);assert!(card.keyboard_owned());
         frame(&mut card,vec![],false);assert!(!card.keyboard_owned());assert!(card.bounds.is_none());
     }
+    #[test]
+    fn diagnostic_text_includes_only_observed_kernel_socket_counts() {
+        let mut metrics = Metrics::default();
+        let drops = uu_i18n::text("本地 UDP 丢包");
+        assert!(!metrics.diagnostic_text(0).contains(drops));
+        metrics.udp_receive = Some(uu_core::media::UdpReceiveMemory {
+            family: "ipv6", allocated_bytes: 2048, capacity_bytes: 8192, drops: 17,
+        });
+        for window in 0..WINDOWS.len() {
+            let text = metrics.diagnostic_text(window);
+            assert!(text.contains(&format!("{drops} 17")));
+            assert!(text.contains("2/8 KiB"));
+        }
+    }
+
     #[test]
     fn details_keep_explained_fields_and_align_category_with_the_first_value() {
         let m=Metrics {codec:"PYROWAVE SDR".into(),process:[Some(1.);4],rtt:Some([2.,0.2]),loss:Some(0.4),unrecovered_loss:Some(0.),..Default::default()};
