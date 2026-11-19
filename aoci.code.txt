@@ -43,7 +43,7 @@ formats.rs[KU7M]: F:在网络内容与系统剪贴板RGBA、PNG和DIB之间进�
 lib.rs[IU8L]: F:在线程中按前台窗口、显式主机或后台无窗口所有者同步系统文本与图片剪贴板 | R:code:crates/uu-core/src/clipboard.rs,code:crates/uu-clipboard/src/formats.rs | A:start_following,start_host,start_host_headless | S:读写前后重验窗口token、授权和generation；后台所有者使用私有消息窗口并自行泵消息；暂停只保留指纹，本地修改优先于同时到达的远端内容；剪贴板内容不进入日志或命令行
 
 ===/home/yfy/Repo/uu_remote/crates/uu-core/src/===
-av1_rtp.rs[KN8T]: F:解析AV1 RTP聚合分片并在完整OBU到齐后恢复低开销长度字段 | R:code:crates/uu-core/src/video_receiver.rs,code:crates/uu-media/src/av1.rs | A:Assembler | S:保留并验证已有长度字段，不重复添加；未闭合分片和超限AU拒绝
+av1_rtp.rs[KN8S]: F:单遍组装 AV1 RTP 聚合与跨包分片，按完整 OBU 恢复低开销字节流 | R:code:crates/uu-core/src/video_receiver.rs,code:crates/uu-media/src/av1.rs | A:Assembler | S:W非零时末项长度隐含，跨包续片须匹配已有片段；已有尺寸字段须校验且只保一份。部分元素可在后续坏元素前已写入，调用方须丢弃整个损坏AU；缺尾片、数据超限均拒收
 capture_overlap.rs[AP8L]: F:统一串行及重叠采编入口的节拍归属、交付时间、配置换代与不可变租约 | R:code:crates/uu-core/src/latest_capture.rs,code:crates/uu-capture/src/backend.rs,code:crates/uu-core/src/shared_capture.rs | A:Input,Observed,prepare_device | S:重叠实验默认关且仅0或1；不支持后端明确失败，设备先于编码准备；自带节拍源直接消费交付，串行及重叠均不加输出钟；旧显式owner_pacing约束保留；缓冲图沿用采图时间；暂停无缓存重放
 client_settings.rs[DC7L]: F:定义逐屏客户端偏好和画面预设，解析原生画质、本地显示模式及总带宽分配 | R:code:crates/uu-core/src/native_quality.rs,code:crates/uu-core/src/device_book.rs,code:crates/uu-gui/src/window.rs | A:ClientSettings,LocalDisplay,resolved_request,resolved_bounds,DisplayClientSettings,allocate_bitrate_budget | S:物理像素、Hz向下取整；新配置随远端且限本地，上限不改选择；旧缺剪贴板或上限仍关，缺光标Remote；旧独占不重发；预设尺寸存5+custom_resolution，不改0..5语义
 clipboard.rs[DU7T]: F:共享剪贴板许可、传输与焦点代次、最新内容、状态所有权和计数 | R:code:crates/uu-core/src/clipboard/content.rs,code:crates/uu-clipboard/src/lib.rs | A:Clipboard | S:transport_epoch、generation与reset_generation职责不同；ready要求启用、活动且未停止；能力状态只在没有更新操作提示时清除，避免退休提示覆盖新错误
@@ -271,7 +271,7 @@ upload.rs[KH8L]: F:校验CPU帧和驱动平面布局后直接上传limited601 NV
 vaapi.rs[IH7M]: F:在所属线程选择VA渲染节点、上传NV12并按主机关键帧间隔用低延迟预测器生成H264 | R:code:crates/uu-media/src/encoder/upload.rs,code:crates/uu-media/src/encoder/tuning.rs | A:Driver | S:GOP按实际FPS换算，缺省两秒；仅匹配厂商的私有设置阻挡该节点；先探测derive视图，失败用get/put；逐次须产出同PTS当前帧，更新码率后要求新关键帧
 vpl.rs[IH7M]: F:管理Intel oneVPL编码会话、同设备显存或系统内存输入、实际缓冲报告与输出PTS | R:code:crates/uu-media/src/vpl/native.c,code:crates/uu-media/src/encoder/vpl_gpu.rs,code:crates/uu-media/src/encoder/upload.rs,code:crates/uu-media/src/encoder/tuning.rs | A:Driver | S:纹理入口先取真实NV12表面验证；通用open可退系统内存，优先探测入口须报告失败。Win AV1真CBR缺省由驱动选VBV并回读，显式值仍核验；最多四个PTS标签，不覆写锁定表面，变码率要求IDR
 worker.rs[RH8M]: F:通过有界同步请求把硬件编码资源限制在独立OS线程 | R:code:crates/uu-media/src/encoder/headers.rs | A:Worker,Driver,BitrateChange | S:五秒无响应即断开请求，Drop不阻塞也不强杀；驱动自行返回后在原线程清理
-vpl_gpu.rs[IH8S]: F:在采集设备上校验oneVPL自有NV12表面，转换或上传每帧并初始化编码填充 | R:code:crates/uu-media/src/encoder/vpl.rs,code:crates/uu-media/src/encoder/gpu.rs,code:crates/uu-media/src/encoder/upload.rs,code:crates/uu-media/src/vpl/native.c | A:Input | S:仅接同COM设备的单层单采样NV12；转换目标在同一受保护context顺序复用，驱动持其自有表面。码面大于可见尺寸先填limited黑再复制两平面；偶发CPU采图按分配跨度整帧上传，沿用同一会话
+vpl_gpu.rs[IH8S]: F:在绑定的采集设备上校验 Intel 自有 NV12 输入表面，将画面与中性对齐边缘写入实际分配 | R:code:crates/uu-media/src/encoder/vpl.rs,code:crates/uu-media/src/encoder/gpu.rs,code:crates/uu-media/src/encoder/upload.rs,code:crates/uu-media/src/vpl/native.c | A:Input | S:要求同一 COM 设备、单层单采样 NV12；同一受保护 context 按序复用转换目标，驱动持有自有表面。对齐区只复制偶数边界的右条和整宽底条，Y=16、UV=128，再覆可见两平面；CPU 回退按实际分配跨度整帧上传
 
 ===/home/yfy/Repo/uu_remote/crates/uu-media/src/hw/===
 d3d11va.rs[IH9L]: F:以MF D3D设备管理器硬解H264、HEVC与AV1并租赁解码表面 | R:code:crates/uu-media/src/hw/thread.rs,code:crates/uu-media/src/d3d11_frame_windows.rs | A:D3d11VaDecoder | S:COM及驱动绑定worker；transform须先于设备管理器与MF关闭，CPU消费者保留同步读回
