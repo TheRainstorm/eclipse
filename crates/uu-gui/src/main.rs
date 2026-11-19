@@ -1642,6 +1642,7 @@ impl App {
                 report["video_color"]=self.textures.get(&self.selected_track).and_then(|t|t.color_diagnostics()).into();
                 let cursor=s.native_cursor.snapshot();
                 report["native_cursor"]=serde_json::json!({"supported":s.native_cursor.supported(),"revision":cursor.as_ref().map(|c|c.revision),"shape_id":cursor.as_ref().map(|c|c.shape_id),"position":cursor.as_ref().and_then(|c|c.position),"desktop":cursor.as_ref().map(|c|c.desktop),"shape_size":cursor.as_ref().and_then(|c|c.shape.as_ref()).and_then(|s|s.description.size())});
+                report["display_color"]=self.stream_color(ctx).label().into();
                 report["video_paint_window"]=self.textures.get(&self.selected_track).and_then(|t|t.paint_diagnostics()).into();
                 report["video_late_latch"]=self.textures.get(&self.selected_track).and_then(|t|t.late_latch_diagnostics()).into();
                 report["video_continuity"]=self.textures.get(&self.selected_track).and_then(|t|t.continuity()).map(|s|serde_json::json!({"scope":"focused visible new-image submissions, not display scanout or content motion","window_seconds":60,"long_gaps":s.long_gaps,"threshold_ms":s.threshold_ms,"max_gap_ms":s.max_gap_ms,"ongoing_gap_ms":s.ongoing_gap_ms,"observed_seconds":s.observed_seconds})).into();

@@ -129,6 +129,10 @@ impl Output {
     }
 }
 impl Presenter for Output {
+    fn hdr_target_presented(&self) -> bool {
+        unsafe { eclipse_pq_has_presented(self.child.as_ptr()) != 0 }
+    }
+
     fn verified_hdr_output(&mut self) -> Option<bool> {
         let child = self.child.as_ptr();
         match unsafe { eclipse_pq_output_status(child) } {
@@ -257,6 +261,7 @@ mod tests {
 
     struct SessionOutput(Arc<AtomicI8>);
     impl Presenter for SessionOutput {
+        fn hdr_target_presented(&self) -> bool { self.0.load(Ordering::Acquire) == 1 }
         fn verified_hdr_output(&mut self) -> Option<bool> {
             match self.0.load(Ordering::Acquire) {
                 1 => Some(true),
@@ -275,6 +280,23 @@ mod tests {
             self.0.store(0, Ordering::Release);
             Ok(())
         }
+    }
+
+    #[test]
+    fn hdr_draw_target_is_unknown_until_presented_and_clears_on_hide() {
+        let ctx = egui::Context::default();
+        let vp = ctx.viewport_id();
+        let result = Arc::new(AtomicI8::new(0));
+        let pq = ColorTarget { hdr: true, sdr_white_nits: WHITE };
+        glow_presentation::install(&ctx, Box::new(SessionOutput(result.clone())), true, pq);
+        glow_presentation::set_active(&ctx, vp, true, true);
+        assert_eq!(glow_presentation::displayed_hdr_for(&ctx, vp), None);
+        result.store(1, Ordering::Release);
+        assert_eq!(glow_presentation::displayed_hdr_for(&ctx, vp), Some(true));
+        glow_presentation::set_active(&ctx, vp, false, true);
+        assert_eq!(glow_presentation::displayed_hdr_for(&ctx, vp), Some(false));
+        glow_presentation::remove(&ctx, vp);
+        assert_eq!(glow_presentation::displayed_hdr_for(&ctx, vp), Some(false));
     }
 
     #[test]

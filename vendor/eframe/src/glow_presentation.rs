@@ -15,6 +15,10 @@ pub trait Presenter: Send {
     /// backend is still resolving the output; this must not wait for the server.
     fn verified_hdr_output(&mut self) -> Option<bool> { Some(false) }
 
+    /// A cached presentation result for an active HDR target. Backends that
+    /// render before the output is confirmed must withhold the positive result.
+    fn hdr_target_presented(&self) -> bool { true }
+
     /// Optional native image metadata, scoped to this viewport and paint frame.
     fn native_video(&mut self,_:Arc<dyn std::any::Any+Send+Sync>)->Result<bool,String>{Ok(false)}
     fn supports_native_video(&self)->bool{false}
@@ -87,6 +91,17 @@ pub fn color_target_for(ctx: &Context, viewport: ViewportId) -> Option<ColorTarg
     let state = surface.0.lock().unwrap();
     state.active.then_some(state.color)
 }
+/// What the active viewport is displaying. An HDR draw target whose actual
+/// output is still awaiting confirmation has no known display color yet.
+pub fn displayed_hdr_for(ctx: &Context, viewport: ViewportId) -> Option<bool> {
+    let Some(surface) = ctx.data(|data| data.get_temp::<Surface>(key(viewport))) else {
+        return Some(false);
+    };
+    let state = surface.0.lock().unwrap();
+    if !state.active || !state.color.hdr { return Some(false); }
+    state.presenter.hdr_target_presented().then_some(true)
+}
+
 /// Color capability of a verified, possibly inactive surface.
 pub fn available_color_for(ctx: &Context, viewport: ViewportId) -> Option<ColorTarget> {
     let surface = ctx.data(|data| data.get_temp::<Surface>(key(viewport)))?;

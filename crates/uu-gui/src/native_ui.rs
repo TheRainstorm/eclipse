@@ -71,9 +71,11 @@ impl App {
     pub(super) fn stream_color(&self, ctx: &egui::Context) -> StreamColor {
         let Some(controller) = self.controller.as_ref() else { return StreamColor::Waiting };
         let hdr = controller.stats.native_hdr_response.lock().unwrap().is_some();
-        let hdr_target = hdr && eframe::glow_presentation::color_target_for(ctx, ctx.viewport_id())
-            .is_some_and(|target| target.hdr);
-        StreamColor::from_signal(hdr, hdr_target)
+        if !hdr { return StreamColor::Sdr; }
+        match eframe::glow_presentation::displayed_hdr_for(ctx, ctx.viewport_id()) {
+            Some(hdr_target) => StreamColor::from_signal(hdr, hdr_target),
+            None => StreamColor::Waiting,
+        }
     }
 
     pub(super) fn client_stats(&mut self,transport:&str)->Arc<uu_core::media::MediaStats> {

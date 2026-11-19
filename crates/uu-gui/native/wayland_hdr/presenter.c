@@ -452,7 +452,9 @@ int eclipse_pq_output_status(struct eclipse_pq_child *c) {
     return c->source_ready && c->output_hdr;
 }
 int eclipse_pq_has_presented(struct eclipse_pq_child *c) {
-    return eclipse_pq_output_status(c) > 0 && c->confirmed_visible;
+    /* The event owner dispatches at prepare/negotiation. HUD reads must never
+       dispatch or flush Wayland from a secondary status query. */
+    return c && !c->fatal && c->mapped && c->output_hdr && c->confirmed_visible;
 }
 /* -1 permanent failure, 0 ordinary SDR paint, 1 native paint, 2 yield. */
 int eclipse_pq_admit_gpu(struct eclipse_pq_child *c, int vsync, int w, int h) {
