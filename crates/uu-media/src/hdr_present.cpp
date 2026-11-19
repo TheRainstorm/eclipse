@@ -142,14 +142,30 @@ struct Presentation {
         check(CreateDXGIFactory1(__uuidof(IDXGIFactory1),(void**)inventory.GetAddressOf()),"create HDR inventory");
         ComPtr<IDXGIAdapter1> selected;
         HMONITOR active=MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST);
+        // An unavailable adapter or output must not hide another display owner.
+        char first_error[128]{};
+        auto remember_failure=[&](const char* query,HRESULT result) {
+            if(first_error[0])return;
+            const HRESULT failure=FAILED(result)?result:E_UNEXPECTED;
+            std::snprintf(first_error,sizeof(first_error),": %s HRESULT=0x%08lX",query,(unsigned long)failure);
+        };
         for(UINT ai=0;ai<32&&!selected;ai++) {
-            ComPtr<IDXGIAdapter1> adapter;if(inventory->EnumAdapters1(ai,&adapter)==DXGI_ERROR_NOT_FOUND)break;
+            ComPtr<IDXGIAdapter1> adapter;
+            HRESULT result=inventory->EnumAdapters1(ai,&adapter);
+            if(result==DXGI_ERROR_NOT_FOUND)break;
+            if(FAILED(result)||!adapter){remember_failure("EnumAdapters1",result);continue;}
             for(UINT oi=0;oi<32;oi++) {
-                ComPtr<IDXGIOutput> output;if(adapter->EnumOutputs(oi,&output)==DXGI_ERROR_NOT_FOUND)break;
-                DXGI_OUTPUT_DESC desc{};if(SUCCEEDED(output->GetDesc(&desc))&&desc.AttachedToDesktop&&desc.Monitor==active){selected=adapter;break;}
+                ComPtr<IDXGIOutput> output;
+                result=adapter->EnumOutputs(oi,&output);
+                if(result==DXGI_ERROR_NOT_FOUND)break;
+                if(FAILED(result)||!output){remember_failure("EnumOutputs",result);continue;}
+                DXGI_OUTPUT_DESC desc{};
+                result=output->GetDesc(&desc);
+                if(FAILED(result)){remember_failure("GetDesc",result);continue;}
+                if(desc.AttachedToDesktop&&desc.Monitor==active){selected=adapter;break;}
             }
         }
-        if(!selected)throw std::runtime_error("no adapter owns the HDR window's output");
+        if(!selected)throw std::runtime_error(std::string("no adapter owns the window's output")+first_error);
         D3D_FEATURE_LEVEL level=D3D_FEATURE_LEVEL_11_0;
         check(D3D11CreateDevice(selected.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,&level,1,D3D11_SDK_VERSION,&device,nullptr,&context),"create HDR presentation device");
         ComPtr<ID3D10Multithread> threading;check(context.As(&threading),"query HDR presentation threading");threading->SetMultithreadProtected(TRUE);
