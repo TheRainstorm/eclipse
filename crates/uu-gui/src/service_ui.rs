@@ -260,13 +260,6 @@ impl Entry {
             }
         }
     }
-    pub fn password_configured(&self) -> Option<bool> {
-        self.manager
-            .as_ref()
-            .filter(|m| m.snapshot.is_some() && m.owns_profile())
-            .and_then(|m| m.trust.as_ref())
-            .map(|t| t.password_permissions.is_some())
-    }
     pub fn open_pairing(&mut self) {
         self.select_section(Section::Pairing);
     }

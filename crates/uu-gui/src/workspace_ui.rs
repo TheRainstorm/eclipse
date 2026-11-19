@@ -8,6 +8,7 @@ mod connection_settings;
 use eframe::egui::{self, RichText};
 use std::{
     path::PathBuf,
+    sync::mpsc,
     time::{Duration, Instant},
 };
 use uu_core::{
@@ -110,6 +111,42 @@ impl ClientEditor {
 
 struct PreviewSlot {revision:String,texture:Option<egui::TextureHandle>,loaded:bool}
 struct PreviewJob {device:String,revision:String,rx:std::sync::mpsc::Receiver<Result<super::wallpapers::Thumbnail,String>>}
+/// One reader per active launcher. A reply belongs only to the request that
+/// created it, so a local edit can retire an older disk read without waiting.
+struct BookReader {
+    requests: mpsc::SyncSender<mpsc::Sender<anyhow::Result<Book>>>,
+    pending: Option<mpsc::Receiver<anyhow::Result<Book>>>,
+}
+impl BookReader {
+    fn start(store: Store) -> Self {
+        let (requests, work) = mpsc::sync_channel::<mpsc::Sender<anyhow::Result<Book>>>(1);
+        std::thread::spawn(move || {
+            while let Ok(reply) = work.recv() {
+                // The launcher already wakes on input and its periodic poll. An
+                // unchanged book must not schedule an extra frame every read.
+                let _ = reply.send(store.read());
+            }
+        });
+        Self { requests, pending: None }
+    }
+
+    fn request(&mut self) {
+        if self.pending.is_some() { return; }
+        let (reply, result) = mpsc::channel();
+        if self.requests.try_send(reply).is_ok() {
+            self.pending = Some(result);
+        }
+    }
+
+    fn take(&mut self) -> Option<anyhow::Result<Book>> {
+        match self.pending.as_ref()?.try_recv() {
+            Ok(book) => { self.pending = None; Some(book) }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => { self.pending = None; None }
+        }
+    }
+}
+
 pub(super) struct Workspace {
     providers:Vec<uu_core::plugins::Descriptor>,
     #[cfg(windows)]
@@ -145,9 +182,9 @@ pub(super) struct Workspace {
     menus:device_menus::State,
     connection_draft:Option<connection_settings::Draft>,
     last_read: Instant,
+    book_reader: Option<BookReader>,
     pub pairing_visible: bool,
     pairing_settings:super::pairing_ui::HostUi,
-    pairing_password_configured: Option<bool>,
     autostart_checked: bool,
     previews:std::collections::HashMap<String,PreviewSlot>,
     preview_jobs:Vec<PreviewJob>,
@@ -157,6 +194,39 @@ pub(super) struct Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn periodic_book_reads_do_not_wait_or_overwrite_a_local_save() {
+        let mut h = Harness::new();
+        let (requests, work) = mpsc::sync_channel(1);
+        h.workspace.book_reader = Some(BookReader { requests, pending: None });
+
+        let previous = h.workspace.book.clone();
+        let schedule = |workspace: &mut Workspace| {
+            workspace.last_read = Instant::now() - Duration::from_secs(1);
+            workspace.poll_book();
+        };
+        schedule(&mut h.workspace);
+        let delayed = work.try_recv().unwrap();
+        schedule(&mut h.workspace);
+        assert!(work.try_recv().is_err(), "one outstanding read is enough");
+
+        h.workspace.store.as_ref().unwrap().edit(|book| {
+            book.sharing.name = "saved locally".into();
+            Ok(())
+        }).unwrap();
+        h.workspace.refresh();
+        assert!(delayed.send(Ok(previous)).is_err());
+        h.workspace.poll_book();
+        assert_eq!(h.workspace.book.sharing.name, "saved locally");
+
+        schedule(&mut h.workspace);
+        let mut external = h.workspace.book.clone();
+        external.sharing.name = "updated by another process".into();
+        work.try_recv().unwrap().send(Ok(external)).unwrap();
+        h.workspace.poll_book();
+        assert_eq!(h.workspace.book.sharing.name, "updated by another process");
+    }
+
     #[test]
     fn media_draft_preserves_a_live_game_room_policy_change() {
         let mut h=Harness::new();
@@ -401,12 +471,17 @@ mod tests {
 
     #[test]
     #[cfg(not(windows))]
-    fn empty_devices_onboarding_stays_stable_while_password_state_is_unknown() {
+    fn empty_devices_onboarding_stays_stable_when_the_pairing_password_changes() {
         let mut h = Harness::new();
         let mut heading_y = None;
         let mut add_y = None;
-        for state in [None, Some(false), Some(true), None, Some(false)] {
-            h.workspace.pairing_password_configured = state;
+        for configured in [false, true, false] {
+            let trust = h.workspace.trust.as_ref().unwrap();
+            if configured {
+                trust.set_pairing_password("fixture-only", uu_core::device_trust::Permissions::VIEW).unwrap();
+            } else {
+                trust.clear_pairing_password().unwrap();
+            }
             h.frame(vec![]);
             h.frame(vec![]);
             let y = |label: &str| {
@@ -423,7 +498,7 @@ mod tests {
             assert_eq!(*add_y.get_or_insert(next_add), next_add);
             assert!(
                 !h.texts.iter().any(|(text, _)| text == "让其它电脑安全连接本机"),
-                "the async password probe must not insert a second onboarding card"
+                "the device list must not gain a second onboarding card"
             );
         }
     }
@@ -436,7 +511,6 @@ mod tests {
         });
         let id = profile.id.clone();
         h.workspace.book.devices.push(profile);
-        h.workspace.pairing_password_configured = Some(false);
         let actions = h.click("Generated desktop");
         assert!(matches!(&actions[..], [Action::Open(found, LaunchConfig::Selected)] if found == &id));
         assert!(!h.workspace.host.running());
@@ -1082,9 +1156,6 @@ impl Workspace {
             ),
         };
         let draft = book.sharing.clone();
-        let pairing_password_configured = trust.as_ref()
-            .and_then(|store| store.pairing_password_permissions().ok())
-            .map(|permissions| permissions.is_some());
         let mut feedback = super::ui_feedback::Feedback::default();
         if !notice.is_empty() {
             feedback.error(super::ui_feedback::Scope::Devices, notice);
@@ -1131,9 +1202,9 @@ impl Workspace {
             menus:Default::default(),
             connection_draft:None,
             last_read: Instant::now(),
+            book_reader: None,
             pairing_visible: false,
             pairing_settings:Default::default(),
-            pairing_password_configured,
             autostart_checked: false,
             previews:Default::default(),preview_jobs:Vec::new(),presence:Default::default(),
         }
@@ -1171,14 +1242,20 @@ impl Workspace {
         self.feedback.tick(ctx);
         self.host.poll(ctx, window);
         #[cfg(windows)]
-        {
-            self.background_service.poll(ctx,&mut self.host);
-            self.pairing_password_configured=self.background_service.password_configured();
-        }
+        self.background_service.poll(ctx,&mut self.host);
         self.poll_previews(ctx);
+        self.poll_book();
+    }
+
+    fn poll_book(&mut self) {
+        if let Some(result) = self.book_reader.as_mut().and_then(BookReader::take) {
+            self.apply_book(result);
+        }
         if self.last_read.elapsed() >= Duration::from_millis(500) {
             self.last_read = Instant::now();
-            self.refresh();
+            if let Some(store) = &self.store {
+                self.book_reader.get_or_insert_with(|| BookReader::start(store.clone())).request();
+            }
         }
     }
     fn poll_previews(&mut self,ctx:&egui::Context) {
@@ -1226,29 +1303,33 @@ impl Workspace {
     }
 
     fn refresh(&mut self) {
-        self.pairing_password_configured = self.trust.as_ref()
-            .and_then(|store| store.pairing_password_permissions().ok())
-            .map(|permissions| permissions.is_some());
+        if let Some(reader) = &mut self.book_reader {
+            reader.pending = None;
+        }
+        self.last_read = Instant::now();
         if let Some(store) = &self.store {
-            match store.read() {
-                Ok(book) => {
-                    self.draft.host_input=self.book.sharing.host_input;
-                    if serde_json::to_vec(&self.draft).ok()
-                        == serde_json::to_vec(&self.book.sharing).ok()
-                    {
-                        self.draft = book.sharing.clone();
-                    }
-                    self.draft.host_input=book.sharing.host_input;
-                    if self.connection_draft.as_ref().is_some_and(|draft|*draft==connection_settings::Draft::from(&self.book.sharing)) {
-                        self.connection_draft=None;
-                    }
-                    self.book = book;
+            self.apply_book(store.read());
+        }
+    }
+
+    fn apply_book(&mut self, result: anyhow::Result<Book>) {
+        match result {
+            Ok(book) => {
+                self.draft.host_input = self.book.sharing.host_input;
+                // Compare only persistent fields, preserving legacy display-only defaults.
+                if serde_json::to_vec(&self.draft).ok() == serde_json::to_vec(&self.book.sharing).ok() {
+                    self.draft = book.sharing.clone();
                 }
-                Err(e) => self.feedback.error(
-                    super::ui_feedback::Scope::Devices,
-                    uu_i18n::format!("无法读取设备配置：{e:#}，原文件已保留"),
-                ),
+                self.draft.host_input = book.sharing.host_input;
+                if self.connection_draft.as_ref().is_some_and(|draft| *draft == connection_settings::Draft::from(&self.book.sharing)) {
+                    self.connection_draft = None;
+                }
+                self.book = book;
             }
+            Err(e) => self.feedback.error(
+                super::ui_feedback::Scope::Devices,
+                uu_i18n::format!("无法读取设备配置：{e:#}，原文件已保留"),
+            ),
         }
     }
     pub(super) fn reload(&mut self){self.refresh();self.presence.refresh();}
