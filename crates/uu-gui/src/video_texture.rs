@@ -171,6 +171,17 @@ impl VideoTexture {
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        let image = match image {
+            DisplayImage::Decoded(track, mut frame, color) if frame.gpu => {
+                if let Err(error) = dma_buf_renderer::recover_frame(&mut frame) {
+                    eprintln!("DMA-BUF download for CPU display failed: {error}");
+                    return;
+                }
+                DisplayImage::Decoded(track, frame, color)
+            }
+            other => other,
+        };
         if let DisplayImage::Decoded(_, frame, _) = &image {
             if frame.gpu {
                 uu_core::display_frames::dma_buf::set_rendering(false);
@@ -364,6 +375,12 @@ impl VideoTexture {
                         }
                         if let Some(phases)=state.paint(color.is_some_and(|c|c.hdr),color.map_or(80.,|c|c.sdr_white_nits),source_white) {
                             state.paint_timings.record(new_image,phases);
+                        }
+                        #[cfg(target_os = "linux")]
+                        if state.pending.is_some() {
+                            // Retry a busy import or an exceptional same-frame CPU fallback,
+                            // also when a static desktop supplies no further decoded picture.
+                            ctx.request_repaint_after_for(std::time::Duration::from_millis(8), viewport);
                         }
                     })),
                 });
@@ -889,7 +906,44 @@ impl Planes {
     }
     unsafe fn paint(&mut self,hdr_output:bool,white_nits:f32,source_white:f32) -> Option<[f64;5]> {
         let started=std::time::Instant::now();
-        if let Some((f, color, observation)) = self.pending.take() {
+        let pending = self.pending.take();
+        #[cfg(target_os = "linux")]
+        let pending = match pending {
+            Some((mut frame, color, observation)) if frame.gpu => {
+                let imported = match self.importer.as_mut() {
+                    Some(importer) => importer.set(frame.clone()),
+                    None => Err("current GL context has no compatible EGL importer".into()),
+                };
+                match imported {
+                    Ok(true) => {
+                        self.size = [frame.width, frame.height];
+                        self.layout = Some(frame.format);
+                        self.color = color;
+                        self.dma_active = true;
+                        self.observation = observation;
+                        None
+                    }
+                    Ok(false) => {
+                        self.pending = Some((frame, color, observation));
+                        None
+                    }
+                    Err(error) => {
+                        if frame.dma_buf.as_ref().is_some_and(|dma| dma.import_enabled()) {
+                            eprintln!("DMA-BUF import failed, using CPU upload for this pool: {error}");
+                        }
+                        match dma_buf_renderer::recover_frame(&mut frame) {
+                            Ok(()) => Some((frame, color, observation)),
+                            Err(error) => {
+                                eprintln!("DMA-BUF download after import failure failed: {error}");
+                                None // Keep the last displayed image and its own observation.
+                            }
+                        }
+                    }
+                }
+            }
+            other => other,
+        };
+        if let Some((f, color, observation)) = pending {
             if f.gpu {
                 #[cfg(windows)]
                 if let (Some(importer), Some(surface)) = (&mut self.d3d_importer, &f.d3d11) {
@@ -911,33 +965,6 @@ impl Planes {
                     }
                 } else {
                     uu_core::display_frames::d3d11_frame::set_rendering(false);
-                }
-                #[cfg(target_os = "linux")]
-                if let Some(importer) = &mut self.importer {
-                    match importer.set(f.clone()) {
-                        Ok(true) => {
-                            self.size = [f.width, f.height];
-                            self.layout = Some(f.format);
-                            self.color = color;
-                            self.dma_active = true;
-                            self.observation=observation;
-                        }
-                        Ok(false) => {
-                            self.pending = Some((f, color,observation));
-                        }
-                        Err(error) => {
-                            eprintln!(
-                                "DMA-BUF rendering unavailable, retaining CPU upload: {error}"
-                            );
-                            uu_core::display_frames::dma_buf::set_rendering(false);
-                            importer.clear();
-                            self.dma_active = false;
-                            self.size = [0, 0];
-                            self.observation = None;
-                        }
-                    }
-                } else {
-                    uu_core::display_frames::dma_buf::set_rendering(false);
                 }
             } else {
                 let changed = self.dma_active
@@ -1080,10 +1107,16 @@ impl Planes {
         #[cfg(target_os = "linux")]
         if self.dma_active {
             if let Some(importer) = &mut self.importer {
-                if !importer.sampled() {
+                if let Err(mut frame) = importer.sampled() {
                     self.dma_active = false;
                     self.size = [0, 0];
-                    self.observation = None;
+                    let observation = self.observation.take();
+                    if self.pending.is_none() {
+                        match dma_buf_renderer::recover_frame(&mut frame) {
+                            Ok(()) => self.pending = Some((frame, self.color, observation)),
+                            Err(error) => eprintln!("DMA-BUF download after fence failure failed: {error}"),
+                        }
+                    }
                 }
             }
         }

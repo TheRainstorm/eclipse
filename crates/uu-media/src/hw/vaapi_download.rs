@@ -133,33 +133,74 @@ pub(super) fn download(
     if !matches!(object.drm_format_modifier, LINEAR | INTEL_Y) {
         return Err("DMA-BUF modifier requires the driver download path".into());
     }
-    let length = nv12_size(width as usize, height as usize)?;
     let layer = &descriptor.layers[0];
+    read_nv12(
+        &File::from(object.fd),
+        object.size as usize,
+        &layer.offset[..2],
+        &layer.pitch[..2],
+        object.drm_format_modifier,
+        [width, height],
+        mappings,
+        pool,
+    )
+}
+
+/// The caller retains the already-synchronized VA lease while an EGL import is being rejected.
+pub(crate) fn read_export(
+    frame: &crate::dma_buf::Frame,
+    size: [u32; 2],
+) -> Result<bytes::Bytes, String> {
+    if !frame.valid(size) {
+        return Err("invalid exported NV12 surface".into());
+    }
+    read_nv12(
+        &frame.file,
+        frame.allocation_size as usize,
+        &frame.offset,
+        &frame.pitch,
+        frame.modifier,
+        size,
+        &mut Mappings::default(),
+        &Default::default(),
+    )
+}
+
+fn read_nv12(
+    file: &File,
+    allocation_size: usize,
+    offset: &[u32],
+    pitch: &[u32],
+    modifier: u64,
+    [width, height]: [u32; 2],
+    mappings: &mut Mappings,
+    pool: &crate::hw::pixels::Pool,
+) -> Result<bytes::Bytes, String> {
+    let length = nv12_size(width as usize, height as usize)?;
     // Validate both planes before any mapping or destination modification.
     let (w, h) = (width as usize, height as usize);
     let mut visible_end = 0;
     for (p, rows) in [h, h / 2].into_iter().enumerate() {
         visible_end = visible_end.max(validate_plane(
-            object.size as usize,
-            layer.offset[p] as usize,
-            layer.pitch[p] as usize,
+            allocation_size,
+            offset[p] as usize,
+            pitch[p] as usize,
             w,
             rows,
-            object.drm_format_modifier,
+            modifier,
         )?);
     }
-    let file = File::from(object.fd);
     let mut pixels = pool.take(length);
-    mappings.with_read(&file, object.size as usize, visible_end, |source| {
+    mappings.with_read(file, allocation_size, visible_end, |source| {
         let (luma, chroma) = pixels.as_mut().split_at_mut(w * h);
         for (p, destination) in [luma, chroma].into_iter().enumerate() {
             copy_plane(
                 source,
-                layer.offset[p] as usize,
-                layer.pitch[p] as usize,
+                offset[p] as usize,
+                pitch[p] as usize,
                 w,
                 destination.len() / w,
-                object.drm_format_modifier,
+                modifier,
                 destination,
             )?;
         }
@@ -262,13 +303,19 @@ mod tests {
         // A regular file can be mapped but cannot start DMA-BUF CPU access.
         // No read callback may observe its bytes on either path.
         let unreachable_read = |_: &[u8]| -> Result<(), String> { panic!("unsynchronized read") };
-        assert!(mappings.with_read(&file, 2048, 2048, unreachable_read).is_err());
-        assert!(mappings.with_read(&file, 8192, 4100, unreachable_read).is_err());
+        assert!(mappings
+            .with_read(&file, 2048, 2048, unreachable_read)
+            .is_err());
+        assert!(mappings
+            .with_read(&file, 8192, 4100, unreachable_read)
+            .is_err());
         assert!(matches!(
             mappings.slots[&key],
             Slot::Unique { map: None, .. }
         ));
-        assert!(mappings.with_read(&file, 8192, 4000, unreachable_read).is_err());
+        assert!(mappings
+            .with_read(&file, 8192, 4000, unreachable_read)
+            .is_err());
         assert!(matches!(
             mappings.slots[&key],
             Slot::Unique { map: Some(_), .. }
@@ -276,7 +323,9 @@ mod tests {
 
         mappings.register(&file.try_clone().unwrap(), 4096);
         assert!(matches!(mappings.slots[&key], Slot::Ambiguous));
-        assert!(mappings.with_read(&file, 8192, 4000, unreachable_read).is_err());
+        assert!(mappings
+            .with_read(&file, 8192, 4000, unreachable_read)
+            .is_err());
         assert_eq!(mappings.slots.len(), 1);
     }
 

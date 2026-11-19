@@ -1,6 +1,10 @@
 //! EGL imports of leased, already-synchronized NV12 decoder surfaces.
 //! No VA handles cross threads; no CPU map or texture upload on this path.
 use eframe::glow::{self, HasContext};
+use std::os::unix::{
+    ffi::OsStrExt,
+    fs::{FileTypeExt, MetadataExt},
+};
 use std::{
     ffi::{c_char, c_void, CStr},
     num::NonZeroUsize,
@@ -74,14 +78,151 @@ impl Api {
         })
     }
 }
-/// Call while the GUI's GL context is current, before any decoder is started.
-pub fn enable(gl: &glow::Context) {
-    // Keep the verified CPU-planar path as the default until hardware import
-    // validation covers all supported resolutions, layouts and resizing.
-    let enabled =
-        std::env::var("UU_GPU_VIDEO").as_deref() == Ok("1") && unsafe { Api::load(gl) }.is_ok();
-    dma_buf::set_rendering(enabled);
+type QueryModifiers =
+    unsafe extern "C" fn(*mut c_void, i32, i32, *mut u64, *mut u32, *mut i32) -> u32;
+
+unsafe fn texture_modifiers(
+    query: QueryModifiers,
+    display: *mut c_void,
+    format: [u8; 4],
+) -> Option<[bool; 2]> {
+    let format = i32::from_le_bytes(format);
+    let mut count = 0;
+    if query(
+        display,
+        format,
+        0,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        &mut count,
+    ) == 0
+        || !(1..=256).contains(&count)
+    {
+        return None;
+    }
+    let capacity = count;
+    let mut modifiers = vec![0; capacity as usize];
+    let mut external_only = vec![1; capacity as usize];
+    if query(
+        display,
+        format,
+        capacity,
+        modifiers.as_mut_ptr(),
+        external_only.as_mut_ptr(),
+        &mut count,
+    ) == 0
+        || !(1..=capacity).contains(&count)
+    {
+        return None;
+    }
+    let supported = |wanted| {
+        modifiers[..count as usize]
+            .iter()
+            .zip(&external_only)
+            .any(|(&modifier, &external)| modifier == wanted && external == 0)
+    };
+    Some([supported(0), supported(0x0100_0000_0000_0002)])
 }
+
+impl Api {
+    unsafe fn render_target(&self) -> Option<dma_buf::RenderTarget> {
+        type QueryDisplay = unsafe extern "C" fn(*mut c_void, i32, *mut isize) -> u32;
+        type QueryDevice = unsafe extern "C" fn(*mut c_void, i32) -> *const c_char;
+        type QueryString = unsafe extern "C" fn(*mut c_void, i32) -> *const c_char;
+        type Proc = unsafe extern "C" fn(*const c_char) -> *const c_void;
+        let proc: Proc = *self._library.get(b"eglGetProcAddress\0").ok()?;
+        let query_string: QueryString = *self._library.get(b"eglQueryString\0").ok()?;
+        let ext = |string: *const c_char, name: &str| {
+            !string.is_null()
+                && CStr::from_ptr(string)
+                    .to_bytes()
+                    .split(|&c| c == b' ')
+                    .any(|s| s == name.as_bytes())
+        };
+        let client_extensions = query_string(std::ptr::null_mut(), 0x3055); // EGL_EXTENSIONS
+        if !ext(client_extensions, "EGL_EXT_device_query")
+            && !ext(client_extensions, "EGL_EXT_device_base")
+        {
+            return None;
+        }
+        let display_attr = proc(c"eglQueryDisplayAttribEXT".as_ptr());
+        let device_string = proc(c"eglQueryDeviceStringEXT".as_ptr());
+        let query_modifiers = proc(c"eglQueryDmaBufModifiersEXT".as_ptr());
+        if display_attr.is_null() || device_string.is_null() || query_modifiers.is_null() {
+            return None;
+        }
+        let display_attr = std::mem::transmute::<*const c_void, QueryDisplay>(display_attr);
+        let device_string = std::mem::transmute::<*const c_void, QueryDevice>(device_string);
+        let query_modifiers = std::mem::transmute::<*const c_void, QueryModifiers>(query_modifiers);
+        let display = self.display as *mut c_void;
+        let mut device: isize = 0;
+        if display_attr(display, 0x322c, &mut device) == 0 || device == 0 {
+            return None;
+        } // EGL_DEVICE_EXT
+        let device = device as *mut c_void;
+        if !ext(
+            device_string(device, 0x3055),
+            "EGL_EXT_device_drm_render_node",
+        ) {
+            return None;
+        }
+        let path = device_string(device, 0x3377); // EGL_DRM_RENDER_NODE_FILE_EXT
+        if path.is_null() {
+            return None;
+        }
+        let stat =
+            std::fs::metadata(std::ffi::OsStr::from_bytes(CStr::from_ptr(path).to_bytes())).ok()?;
+        if !stat.file_type().is_char_device() {
+            return None;
+        }
+        let [y_linear, y_tiled] = texture_modifiers(query_modifiers, display, *b"R8  ")?;
+        let [uv_linear, uv_tiled] = texture_modifiers(query_modifiers, display, *b"GR88")?;
+        let linear = y_linear && uv_linear;
+        let intel_y = y_tiled && uv_tiled;
+        (linear || intel_y).then_some(dma_buf::RenderTarget {
+            device: stat.rdev(),
+            linear,
+            intel_y,
+        })
+    }
+}
+
+/// Called with the owner's GL context current, before decoder pool allocation.
+pub fn enable(gl: &glow::Context) {
+    let mode = std::env::var_os("UU_GPU_VIDEO");
+    let auto = mode.as_deref().is_none_or(|value| value == "auto");
+    let force = mode.as_deref().is_some_and(|value| value == "1");
+    let api = (auto || force)
+        .then(|| unsafe { Api::load(gl).ok() })
+        .flatten();
+    let target = if auto {
+        api.as_ref().and_then(|api| unsafe { api.render_target() })
+    } else {
+        None
+    };
+    dma_buf::configure_target(target, force && api.is_some());
+}
+/// A failed import still owns the synchronized decoded surface. Preserve its
+/// timestamp and crop, even if this is the last picture of a static desktop.
+pub fn recover_frame(frame: &mut RawFrame) -> Result<(), String> {
+    let dma = frame
+        .dma_buf
+        .as_ref()
+        .ok_or("GPU frame lacks an exported surface")?;
+    dma.reject_import();
+    #[cfg(feature = "vaapi")]
+    {
+        let pixels = dma.read_visible_nv12([frame.width, frame.height])?;
+        frame.data = pixels;
+        frame.stride = frame.width;
+        frame.gpu = false;
+        frame.dma_buf = None;
+        Ok(())
+    }
+    #[cfg(not(feature = "vaapi"))]
+    Err("DMA-BUF readback was not compiled in".into())
+}
+
 struct Imported {
     gl: Arc<glow::Context>,
     api: Arc<Api>,
@@ -90,6 +231,7 @@ struct Imported {
     fence: Option<NonZeroUsize>,
     // Must outlive all GL sampling, including after a newer frame arrives.
     _frame: RawFrame,
+    sync_ok: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Imported {
     unsafe fn release_fence(&mut self) {
@@ -100,7 +242,11 @@ impl Imported {
     }
     unsafe fn finish_for_fallback(&self, error: &str) {
         eprintln!("DMA-BUF rendering unavailable, retaining CPU upload: {error}");
-        dma_buf::set_rendering(false);
+        self.sync_ok
+            .store(false, std::sync::atomic::Ordering::Release);
+        if let Some(dma) = &self._frame.dma_buf {
+            dma.reject_import();
+        }
         // Sampling was submitted in this context. Complete it before the VA
         // surface can be returned to its pool without a usable fence.
         self.gl.finish();
@@ -174,14 +320,25 @@ pub struct Importer {
     api: Arc<Api>,
     current: Option<Imported>,
     retired: Vec<Imported>,
+    target: Option<dma_buf::RenderTarget>,
+    sync_ok: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Importer {
     pub unsafe fn new(gl: Arc<glow::Context>) -> Option<Self> {
         if !dma_buf::rendering() {
             return None;
         }
+        let api = Api::load(&gl).ok()?;
+        // A detached viewport may be bound to a different current EGL display.
+        let target = if std::env::var_os("UU_GPU_VIDEO").as_deref() == Some("1".as_ref()) {
+            None
+        } else {
+            Some(api.render_target()?)
+        };
         Some(Self {
-            api: Arc::new(Api::load(&gl).ok()?),
+            api: Arc::new(api),
+            target,
+            sync_ok: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             gl,
             current: None,
             retired: Vec::new(),
@@ -203,10 +360,18 @@ impl Importer {
         if !dma_buf::rendering() {
             return Err("DMA-BUF import disabled".into());
         }
+        let dma = frame.dma_buf.as_ref().ok_or("GPU frame has no DMA-BUF")?;
+        if !self.sync_ok.load(std::sync::atomic::Ordering::Acquire)
+            || !dma.import_enabled()
+            || self
+                .target
+                .is_some_and(|target| !target.supports(dma.device, dma.modifier))
+        {
+            return Err("EGL context cannot import this VA surface pool".into());
+        }
         if self.retired.len() >= 3 {
             return Ok(false);
         }
-        let dma = frame.dma_buf.as_ref().ok_or("GPU frame has no DMA-BUF")?;
         if !dma.valid([frame.width, frame.height]) {
             return Err("invalid DMA-BUF layout".into());
         }
@@ -217,6 +382,7 @@ impl Importer {
             images: Vec::new(),
             fence: None,
             _frame: frame.clone(),
+            sync_ok: self.sync_ok.clone(),
         };
         for p in 0..2 {
             let shift = if p == 0 { 1 } else { 2 };
@@ -304,20 +470,60 @@ impl Importer {
             1.0 / dma.height as f32,
         ]
     }
-    pub unsafe fn sampled(&mut self) -> bool {
+    pub unsafe fn sampled(&mut self) -> Result<(), RawFrame> {
         if let Some(frame) = &mut self.current {
-            if frame.sampled().is_ok() {
-                return true;
+            if frame.sampled().is_err() {
+                let retained = frame._frame.clone();
+                self.clear();
+                return Err(retained);
             }
-            self.clear();
         }
-        false
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn texture_modifiers_reject_external_only_and_incomplete_lists() {
+        unsafe extern "C" fn modifiers(
+            _: *mut c_void,
+            format: i32,
+            capacity: i32,
+            modifiers: *mut u64,
+            external: *mut u32,
+            count: *mut i32,
+        ) -> u32 {
+            *count = 2;
+            if capacity > 0 {
+                if format == i32::from_le_bytes(*b"FAIL") {
+                    *count = capacity + 1;
+                    return 1;
+                }
+                modifiers.write(0);
+                modifiers.add(1).write(0x0100_0000_0000_0002);
+                external.write(u32::from(format == i32::from_le_bytes(*b"GR88")));
+                external.add(1).write(0);
+            }
+            1
+        }
+        unsafe {
+            assert_eq!(
+                texture_modifiers(modifiers, std::ptr::null_mut(), *b"R8  "),
+                Some([true, true])
+            );
+            assert_eq!(
+                texture_modifiers(modifiers, std::ptr::null_mut(), *b"GR88"),
+                Some([false, true])
+            );
+            assert_eq!(
+                texture_modifiers(modifiers, std::ptr::null_mut(), *b"FAIL"),
+                None
+            );
+        }
+    }
 
     #[test]
     fn only_a_real_fence_can_guard_sampling() {

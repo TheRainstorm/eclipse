@@ -15,6 +15,46 @@ pub fn rendering() -> bool {
     RENDERING.load(Ordering::Acquire)
 }
 
+/// Formats the current EGL display supports as ordinary 2D textures for both NV12 planes.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+pub struct RenderTarget {
+    pub device: u64,
+    pub linear: bool,
+    pub intel_y: bool,
+}
+
+#[cfg(target_os = "linux")]
+static TARGET: std::sync::RwLock<Option<RenderTarget>> = std::sync::RwLock::new(None);
+
+#[cfg(target_os = "linux")]
+pub fn configure_target(target: Option<RenderTarget>, force: bool) {
+    *TARGET.write().unwrap() = target;
+    set_rendering(force || target.is_some());
+}
+
+/// Read once at pool creation; no device queries or locks on the frame path.
+#[cfg(target_os = "linux")]
+pub(crate) fn supports_pool(device: Option<u64>, modifier: u64) -> bool {
+    rendering()
+        && TARGET
+            .read()
+            .unwrap()
+            .is_none_or(|t| t.supports(device, modifier))
+}
+
+#[cfg(target_os = "linux")]
+impl RenderTarget {
+    pub fn supports(self, device: Option<u64>, modifier: u64) -> bool {
+        device == Some(self.device)
+            && match modifier {
+                0 => self.linear,
+                0x0100_0000_0000_0002 => self.intel_y,
+                _ => false,
+            }
+    }
+}
+
 /// Holding the Send + Sync backing frame prevents decoder-pool reuse until
 /// the renderer has finished sampling it. This is not the thread-affine VA handle.
 pub trait Lease: std::fmt::Debug + Send + Sync {}
@@ -23,6 +63,7 @@ impl<T: std::fmt::Debug + Send + Sync> Lease for T {}
 #[derive(Debug)]
 pub struct Frame {
     pub file: File,
+    pub device: Option<u64>,
     pub allocation_size: u32,
     pub width: u32,
     pub height: u32,
@@ -30,8 +71,23 @@ pub struct Frame {
     pub offset: [u32; 2],
     pub modifier: u64,
     pub keep_alive: Arc<dyn Lease>,
+    /// Shared only by frames belonging to the same VA surface pool.
+    pub importable: Arc<AtomicBool>,
 }
 impl Frame {
+    pub fn import_enabled(&self) -> bool {
+        self.importable.load(Ordering::Acquire)
+    }
+
+    pub fn reject_import(&self) {
+        self.importable.store(false, Ordering::Release);
+    }
+
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    pub fn read_visible_nv12(&self, size: [u32; 2]) -> Result<bytes::Bytes, String> {
+        crate::hw::vaapi::download::read_export(self, size)
+    }
+
     /// Initially support only uncompressed linear/Intel Y NV12. Auxiliary
     /// compression planes and unfamiliar modifiers retain CPU readback.
     pub fn valid(&self, visible: [u32; 2]) -> bool {
@@ -82,6 +138,7 @@ mod tests {
     use super::*;
     fn fixture() -> Frame {
         Frame {
+            device: None,
             file: File::open(std::env::current_exe().unwrap()).unwrap(),
             allocation_size: 64 * 32 * 3 / 2,
             width: 64,
@@ -90,6 +147,7 @@ mod tests {
             offset: [0, 64 * 32],
             modifier: 0,
             keep_alive: Arc::new(()),
+            importable: Arc::new(AtomicBool::new(true)),
         }
     }
     #[test]
@@ -120,6 +178,32 @@ mod tests {
         f.offset[1] += 1;
         assert!(!f.valid([64, 32]));
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn render_target_checks_the_device_and_exact_plane_modifier() {
+        let target = RenderTarget {
+            device: 17,
+            linear: false,
+            intel_y: true,
+        };
+        assert!(target.supports(Some(17), 0x0100_0000_0000_0002));
+        assert!(!target.supports(Some(18), 0x0100_0000_0000_0002));
+        assert!(!target.supports(None, 0x0100_0000_0000_0002));
+        assert!(!target.supports(Some(17), 0));
+        assert!(!target.supports(Some(17), u64::MAX));
+    }
+
+    #[test]
+    fn failed_import_downgrades_only_frames_from_its_own_pool() {
+        let prior = fixture();
+        let mut queued = fixture();
+        queued.importable = prior.importable.clone();
+        let replacement = fixture();
+        prior.reject_import();
+        assert!(!queued.import_enabled());
+        assert!(replacement.import_enabled());
+    }
+
     #[test]
     fn clones_keep_backing_storage_until_last_consumer_releases() {
         #[derive(Debug)]
