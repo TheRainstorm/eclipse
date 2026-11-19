@@ -86,7 +86,7 @@ fn select_with(
     }
     if software_fallback&&attempts.iter().any(|&(codec,hdr)|codec==VideoCodec::H264&&!hdr) {
         let settings=settings(VideoCodec::H264,false);
-        if settings.preference==Preference::Auto&&settings.tuning==Default::default() {
+        if settings.preference==Preference::Auto&&settings.tuning.allows_software_fallback() {
             let settings=Settings{preference:Preference::Software,rate_control:RateControl::Cbr,..settings};
             match attempt(settings) {
                 Ok(encoder)=>return Ok((encoder,settings)),

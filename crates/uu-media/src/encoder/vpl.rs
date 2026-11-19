@@ -87,16 +87,7 @@ impl Driver {
         #[cfg(all(windows, feature="mf-encode"))]
         if settings.tuning.intel_gpu_input && !settings.hdr && settings.source_hdr.is_none() {
             if let Some(input) = input.filter(|input| input.vendor == 0x8086) {
-                let attempt = || -> Result<Self, String> {
-                    let video = super::vpl_gpu::Input::new(input)?;
-                    let mut driver = Self::open_native(settings, video.device_ptr())?;
-                    let raw = driver.acquire_texture()?;
-                    video.texture(raw, settings)?;
-                    unsafe { eclipse_vpl_encoder_release_texture(driver.encoder.as_ptr()); }
-                    driver.video_input = Some(video);
-                    Ok(driver)
-                };
-                match attempt() {
+                match Self::open_texture(settings, input) {
                     Ok(driver) => return Ok(driver),
                     Err(error) => tracing::warn!(%error, "oneVPL D3D11 input unavailable; retrying with system memory"),
                 }
@@ -105,6 +96,17 @@ impl Driver {
         #[cfg(not(all(windows, feature="mf-encode")))]
         let _ = input;
         Self::open_native(settings, std::ptr::null_mut())
+    }
+
+    #[cfg(all(windows, feature="mf-encode"))]
+    pub(super) fn open_texture(settings: Settings, device: super::InputDevice) -> Result<Self, String> {
+        let video = super::vpl_gpu::Input::new(device)?;
+        let mut driver = Self::open_native(settings, video.device_ptr())?;
+        let raw = driver.acquire_texture()?;
+        video.texture(raw, settings)?;
+        unsafe { eclipse_vpl_encoder_release_texture(driver.encoder.as_ptr()); }
+        driver.video_input = Some(video);
+        Ok(driver)
     }
 
     #[cfg(all(windows, feature="mf-encode"))]

@@ -19,7 +19,7 @@ pub enum LowPower {
     Off,
 }
 
-fn disabled(value: &bool) -> bool { !*value }
+fn enabled(value: &bool) -> bool { *value }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -40,8 +40,8 @@ pub struct Tuning {
     /// oneVPL TargetUsage: 1 = best quality, 4 = balanced, 7 = fastest.
     pub intel_target_usage: u8,
     pub intel_low_power: LowPower,
-    /// Opt in to oneVPL video memory when capture exposes a compatible Intel D3D11 device.
-    #[serde(skip_serializing_if = "disabled")]
+    /// Prefer a verified same-device Intel surface in automatic Windows hardware selection.
+    #[serde(skip_serializing_if = "enabled")]
     pub intel_gpu_input: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intel_vbv_frames: Option<u8>,
@@ -63,7 +63,7 @@ impl Default for Tuning {
             amd_vbv_frames: None,
             intel_target_usage: 7,
             intel_low_power: LowPower::Auto,
-            intel_gpu_input: false,
+            intel_gpu_input: true,
             intel_vbv_frames: None,
             intel_mf_quality_vs_speed: None,
             nvidia_quality_vs_speed: None,
@@ -106,8 +106,13 @@ impl Tuning {
         }
         Ok(())
     }
+    pub fn allows_software_fallback(self) -> bool {
+        // A texture preference alone does not require a particular codec or driver.
+        Self { intel_gpu_input: true, ..self } == Self::default()
+    }
+
     pub fn custom_intel(self) -> bool {
-        (cfg!(windows) && self.intel_gpu_input) || self.intel_target_usage != 7
+        self.intel_target_usage != 7
             || self.intel_low_power != LowPower::Auto
             || self.intel_vbv_frames.is_some()
     }
@@ -157,12 +162,14 @@ mod tests {
     }
 
     #[test]
-    fn intel_texture_input_is_an_explicit_windows_preference() {
-        let tuning: Tuning = serde_json::from_str(r#"{"intel_gpu_input":true}"#).unwrap();
-        assert!(tuning.intel_gpu_input);
-        assert_eq!(tuning.custom_intel(), cfg!(windows));
-        assert_eq!(serde_json::to_value(tuning).unwrap()["intel_gpu_input"], true);
-        assert!(!Tuning::default().intel_gpu_input);
+    fn intel_texture_input_defaults_on_and_remembers_an_explicit_opt_out() {
+        let default: Tuning = serde_json::from_str("{}").unwrap();
+        assert!(default.intel_gpu_input && !default.custom_intel());
+        let opted_out = Tuning { intel_gpu_input: false, ..default };
+        let json = serde_json::to_value(opted_out).unwrap();
+        assert_eq!(json["intel_gpu_input"], false);
+        assert_eq!(serde_json::from_value::<Tuning>(json).unwrap(), opted_out);
+        assert!(opted_out.allows_software_fallback());
     }
 
     #[test]

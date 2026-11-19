@@ -154,6 +154,19 @@ fn hardware(settings: Settings, input:Option<InputDevice>) -> Result<Box<dyn Vid
     if settings.hdr && !cfg!(windows) {return Err(error("HDR encoding is unavailable on this platform"));}
     #[cfg(not(all(windows,feature="mf-encode")))]
     let _=input;
+    #[cfg(all(windows, feature="mf-encode", feature="intel-vpl"))]
+    if matches!(settings.preference, Preference::Auto | Preference::Hardware)
+        && settings.tuning.intel_gpu_input
+        && settings.tuning.intel_mf_quality_vs_speed.is_none()
+        && !settings.hdr && settings.source_hdr.is_none()
+    {
+        if let Some(device) = input.as_ref().filter(|device| device.vendor == 0x8086).cloned() {
+            match worker::Worker::spawn(move || vpl::Driver::open_texture(settings, device)) {
+                Ok(encoder) => return Ok(Box::new(encoder)),
+                Err(reason) => tracing::debug!(%reason, "Intel texture input unavailable; continuing platform selection"),
+            }
+        }
+    }
     #[cfg(all(windows,feature="mf-encode"))]
     if matches!(settings.preference,Preference::Auto|Preference::Hardware|Preference::Amd) {
         // Cross-adapter encoding still uses the established CPU fallback.
@@ -253,9 +266,9 @@ pub fn create_with_device(settings: Settings,input:Option<InputDevice>) -> Resul
             (hardware(settings,input)?, false, false)
         }
         Preference::Auto => match hardware(settings,input) {
-            Ok(encoder) => (encoder, settings.codec==VideoCodec::H264 && settings.rate_control==RateControl::Cbr && settings.tuning==Tuning::default(), false),
+            Ok(encoder) => (encoder, settings.codec==VideoCodec::H264 && settings.rate_control==RateControl::Cbr && settings.tuning.allows_software_fallback(), false),
             Err(reason) => {
-                if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr || settings.tuning!=Tuning::default(){return Err(reason);}
+                if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr || !settings.tuning.allows_software_fallback(){return Err(reason);}
                 tracing::warn!(%reason,backend=hardware_name(),"native hardware encoder unavailable; using software");
                 (software(settings)?, false, true)
             }
