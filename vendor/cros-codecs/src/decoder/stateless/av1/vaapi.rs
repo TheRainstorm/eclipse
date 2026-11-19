@@ -502,11 +502,8 @@ impl<V: VideoFrame> StatelessAV1DecoderBackend for VaapiBackend<V> {
         timestamp: u64,
         alloc_cb: &mut dyn FnMut() -> Option<V>,
     ) -> NewPictureResult<Self::Picture> {
-        Ok(VaapiPicture::new(
-            timestamp,
-            Rc::clone(&self.context),
-            alloc_cb().ok_or(NewPictureError::OutOfOutputBuffers)?,
-        ))
+        let frame = alloc_cb().ok_or(NewPictureError::OutOfOutputBuffers)?;
+        Ok(self.acquire_picture(timestamp, frame)?)
     }
 
     fn begin_picture(

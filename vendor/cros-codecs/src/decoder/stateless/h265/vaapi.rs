@@ -620,12 +620,9 @@ impl<V: VideoFrame> StatelessH265DecoderBackend for VaapiBackend<V> {
             <<Self as StatelessDecoderBackend>::Handle as DecodedHandle>::Frame,
         >,
     ) -> NewPictureResult<Self::Picture> {
+        let frame = alloc_cb().ok_or(NewPictureError::OutOfOutputBuffers)?;
         Ok(VaapiH265Picture {
-            picture: VaapiPicture::new(
-                timestamp,
-                Rc::clone(&self.context),
-                alloc_cb().ok_or(NewPictureError::OutOfOutputBuffers)?,
-            ),
+            picture: self.acquire_picture(timestamp, frame)?,
             last_slice: Default::default(),
             va_references: Default::default(),
         })

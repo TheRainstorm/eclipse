@@ -77,6 +77,13 @@ pub trait VideoFrame: Send + Sync + Sized + Debug + 'static {
     #[cfg(feature = "vaapi")]
     type NativeHandle: Equivalent<Surface<Self::MemDescriptor>>;
 
+    /// Stable backing slot, only for allocations whose planes and layout never
+    /// change during this pool generation. A key alone is not a frame lease.
+    #[cfg(feature = "vaapi")]
+    fn va_pool_slot(&self) -> Option<frame_pool::VaPoolSlot> {
+        None
+    }
+
     fn fourcc(&self) -> Fourcc;
 
     // Outputs visible resolution. Use pitch and plane size for coded resolution calculations.

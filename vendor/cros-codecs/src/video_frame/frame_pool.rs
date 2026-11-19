@@ -27,10 +27,20 @@ use v4l2r::ioctl::V4l2Buffer;
 #[cfg(feature = "v4l2")]
 use v4l2r::Format;
 
+#[cfg(feature = "vaapi")]
+#[derive(Clone, Debug)]
+pub struct VaPoolSlot {
+    pub(crate) generation: Weak<()>,
+    pub(crate) index: usize,
+}
+
 #[derive(Debug)]
 pub struct PooledVideoFrame<V: VideoFrame> {
     inner: Option<V>,
-    pool: Weak<Mutex<VecDeque<V>>>,
+    pool: Weak<Mutex<VecDeque<(usize, V)>>>,
+    index: usize,
+    #[cfg(feature = "vaapi")]
+    generation: Option<Weak<()>>,
 }
 
 impl<V: VideoFrame> VideoFrame for PooledVideoFrame<V> {
@@ -38,6 +48,11 @@ impl<V: VideoFrame> VideoFrame for PooledVideoFrame<V> {
     type MemDescriptor = V::MemDescriptor;
 
     type NativeHandle = V::NativeHandle;
+
+    #[cfg(feature = "vaapi")]
+    fn va_pool_slot(&self) -> Option<VaPoolSlot> {
+        Some(VaPoolSlot { index: self.index, generation: self.generation.clone()? })
+    }
 
     fn fourcc(&self) -> Fourcc {
         self.inner.as_ref().unwrap().fourcc()
@@ -82,33 +97,55 @@ impl<V: VideoFrame> VideoFrame for PooledVideoFrame<V> {
 impl<V: VideoFrame> Drop for PooledVideoFrame<V> {
     fn drop(&mut self) {
         if let Some(pool) = self.pool.upgrade() {
-            (*pool.lock().unwrap()).push_back(self.inner.take().unwrap());
+            (*pool.lock().unwrap()).push_back((self.index, self.inner.take().unwrap()));
         }
     }
 }
 
 pub struct FramePool<V: VideoFrame> {
     alloc_cb: Box<dyn FnMut(&StreamInfo) -> V + Send + 'static>,
-    pool: Option<Arc<Mutex<VecDeque<V>>>>,
+    pool: Option<Arc<Mutex<VecDeque<(usize, V)>>>>,
+    #[cfg(feature = "vaapi")]
+    generation: Option<Arc<()>>,
 }
 
 impl<V: VideoFrame> FramePool<V> {
     pub fn new(alloc_cb: impl FnMut(&StreamInfo) -> V + Send + 'static) -> FramePool<V> {
-        Self { alloc_cb: Box::new(alloc_cb), pool: None }
+        Self {
+            alloc_cb: Box::new(alloc_cb),
+            pool: None,
+            #[cfg(feature = "vaapi")]
+            generation: None,
+        }
     }
 
     pub fn resize(&mut self, stream_info: &StreamInfo) {
-        let mut pool: VecDeque<V> = VecDeque::new();
-        for _i in 0..stream_info.min_num_frames {
-            pool.push_back((self.alloc_cb)(stream_info));
+        #[cfg(feature = "vaapi")]
+        {
+            self.generation = None;
         }
-        self.pool = Some(Arc::new(Mutex::new(pool)))
+        let pool = (0..stream_info.min_num_frames)
+            .map(|index| (index, (self.alloc_cb)(stream_info)))
+            .collect();
+        self.pool = Some(Arc::new(Mutex::new(pool)));
+    }
+
+    /// Opt into decoder-thread VA surface reuse for a new set of immutable
+    /// allocations. Their native descriptors must own storage independently of
+    /// the checkout lease. Only this pool owns the generation's strong token.
+    #[cfg(feature = "vaapi")]
+    pub fn resize_for_va_surface_reuse(&mut self, stream_info: &StreamInfo) {
+        self.resize(stream_info);
+        self.generation = Some(Arc::new(()));
     }
 
     pub fn alloc(&mut self) -> Option<PooledVideoFrame<V>> {
-        let frame = (*self.pool.as_mut()?.lock().unwrap()).pop_front()?;
+        let (index, frame) = (*self.pool.as_mut()?.lock().unwrap()).pop_front()?;
         Some(PooledVideoFrame {
             inner: Some(frame),
+            index,
+            #[cfg(feature = "vaapi")]
+            generation: self.generation.as_ref().map(Arc::downgrade),
             pool: Arc::downgrade(self.pool.as_ref().unwrap()),
         })
     }

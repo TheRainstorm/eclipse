@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 use std::cell::RefCell;
-use std::marker::PhantomData;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -203,7 +203,10 @@ pub struct VaapiBackend<V: VideoFrame> {
     visible_rect: Rect,
     // TODO: We should try to support context reuse
     _supports_context_reuse: bool,
-    _phantom_data: PhantomData<V>,
+    // These never-submitted pictures own only the VA import and context, not
+    // the backing-frame lease. They are used exclusively on the decode thread.
+    surface_generation: std::sync::Weak<()>,
+    surface_templates: HashMap<usize, Picture<PictureNew, Surface<V::MemDescriptor>>>,
 }
 
 impl<V: VideoFrame> VaapiBackend<V> {
@@ -239,7 +242,8 @@ impl<V: VideoFrame> VaapiBackend<V> {
             _supports_context_reuse: supports_context_reuse,
             visible_rect: init_stream_info.display_resolution.into(),
             stream_info: init_stream_info,
-            _phantom_data: Default::default(),
+            surface_generation: std::sync::Weak::new(),
+            surface_templates: HashMap::new(),
         }
     }
 
@@ -292,9 +296,53 @@ impl<V: VideoFrame> VaapiBackend<V> {
                 true,
             )
             .map_err(|_| anyhow!("Could not create VAContext!"))?;
+        // Pictures still referenced by the old DPB retain their own surface
+        // and context; never submit them through the new sequence.
+        self.surface_templates.clear();
         self.context = context;
 
         Ok(())
+    }
+
+    pub(crate) fn acquire_picture(
+        &mut self,
+        timestamp: u64,
+        frame: V,
+    ) -> anyhow::Result<VaapiPicture<V>> {
+        let import = || {
+            frame
+                .to_native_handle(self.context.display())
+                .map(Into::into)
+                .map_err(|error| anyhow!("Failed to import video frame into VA: {error}"))
+        };
+        let picture = if let Some(slot) = frame.va_pool_slot() {
+            if !self.surface_generation.ptr_eq(&slot.generation) {
+                self.surface_templates.clear();
+                self.surface_generation = slot.generation;
+            }
+            let template = match self.surface_templates.entry(slot.index) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let template = entry.into_mut();
+                    // Normally blocking decoding and the EGL consumer have
+                    // already completed before the pool returns this slot.
+                    // Also handle discarded or asynchronously decoded pictures.
+                    let surface = template.surface();
+                    if !matches!(surface.query_status(), Ok(libva::VASurfaceStatus::VASurfaceReady)) {
+                        // Some drivers implement synchronization but not the optional
+                        // status query. Sync the same surface before the next write.
+                        surface.sync().context("confirming VA surface is reusable")?;
+                    }
+                    template
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(Picture::new(0, self.context.clone(), import()?))
+                }
+            };
+            Picture::new_from_same_surface(timestamp, &*template)
+        } else {
+            Picture::new(timestamp, self.context.clone(), import()?)
+        };
+        Ok(VaapiPicture { picture, backing_frame: Arc::new(frame) })
     }
 
     pub(crate) fn process_picture<Codec: StatelessCodec>(

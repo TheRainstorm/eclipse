@@ -491,7 +491,9 @@ impl Decoder {
                 .pop_front()
                 .expect("one prepared surface per advertised pool slot")
         });
-        pool.resize(&pool_info);
+        // Each prepared frame owns immutable planes in one driver allocation.
+        // Returning the final decoder or GUI lease is the only route back to its slot.
+        pool.resize_for_va_surface_reuse(&pool_info);
         self.pool = Some(pool);
         self.mappings = mappings;
         self.importable = Arc::new(AtomicBool::new(importable));

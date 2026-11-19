@@ -222,11 +222,8 @@ impl<V: VideoFrame> StatelessVp8DecoderBackend for VaapiBackend<V> {
             <<Self as StatelessDecoderBackend>::Handle as DecodedHandle>::Frame,
         >,
     ) -> NewPictureResult<Self::Picture> {
-        Ok(VaapiPicture::new(
-            timestamp,
-            Rc::clone(&self.context),
-            alloc_cb().ok_or(NewPictureError::OutOfOutputBuffers)?,
-        ))
+        let frame = alloc_cb().ok_or(NewPictureError::OutOfOutputBuffers)?;
+        Ok(self.acquire_picture(timestamp, frame)?)
     }
 
     fn submit_picture(

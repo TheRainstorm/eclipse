@@ -244,13 +244,8 @@ impl<V: VideoFrame> StatelessVp9DecoderBackend for VaapiBackend<V> {
             <<Self as StatelessDecoderBackend>::Handle as DecodedHandle>::Frame,
         >,
     ) -> NewPictureResult<Self::Picture> {
-        let context = &self.context;
-
-        Ok(VaapiPicture::new(
-            timestamp,
-            Rc::clone(context),
-            alloc_cb().ok_or(NewPictureError::OutOfOutputBuffers)?,
-        ))
+        let frame = alloc_cb().ok_or(NewPictureError::OutOfOutputBuffers)?;
+        Ok(self.acquire_picture(timestamp, frame)?)
     }
 
     fn submit_picture(
