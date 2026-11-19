@@ -22,6 +22,8 @@ extern "C" {
         vbr: i32,
         target_usage:u32,
         low_power:i32,
+        gop_frames:u32,
+        vbv_frames:u32,
         out: *mut *mut c_void,
         error: *mut c_char,
         capacity: usize,
@@ -76,6 +78,11 @@ impl Drop for Driver {
 impl Driver {
     pub fn open(settings: Settings) -> Result<Self, String> {
         if settings.hdr {return Err("HDR requires the Windows P010 hardware encoder path".into());}
+        if cfg!(windows) && settings.tuning.intel_mf_quality_vs_speed.is_some()
+            && !settings.tuning.custom_intel()
+            && matches!(settings.preference, super::Preference::Auto | super::Preference::Hardware) {
+            return Err("Intel MFT quality/speed cannot be applied by oneVPL".into());
+        }
         let codec = match settings.codec {
             uu_proto::media::VideoCodec::H264 => 0,
             uu_proto::media::VideoCodec::Hevc => 1,
@@ -96,6 +103,8 @@ impl Driver {
                 i32::from(vbr),
                 u32::from(settings.tuning.intel_target_usage),
                 match settings.tuning.intel_low_power{super::LowPower::Auto=>0,super::LowPower::On=>1,super::LowPower::Off=>2},
+                settings.tuning.gop_frames(settings.fps).unwrap_or(0),
+                u32::from(settings.tuning.intel_vbv_frames.unwrap_or(0)),
                 &mut encoder,
                 error.as_mut_ptr(),
                 error.len(),
@@ -105,8 +114,8 @@ impl Driver {
             let low_power=match settings.tuning.intel_low_power {
                 super::LowPower::Auto=>"自动",super::LowPower::On=>"启用",super::LowPower::Off=>"停用",
             };
-            return Err(format!("Intel QSV {:?}（Target Usage={}，低功耗={}）：{}",
-                settings.codec,settings.tuning.intel_target_usage,low_power,message(&error)));
+            return Err(format!("Intel QSV {:?}（Target Usage={}，低功耗={}{}）：{}",
+                settings.codec,settings.tuning.intel_target_usage,low_power, controls(settings),message(&error)));
         }
         let encoder = NonNull::new(encoder).ok_or("Intel runtime returned no encoder")?;
         let low_power = unsafe { eclipse_vpl_encoder_low_power(encoder.as_ptr()) } != 0;
@@ -114,16 +123,26 @@ impl Driver {
             encoder,
             settings,
             name: format!(
-                "intel-vpl ({:?} hw, {}, {} engine, TU{})",
+                "intel-vpl ({:?} hw, {}, {} engine, TU{}{})",
                 settings.codec,
                 if vbr { "VBR" } else { "CBR" },
-                if low_power { "low power" } else { "general" }, settings.tuning.intel_target_usage
+                if low_power { "low power" } else { "general" }, settings.tuning.intel_target_usage, controls(settings)
             ),
             pending: VecDeque::new(),
             headers: Default::default(),
             profile: super::profile::Profile::new("intel-vpl"),
         })
     }
+}
+fn controls(settings: Settings) -> String {
+    let mut text = String::new();
+    if let Some(frames) = settings.tuning.gop_frames(settings.fps) {
+        text.push_str(&format!(", GOP={frames}"));
+    }
+    if let Some(frames) = settings.tuning.intel_vbv_frames {
+        text.push_str(&format!(", VBV={frames}f"));
+    }
+    text
 }
 impl super::worker::Driver for Driver {
     fn backend_name(&self) -> &str {

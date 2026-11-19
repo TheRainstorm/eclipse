@@ -4,8 +4,15 @@ use crate::{EncodedFrame,RawFrame};
 use std::{ffi::{c_char,c_void,CStr},ptr::{self,NonNull}};
 use uu_proto::media::VideoCodec;
 use windows::{core::Interface,Win32::{Graphics::Direct3D11::ID3D11Texture2D,Media::MediaFoundation::IMFDXGIBuffer}};
+#[repr(C)]
+struct AmfTuning {
+    gop_frames: u32,
+    queue_capacity: u32,
+    adaptive_quantization: i32,
+    vbv_frames: u32,
+}
 unsafe extern "C" {
-    fn eclipse_amf_open(codec:i32,width:u32,height:u32,fps:u32,kbps:u32,peak:u32,vbr:i32,quality:i32,hdr:i32,default_adapter:i32,device:*mut c_void,error:*mut c_char,capacity:usize)->*mut c_void;
+    fn eclipse_amf_open(codec:i32,width:u32,height:u32,fps:u32,kbps:u32,peak:u32,vbr:i32,quality:i32,tuning:&AmfTuning,hdr:i32,default_adapter:i32,device:*mut c_void,error:*mut c_char,capacity:usize)->*mut c_void;
     fn eclipse_amf_close(session:*mut c_void)->u64;
     fn eclipse_amf_properties(session:*mut c_void,output:*mut c_char,capacity:usize)->i32;
     fn eclipse_amf_device(session:*mut c_void)->*mut c_void;
@@ -24,8 +31,14 @@ impl Native {
     fn open(settings:Settings,device:*mut c_void)->Result<Self,String> {
         let mut error=[0;512];
         let codec=match settings.codec {VideoCodec::H264=>0,VideoCodec::Hevc=>1,VideoCodec::Av1=>2,VideoCodec::Pyrowave=>return Err("PyroWave uses the Vulkan backend".into())};
+        let tuning = AmfTuning {
+            gop_frames: settings.tuning.gop_frames(settings.fps).unwrap_or(0),
+            queue_capacity: u32::from(settings.tuning.amd_input_queue.unwrap_or(0)),
+            adaptive_quantization: settings.tuning.amd_adaptive_quantization.map_or(-1, i32::from),
+            vbv_frames: u32::from(settings.tuning.amd_vbv_frames.unwrap_or(0)),
+        };
         let session=unsafe{eclipse_amf_open(codec,settings.width,settings.height,settings.fps,settings.bitrate_kbps,
-            settings.rate_control.peak(settings.bitrate_kbps),i32::from(matches!(settings.rate_control,super::RateControl::Vbr{..})),match settings.tuning.amd_quality{super::AmdQuality::Speed=>0,super::AmdQuality::Balanced=>1,super::AmdQuality::Quality=>2},i32::from(settings.hdr),i32::from(settings.preference!=super::Preference::Amd),device,error.as_mut_ptr(),error.len())};
+            settings.rate_control.peak(settings.bitrate_kbps),i32::from(matches!(settings.rate_control,super::RateControl::Vbr{..})),match settings.tuning.amd_quality{super::AmdQuality::Speed=>0,super::AmdQuality::Balanced=>1,super::AmdQuality::Quality=>2},&tuning,i32::from(settings.hdr),i32::from(settings.preference!=super::Preference::Amd),device,error.as_mut_ptr(),error.len())};
         NonNull::new(session).map(|p|Self(Some(p))).ok_or_else(||message(&error))
     }
 }
@@ -65,13 +78,19 @@ impl Driver {
         let native=Native::open(settings,input.as_ref().map_or(ptr::null_mut(),|device|device.device.as_raw()))?;
         let codec=match settings.codec{VideoCodec::H264=>"H.264",VideoCodec::Hevc=>"HEVC",VideoCodec::Av1=>"AV1",VideoCodec::Pyrowave=>"PyroWave"};
         let mode=if matches!(settings.rate_control,super::RateControl::Vbr{..}){"VBR"}else{"CBR"};
+        let mut name = format!("amf ({codec} {mode}, AMD D3D11, {:?}", settings.tuning.amd_quality);
+        if let Some(gop) = settings.tuning.gop_frames(settings.fps) {name.push_str(&format!(", GOP={gop}"));}
+        if let Some(queue) = settings.tuning.amd_input_queue {name.push_str(&format!(", queue={queue}"));}
+        if let Some(vbv) = settings.tuning.amd_vbv_frames {name.push_str(&format!(", VBV={vbv}f"));}
+        if let Some(aq) = settings.tuning.amd_adaptive_quantization {name.push_str(&format!(", AQ={aq}"));}
+        name.push(')');
         // Reuse only after matching output and surface release; an explicit
         // override keeps the existing 1/other-value diagnostic behavior.
         let pool_enabled=std::env::var_os("UU_AMF_INPUT_POOL").is_none_or(|v|v=="1");
         if std::env::var_os("UU_ENCODE_PROFILE").is_some(){eprintln!("uu-amf-input-mode pool_enabled={pool_enabled}");}
         let observation=if settings.codec==VideoCodec::Av1{super::amf_workload::Observation::enabled(1,64*1024*1024)}else{None};
         let observation_requested=observation.is_some();
-        let mut driver=Self{native,observation_requested,observation,closed_observations:Vec::new(),observation_generation_overflow:0,shared_proof:None,gpu:None,inputs:Inputs(super::input_pool::Pool::new(1),"uninitialized"),pool_enabled,upload:Vec::new(),settings,headers:Default::default(),name:format!("amf ({codec} {mode}, AMD D3D11, {:?})",settings.tuning.amd_quality),profile:super::profile::Profile::new("amf"),_runtime:runtime};
+        let mut driver=Self{native,observation_requested,observation,closed_observations:Vec::new(),observation_generation_overflow:0,shared_proof:None,gpu:None,inputs:Inputs(super::input_pool::Pool::new(1),"uninitialized"),pool_enabled,upload:Vec::new(),settings,headers:Default::default(),name,profile:super::profile::Profile::new("amf"),_runtime:runtime};
         driver.observe_properties("initialized",None);
         Ok(driver)
     }

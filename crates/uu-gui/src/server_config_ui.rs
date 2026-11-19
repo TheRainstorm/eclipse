@@ -40,7 +40,13 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
         ui.add_space(10.);
         ui.weak(uu_i18n::text("编码参数在下次启动服务后生效；默认优先低延迟。提高画质可能增加编码耗时。仅应用实际使用的 GPU 参数。"));
         let tuning=&mut s.encoder_tuning;
-        if matches!(s.encoding,Encoding::Auto|Encoding::Hardware|Encoding::Amd) {
+        if s.encoding != Encoding::Software {
+            optional_slider(ui, "自定义硬件关键帧间隔", &mut tuning.hardware_gop_seconds, 2, 1..=60, " 秒");
+            if tuning.hardware_gop_seconds.is_some() {
+                ui.weak(uu_i18n::text("较长间隔可减少周期性大帧。丢包恢复仍可立即请求关键帧。"));
+            }
+        }
+        if cfg!(windows) && matches!(s.encoding,Encoding::Auto|Encoding::Hardware|Encoding::Amd) {
             egui::CollapsingHeader::new("AMD AMF").id_salt("amd-tuning").show(ui,|ui| {
                 use uu_core::device_book::AmdQuality;
                 ui.horizontal(|ui| {
@@ -50,11 +56,29 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
                     }
                 });
                 ui.weak(uu_i18n::text("Windows 原生 AMF，保持超低延迟用法与无 B 帧。"));
+                optional_slider(ui, "自定义驱动输入队列", &mut tuning.amd_input_queue, 1, 1..=16, " 帧");
+                optional_slider(ui, "自定义初始 VBV 缓冲", &mut tuning.amd_vbv_frames, 1, 1..=5, " 帧");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(uu_i18n::text("空间自适应量化"));
+                    for (value,label) in [(None,"自动"),(Some(true),"启用"),(Some(false),"停用")] {
+                        crate::theme::selectable_value(ui,&mut tuning.amd_adaptive_quantization,value,uu_i18n::text(label));
+                    }
+                });
+                ui.weak(uu_i18n::text("输入队列限制驱动可接收的帧数。VBV 控制码流突发，按连接开始时的峰值码率计算。"));
             });
         }
         if matches!(s.encoding,Encoding::Auto|Encoding::Hardware|Encoding::Intel) {
-            egui::CollapsingHeader::new("Intel QSV").id_salt("intel-tuning").show(ui,|ui| {
+            egui::CollapsingHeader::new("Intel").id_salt("intel-tuning").show(ui,|ui| {
                 use uu_core::device_book::LowPower;
+                if cfg!(windows) && matches!(s.encoding, Encoding::Auto|Encoding::Hardware) {
+                    ui.label("Media Foundation · Windows");
+                    ui.add_enabled_ui(!tuning.custom_intel(), |ui| {
+                        optional_slider(ui, "自定义画质 / 速度", &mut tuning.intel_mf_quality_vs_speed, 0, 0..=100, "");
+                    });
+                    ui.weak(uu_i18n::text("0 优先速度，100 优先画质。自动选择 Intel MFT 时可保留 GPU 输入。"));
+                    ui.separator();
+                }
+                ui.label("Quick Sync · oneVPL");
                 crate::theme::slider(ui,egui::Slider::new(&mut tuning.intel_target_usage,1..=7).text(uu_i18n::text("Target Usage · 1 画质 / 7 速度")));
                 ui.horizontal(|ui| {
                     ui.label(uu_i18n::text("低功耗引擎"));
@@ -62,10 +86,11 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
                         crate::theme::selectable_value(ui,&mut tuning.intel_low_power,value,label);
                     }
                 });
-                ui.weak(uu_i18n::text("自动优先固定功能引擎；驱动不支持明确选择的参数时连接会说明原因。"));
+                optional_slider(ui, "自定义初始 VBV 缓冲", &mut tuning.intel_vbv_frames, 1, 1..=5, " 帧");
+                ui.weak(uu_i18n::text("更改 oneVPL 参数会在 Intel 上选择该后端。当前通过系统内存送帧，实际速度取决于显卡和分辨率。"));
             });
         }
-        if matches!(s.encoding,Encoding::Auto|Encoding::Hardware|Encoding::Nvidia) {
+        if cfg!(windows) && matches!(s.encoding,Encoding::Auto|Encoding::Hardware|Encoding::Nvidia) {
             egui::CollapsingHeader::new("NVIDIA · Windows").id_salt("nvidia-tuning").show(ui,|ui| {
                 let mut custom=tuning.nvidia_quality_vs_speed.is_some();
                 if crate::theme::switch(ui,&mut custom,uu_i18n::text("自定义画质 / 速度")).changed() {
@@ -82,6 +107,19 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
         crate::theme::switch(ui,&mut s.clipboard,uu_i18n::text("允许文本和图片剪贴板同步"));
         ui.weak(uu_i18n::text("每台设备还需获得对应授权；修改主机设置后下次启动生效。"));
     }
+}
+
+fn optional_slider(ui: &mut egui::Ui, label: &'static str, value: &mut Option<u8>,
+    initial: u8, range: std::ops::RangeInclusive<u8>, suffix: &'static str) {
+    ui.horizontal_wrapped(|ui| {
+        let mut enabled = value.is_some();
+        if crate::theme::switch(ui, &mut enabled, uu_i18n::text(label)).changed() {
+            *value = enabled.then_some(initial);
+        }
+        if let Some(value) = value {
+            crate::theme::slider(ui, egui::Slider::new(value, range).suffix(uu_i18n::text(suffix)));
+        }
+    });
 }
 
 pub fn device_name(ui:&mut egui::Ui,s:&mut Sharing,enabled:bool) {

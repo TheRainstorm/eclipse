@@ -175,6 +175,13 @@ impl Driver {
             match unsafe { Self::activate(settings, activation,input_device.as_ref().map(|(_,manager)|manager)) } {
                 Ok((transform, events, codec, input_id, output_id)) => {
                     let gpu_capable=unsafe{transform.GetAttributes().ok().and_then(|a|a.GetUINT32(&MF_SA_D3D11_AWARE).ok())==Some(1)};
+                    let mut controls = String::new();
+                    if let Some(value) = settings.tuning.mf_quality(vendor(activation)) {
+                        controls.push_str(&format!(", quality/speed={value}"));
+                    }
+                    if let Some(frames) = settings.tuning.gop_frames(settings.fps) {
+                        controls.push_str(&format!(", GOP={frames}"));
+                    }
                     return Ok(Self {
                         transform,
                         events,
@@ -193,7 +200,7 @@ impl Driver {
                             } else {
                                 "CBR"
                             },
-                            if vendor(activation)==Some(0x10de) {settings.tuning.nvidia_quality_vs_speed.map(|v|format!(", quality/speed={v}")).unwrap_or_default()}else{String::new()}
+                            controls
                         ),
                         profile: std::env::var_os("UU_ENCODE_PROFILE").map(|_| [0; 4]),
                         gpu:None,gpu_capable,gpu_frames:0,input_device,
@@ -231,13 +238,14 @@ impl Driver {
             }
             let codec: ICodecAPI = transform.cast().map_err(reason)?;
             let vendor=vendor(activation);
-            if vendor==Some(0x1002) && settings.tuning.amd_quality!=super::AmdQuality::Speed {
-                return Err("自定义 AMD 画质预设需要原生 AMF，不能通过 MFT 忽略该设置".into());
+            if vendor==Some(0x1002) && settings.tuning.custom_amd() {
+                return Err("自定义 AMD 参数需要原生 AMF 后端".into());
             }
             if vendor==Some(0x8086) && settings.tuning.custom_intel() {
                 return Err("自定义 Intel 参数需要 oneVPL 后端".into());
             }
-            let quality=(vendor==Some(0x10de)).then_some(settings.tuning.nvidia_quality_vs_speed).flatten();
+            let quality = settings.tuning.mf_quality(vendor);
+            let gop = settings.tuning.gop_frames(settings.fps);
             // Drivers differ in optional tuning support. Actual one-frame completion
             // and IDR recovery are checked below, rather than trusting these flags.
             for (id, value) in [
@@ -248,16 +256,22 @@ impl Driver {
                     VARIANT::from(eAVScenarioInfo_DisplayRemoting.0 as u32),
                 ),
                 (CODECAPI_AVEncMPVDefaultBPictureCount, VARIANT::from(0u32)),
-                (CODECAPI_AVEncMPVGOPSize, VARIANT::from(settings.fps * 2)),
             ] {
                 if let Err(error) = codec.SetValue(&id, &value) {
                     tracing::debug!(?id,%error,"hardware MFT optional tuning unsupported");
                 }
             }
-            let quality_value=VARIANT::from(u32::from(quality.unwrap_or(0)));
-            let quality_result=codec.SetValue(&CODECAPI_AVEncCommonQualityVsSpeed,&quality_value);
-            if quality.is_some() {
-                quality_result.map_err(|error|format!("NVIDIA 驱动不支持自定义画质/速度：{error}"))?;
+            let controls = [
+                ("GOP", CODECAPI_AVEncMPVGOPSize, gop, settings.fps * 2),
+                ("quality/speed", CODECAPI_AVEncCommonQualityVsSpeed, quality.map(u32::from), 0),
+            ];
+            for (label, id, requested, default) in controls {
+                if let Err(error) = codec.SetValue(&id, &VARIANT::from(requested.unwrap_or(default))) {
+                    if requested.is_some() {
+                        return Err(format!("MFT cannot set {label}={}: {error}", requested.unwrap_or(default)));
+                    }
+                    tracing::debug!(label, %error, "hardware MFT optional tuning unsupported");
+                }
             }
             let (rate_mode, peak_kbps) = match settings.rate_control {
                 super::RateControl::Cbr => (eAVEncCommonRateControlMode_CBR, None),
@@ -317,10 +331,14 @@ impl Driver {
             transform
                 .SetInputType(input[0], &input_type, 0)
                 .map_err(|e| format!("NV12 input type: {e}"))?;
-            if let Some(requested)=quality {
-                let actual=codec.GetValue(&CODECAPI_AVEncCommonQualityVsSpeed).map_err(reason)?;
-                let actual=windows::Win32::System::Variant::VariantToUInt32(&actual).map_err(reason)?;
-                if actual!=u32::from(requested) {return Err(format!("NVIDIA 驱动将画质/速度 {requested} 改为 {actual}，请选择支持的值"));}
+            for (label, id, requested, _) in controls {
+                if let Some(requested) = requested {
+                    let value = codec.GetValue(&id).map_err(|e| format!("MFT cannot verify {label}: {e}"))?;
+                    let actual = windows::Win32::System::Variant::VariantToUInt32(&value).map_err(reason)?;
+                    if actual != requested {
+                        return Err(format!("MFT changed {label} from {requested} to {actual}"));
+                    }
+                }
             }
             let events = transform.cast().map_err(reason)?;
             transform

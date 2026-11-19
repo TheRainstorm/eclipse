@@ -60,7 +60,7 @@ typedef struct {
     mfxExtBuffer *extensions[5];
     mfxFrameSurface1 surface;
     uint8_t *pixels,*bits; size_t pixel_size,bit_size;
-    uint32_t frame_order,peak_kbps; int vbr;
+    uint32_t frame_order,peak_kbps,requested_gop; int vbr,explicit_vbv;
 } Encoder;
 #ifdef _WIN32
 /* The codec-description filter forces the dispatcher to query every runtime's
@@ -207,10 +207,20 @@ static void set_bitrate(Encoder *e,uint32_t target){
     e->params.mfx.BRCParamMultiplier=(mfxU16)multiplier;
     e->params.mfx.TargetKbps=(mfxU16)((target+multiplier-1)/multiplier);
     e->params.mfx.MaxKbps=(mfxU16)((peak+multiplier-1)/multiplier);
-    /* Three frames of VBV budget, no lookahead or B-frame queue. */
-    uint32_t buffer=(peak*3+e->params.mfx.FrameInfo.FrameRateExtN*8-1)/(e->params.mfx.FrameInfo.FrameRateExtN*8);
-    e->params.mfx.BufferSizeInKB=(mfxU16)((buffer+multiplier-1)/multiplier);
-    e->params.mfx.InitialDelayInKB=0;
+}
+static uint32_t vbv_kb(const mfxVideoParam *p){
+    return (uint32_t)p->mfx.BufferSizeInKB*(p->mfx.BRCParamMultiplier?p->mfx.BRCParamMultiplier:1);
+}
+static int window_matches(const mfxVideoParam *p,uint32_t gop,uint32_t kb,char *detail,size_t capacity){
+    if(gop && p->mfx.GopPicSize!=gop){
+        snprintf(detail,capacity,"GOP %u frames requested, driver returned %u",gop,(unsigned)p->mfx.GopPicSize);
+        return 0;
+    }
+    if(kb && vbv_kb(p)!=kb){
+        snprintf(detail,capacity,"VBV %u kB requested, driver returned %u kB",kb,vbv_kb(p));
+        return 0;
+    }
+    return 1;
 }
 static int bitrate_matches(const Encoder *e,uint32_t target){
     uint32_t multiplier=e->params.mfx.BRCParamMultiplier?e->params.mfx.BRCParamMultiplier:1;
@@ -218,15 +228,17 @@ static int bitrate_matches(const Encoder *e,uint32_t target){
     uint64_t maximum=(uint64_t)e->params.mfx.MaxKbps*multiplier;
     return actual+multiplier>=target && actual<=target+multiplier && (!e->vbr || (maximum>=actual && maximum<=e->peak_kbps+multiplier));
 }
-int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint32_t fps,uint32_t target,uint32_t peak,int vbr,uint32_t target_usage,int low_power,
+int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint32_t fps,uint32_t target,uint32_t peak,int vbr,uint32_t target_usage,int low_power,uint32_t gop_frames,uint32_t vbv_frames,
     Encoder **out,char *error,size_t capacity){
-    if(!out || target_usage<1 || target_usage>7 || low_power<0 || low_power>2 || width<2 || height<2 || width>8192 || height>8192 || (width|height)&1 || !fps || fps>240 || target<64 || target>1000000 || peak<target || peak>2000000)
+    if(!out || target_usage<1 || target_usage>7 || low_power<0 || low_power>2 || gop_frames>65535 || vbv_frames>5 || width<2 || height<2 || width>8192 || height>8192 || (width|height)&1 || !fps || fps>240 || target<64 || target>1000000 || peak<target || peak>2000000)
         return failed(error,capacity,"invalid encoder settings",MFX_ERR_INVALID_VIDEO_PARAM);
     *out=NULL;Encoder *e=(Encoder *)calloc(1,sizeof(*e));if(!e)return failed(error,capacity,"allocation",MFX_ERR_MEMORY_ALLOC);
+    e->requested_gop=gop_frames;e->explicit_vbv=vbv_frames!=0;
     if(runtime_open(&e->rt,0,error,capacity)<0){eclipse_vpl_encoder_close(e);return -1;}
     mfxU32 id=codec==0?MFX_CODEC_AVC:codec==1?MFX_CODEC_HEVC:codec==2?MFX_CODEC_AV1:0;
     if(!id){eclipse_vpl_encoder_close(e);return failed(error,capacity,"unknown codec",MFX_ERR_UNSUPPORTED);}
     mfxStatus status=MFX_ERR_NOT_FOUND,last_error=MFX_ERR_NOT_FOUND;
+    char mismatch[128]={0};
     unsigned candidates=16;
 #ifdef _WIN32
     candidates+=e->rt.adapter_count;
@@ -243,7 +255,7 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
             if(codec==0)e->params.mfx.CodecLevel=MFX_LEVEL_AVC_52;
             e->params.mfx.TargetUsage=(mfxU16)target_usage;
             e->params.mfx.LowPower=tuning<2?MFX_CODINGOPTION_ON:low_power==2?MFX_CODINGOPTION_OFF:MFX_CODINGOPTION_UNKNOWN;
-            e->params.mfx.GopPicSize=(mfxU16)(fps*2);e->params.mfx.GopRefDist=1;
+            e->params.mfx.GopPicSize=(mfxU16)(gop_frames?gop_frames:fps*2);e->params.mfx.GopRefDist=1;
             e->params.mfx.GopOptFlag=MFX_GOP_CLOSED;e->params.mfx.NumRefFrame=1;
             e->params.mfx.RateControlMethod=vbr?MFX_RATECONTROL_VBR:MFX_RATECONTROL_CBR;
             e->params.mfx.FrameInfo.FourCC=MFX_FOURCC_NV12;
@@ -253,6 +265,12 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
             e->params.mfx.FrameInfo.PicStruct=MFX_PICSTRUCT_PROGRESSIVE;e->params.mfx.FrameInfo.ChromaFormat=MFX_CHROMAFORMAT_YUV420;
             e->params.mfx.FrameInfo.BitDepthLuma=8;e->params.mfx.FrameInfo.BitDepthChroma=8;
             e->vbr=vbr;e->peak_kbps=peak;set_bitrate(e,target);
+            /* VPL uses decimal KB in units of BRCParamMultiplier. Its Reset
+             * preserves the initialized capacity across live bitrate changes. */
+            uint32_t multiplier=e->params.mfx.BRCParamMultiplier;
+            uint32_t kb=((vbr?peak:target)*(vbv_frames?vbv_frames:3)+fps*8-1)/(fps*8);
+            e->params.mfx.BufferSizeInKB=(mfxU16)((kb+multiplier-1)/multiplier);
+            uint32_t requested_kb=vbv_frames?vbv_kb(&e->params):0;
             memset(&e->coding1,0,sizeof(e->coding1));e->coding1.Header.BufferId=MFX_EXTBUFF_CODING_OPTION;e->coding1.Header.BufferSz=sizeof(e->coding1);
             e->coding1.MaxDecFrameBuffering=1;e->coding1.NalHrdConformance=MFX_CODINGOPTION_OFF;
             memset(&e->coding2,0,sizeof(e->coding2));e->coding2.Header.BufferId=MFX_EXTBUFF_CODING_OPTION2;e->coding2.Header.BufferSz=sizeof(e->coding2);
@@ -271,6 +289,7 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
             status=e->rt.query(e->session,&e->params,&checked);
             if(status<0 || status==MFX_WRN_PARTIAL_ACCELERATION){last_error=status;continue;}
             if(checked.mfx.TargetUsage!=target_usage || (low_power==2 && checked.mfx.LowPower!=MFX_CODINGOPTION_OFF) || (tuning<2 && checked.mfx.LowPower!=MFX_CODINGOPTION_ON) || checked.mfx.CodecId!=id || checked.mfx.CodecProfile!=e->params.mfx.CodecProfile || checked.mfx.FrameInfo.FrameRateExtN!=fps || checked.mfx.FrameInfo.FrameRateExtD!=1 || checked.mfx.FrameInfo.CropW!=width || checked.mfx.FrameInfo.CropH!=height
+                || !window_matches(&checked,gop_frames,requested_kb,mismatch,sizeof(mismatch))
                 || checked.mfx.GopRefDist!=1 || checked.AsyncDepth!=1 || checked.mfx.RateControlMethod!=e->params.mfx.RateControlMethod){last_error=MFX_ERR_UNSUPPORTED;continue;}
             e->params=checked;status=e->rt.init(e->session,&e->params);
             if(status<0){last_error=status;continue;}
@@ -279,6 +298,7 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
             if(status<0 || e->params.mfx.TargetUsage!=target_usage || (low_power==2 && e->params.mfx.LowPower!=MFX_CODINGOPTION_OFF) || (tuning<2 && e->params.mfx.LowPower!=MFX_CODINGOPTION_ON) || e->params.mfx.CodecId!=id || e->params.mfx.FrameInfo.CropW!=width || e->params.mfx.FrameInfo.CropH!=height
                 || e->params.mfx.FrameInfo.FrameRateExtN!=fps || e->params.mfx.FrameInfo.FrameRateExtD!=1
                 || e->params.mfx.FrameInfo.CropX!=0 || e->params.mfx.FrameInfo.CropY!=0 || e->params.mfx.CodecProfile!=checked.mfx.CodecProfile
+                || !window_matches(&e->params,gop_frames,requested_kb,mismatch,sizeof(mismatch))
                 || e->params.mfx.GopRefDist!=1 || e->params.AsyncDepth!=1 || e->params.mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12
                 || e->params.IOPattern!=MFX_IOPATTERN_IN_SYSTEM_MEMORY || e->params.mfx.RateControlMethod!=(vbr?MFX_RATECONTROL_VBR:MFX_RATECONTROL_CBR) || !bitrate_matches(e,target)){
                 last_error=status<0?status:MFX_ERR_UNSUPPORTED;e->rt.encode_close(e->session);continue;
@@ -288,7 +308,7 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
         if(e->initialized)break;
         e->rt.close(e->session);e->session=NULL;
     }
-    if(!e->initialized){eclipse_vpl_encoder_close(e);return failed(error,capacity,"hardware codec/rate-control initialization",last_error);}
+    if(!e->initialized){eclipse_vpl_encoder_close(e);return failed(error,capacity,mismatch[0]?mismatch:"hardware codec/rate-control initialization",last_error);}
     e->surface.Info=e->params.mfx.FrameInfo;
     uint32_t pitch=e->surface.Info.Width,rows=e->surface.Info.Height;
     e->pixel_size=(size_t)pitch*rows*3/2;e->pixels=(uint8_t *)malloc(e->pixel_size);
@@ -333,10 +353,13 @@ int eclipse_vpl_encoder_bitrate(Encoder *e,uint32_t target,char *error,size_t ca
     uint32_t multiplier=e->params.mfx.BRCParamMultiplier?e->params.mfx.BRCParamMultiplier:1;
     e->params.mfx.BufferSizeInKB=(mfxU16)(((uint32_t)previous.mfx.BufferSizeInKB*old_multiplier+multiplier-1)/multiplier);
     e->params.mfx.InitialDelayInKB=(mfxU16)(((uint32_t)previous.mfx.InitialDelayInKB*old_multiplier+multiplier-1)/multiplier);
+    uint32_t retained_kb=vbv_kb(&e->params);
     mfxStatus status=e->rt.reset(e->session,&e->params);
     if(status<0 || status==MFX_WRN_PARTIAL_ACCELERATION){e->params=previous;e->initialized=-1;return failed(error,capacity,"bitrate reset",status);}
     status=e->rt.get(e->session,&e->params);
     if(status<0 || !bitrate_matches(e,target) || e->params.AsyncDepth!=1 || e->params.mfx.GopRefDist!=1
+        || (e->requested_gop && e->params.mfx.GopPicSize!=e->requested_gop)
+        || (e->explicit_vbv && vbv_kb(&e->params)!=retained_kb)
         || e->params.mfx.FrameInfo.CropW!=previous.mfx.FrameInfo.CropW || e->params.mfx.FrameInfo.CropH!=previous.mfx.FrameInfo.CropH
         || e->params.mfx.FrameInfo.FrameRateExtN!=previous.mfx.FrameInfo.FrameRateExtN || e->params.mfx.FrameInfo.FrameRateExtD!=previous.mfx.FrameInfo.FrameRateExtD
         || e->params.mfx.TargetUsage!=previous.mfx.TargetUsage || e->params.mfx.LowPower!=previous.mfx.LowPower

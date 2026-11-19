@@ -146,6 +146,16 @@ struct Session {
     void bitrate(unsigned kbps) {
         set(prop(AMF_VIDEO_ENCODER_TARGET_BITRATE,AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE,AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE),amf_int64(kbps)*1000);
     }
+    template<class T> void verify(const wchar_t* name, T requested) const {
+        T actual{};
+        AMF_RESULT result = encoder->GetProperty(name, &actual);
+        if (result != AMF_OK || actual != requested) {
+            std::wstring wide(name);
+            throw std::runtime_error("AMF " + std::string(wide.begin(), wide.end())
+                + " requested=" + std::to_string(requested) + " actual=" + std::to_string(actual)
+                + " read_result=" + std::to_string(result));
+        }
+    }
     void log_property(const char* label,const wchar_t* name)const {
         amf::AMFVariant value;
         auto result=encoder->GetProperty(name,static_cast<amf::AMFVariantStruct*>(&value));
@@ -194,8 +204,13 @@ static void check_amd(ID3D11Device* device) {
     result=context->QueryInterface(__uuidof(ID3D10Multithread),(void**)&multithread);context->Release();hr(result,"context threading");
     multithread->SetMultithreadProtected(TRUE);multithread->Release();
 }
+struct AmfTuning {
+    uint32_t gop_frames, queue_capacity;
+    int32_t adaptive_quantization;
+    uint32_t vbv_frames;
+};
 extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsigned fps,unsigned kbps,
-    unsigned peak,int vbr,int quality,int hdr,int default_adapter,void* native_device,char* error,size_t capacity) {
+    unsigned peak,int vbr,int quality,const AmfTuning* tuning,int hdr,int default_adapter,void* native_device,char* error,size_t capacity) {
     try {
         if((hdr&&codec==0)||codec<0||codec>2||quality<0||quality>2||width<2||height<2||!fps||!kbps)throw std::runtime_error("invalid AMF settings");
         auto s=std::make_unique<Session>();s->codec=codec;s->width=width;s->height=height;s->fps=fps;
@@ -249,11 +264,19 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
             s->set(AMF_VIDEO_ENCODER_PROFILE_LEVEL,amf_int64(52));
             s->set(AMF_VIDEO_ENCODER_B_PIC_PATTERN,amf_int64(0));
         }
-        // Zero is the documented AMF infinite-GOP value for these formats.
-        // Recovery and reference-invalidating reconfiguration still request
-        // independently decodable pictures through the shared encoder worker.
+        // Zero keeps the existing on-demand policy. Explicit IDR requests also
+        // work with a periodic GOP.
         const auto gop_name=s->prop(AMF_VIDEO_ENCODER_IDR_PERIOD,AMF_VIDEO_ENCODER_HEVC_GOP_SIZE,AMF_VIDEO_ENCODER_AV1_GOP_SIZE);
-        s->set(gop_name,amf_int64(0));
+        s->set(gop_name,amf_int64(tuning->gop_frames));
+        const auto vbv_name=s->prop(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE,AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE,AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE);
+        const auto vbv_bits=(amf_int64(peak)*1000*tuning->vbv_frames + fps-1)/fps;
+        if (tuning->vbv_frames) s->set(vbv_name,vbv_bits);
+        const auto aq_name=s->prop(AMF_VIDEO_ENCODER_ENABLE_VBAQ,AMF_VIDEO_ENCODER_HEVC_ENABLE_VBAQ,AMF_VIDEO_ENCODER_AV1_AQ_MODE);
+        const amf_int64 av1_aq=tuning->adaptive_quantization>0 ? AMF_VIDEO_ENCODER_AV1_AQ_MODE_CAQ : AMF_VIDEO_ENCODER_AV1_AQ_MODE_NONE;
+        if (tuning->adaptive_quantization>=0) {
+            if (codec==2) s->set(aq_name,av1_aq);
+            else s->set(aq_name,tuning->adaptive_quantization!=0);
+        }
         // A native timed output wait avoids a fixed application sleep per frame.
         // Opt-in experiment only. Keep the production wait policy as default.
         const char* timeout_env=std::getenv("UU_AMF_QUERY_TIMEOUT_MS");
@@ -263,26 +286,30 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
         auto timeout_result=s->encoder->SetProperty(timeout_name,query_timeout);
         // AV1-only experiment: capacity is not a count of queued frames. The
         // unset path retains the driver's policy without an extra property set.
-        const char* queue_env=codec==2?std::getenv("UU_AMF_AV1_INPUT_QUEUE_SIZE"):nullptr;
-        amf_int64 requested_queue=0;
+        const auto queue_name=s->prop(AMF_VIDEO_ENCODER_INPUT_QUEUE_SIZE,AMF_VIDEO_ENCODER_HEVC_INPUT_QUEUE_SIZE,AMF_VIDEO_ENCODER_AV1_INPUT_QUEUE_SIZE);
+        const char* queue_env=codec==2 && !tuning->queue_capacity ? std::getenv("UU_AMF_AV1_INPUT_QUEUE_SIZE"):nullptr;
+        amf_int64 requested_queue=tuning->queue_capacity;
         if(queue_env) {
             if(std::strcmp(queue_env,"1") && std::strcmp(queue_env,"16"))throw std::runtime_error("UU_AMF_AV1_INPUT_QUEUE_SIZE must be 1 or 16");
             requested_queue=!std::strcmp(queue_env,"1")?1:16;
-            auto result=s->encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_INPUT_QUEUE_SIZE,requested_queue);
+            auto result=s->encoder->SetProperty(queue_name,requested_queue);
             std::fprintf(stderr,"{\"event\":\"amf_av1_input_queue\",\"phase\":\"before_init\",\"requested\":%lld,\"set_result\":%d}\n",(long long)requested_queue,int(result));
             checked(result,"set experimental AV1 input queue capacity");
-        }
+        } else if (requested_queue) s->set(queue_name,requested_queue);
         checked(s->encoder->Init(hdr?amf::AMF_SURFACE_P010:amf::AMF_SURFACE_NV12,width,height),"initialize encoder");
         if(queue_env) {
             amf_int64 actual_queue=-1;
-            auto result=s->encoder->GetProperty(AMF_VIDEO_ENCODER_AV1_INPUT_QUEUE_SIZE,&actual_queue);
+            auto result=s->encoder->GetProperty(queue_name,&actual_queue);
             std::fprintf(stderr,"{\"event\":\"amf_av1_input_queue\",\"phase\":\"after_init\",\"requested\":%lld,\"get_result\":%d,\"actual\":%lld}\n",(long long)requested_queue,int(result),(long long)actual_queue);
             checked(result,"read experimental AV1 input queue capacity");
             if(actual_queue!=requested_queue)throw std::runtime_error("AMF changed the experimental AV1 input queue capacity");
+        } else if (requested_queue) s->verify(queue_name,requested_queue);
+        s->verify(gop_name,amf_int64(tuning->gop_frames));
+        if (tuning->vbv_frames) s->verify(vbv_name,vbv_bits);
+        if (tuning->adaptive_quantization>=0) {
+            if (codec==2) s->verify(aq_name,av1_aq);
+            else s->verify(aq_name,tuning->adaptive_quantization!=0);
         }
-        amf_int64 actual_gop=-1;
-        checked(s->encoder->GetProperty(gop_name,&actual_gop),"read GOP policy");
-        if(actual_gop!=0)throw std::runtime_error("AMF changed the requested on-demand keyframe policy");
         amf_int64 actual_quality=-1;
         checked(s->encoder->GetProperty(quality_name,&actual_quality),"read quality preset");
         if(actual_quality!=presets[codec][quality])throw std::runtime_error("AMF changed the requested quality preset");

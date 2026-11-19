@@ -19,11 +19,12 @@ use clap::{Parser, Subcommand};
 use uu_core::{Config, Role, Session, SessionState};
 
 #[derive(clap::ValueEnum,Clone,Copy,Debug)]
-enum NativeEncoder { Software, Auto, Hardware, Vaapi }
+enum NativeEncoder { Software, Auto, Hardware, Vaapi, Intel, Amd, Nvidia }
 impl NativeEncoder {
     fn preference(self)->uu_core::native::EncoderPreference {
         use uu_core::native::EncoderPreference as P;
-        match self {Self::Software=>P::Software,Self::Auto=>P::Auto,Self::Hardware=>P::Hardware,Self::Vaapi=>P::Vaapi}
+        match self {Self::Software=>P::Software,Self::Auto=>P::Auto,Self::Hardware=>P::Hardware,Self::Vaapi=>P::Vaapi,
+            Self::Intel=>P::Intel,Self::Amd=>P::Amd,Self::Nvidia=>P::Nvidia}
     }
 }
 
@@ -45,6 +46,14 @@ struct NativeVideoOptions {
     rate_control:NativeRate,
     #[arg(long)]
     peak_kbps:Option<u32>,
+    /// Hardware encoder settings, as the same JSON object used by host profiles.
+    #[arg(long, value_name="JSON", value_parser=parse_encoder_tuning)]
+    encoder_tuning: Option<uu_media::encoder::Tuning>,
+}
+fn parse_encoder_tuning(value: &str) -> Result<uu_media::encoder::Tuning, String> {
+    let tuning: uu_media::encoder::Tuning = serde_json::from_str(value).map_err(|e|e.to_string())?;
+    tuning.validate().map_err(|e|e.to_string())?;
+    Ok(tuning)
 }
 impl NativeVideoOptions {
     fn policy(&self,target:u32)->Result<(uu_core::native::VideoCodec,uu_media::encoder::RateControl)>{
@@ -63,6 +72,16 @@ fn synthetic_dimension(value: &str) -> std::result::Result<u32, String> {
 #[cfg(test)]
 mod native_encoder_options {
     use super::*;
+    #[test]
+    fn explicit_encoder_tuning_is_validated_at_the_cli_boundary() {
+        let base = ["eclipse-cli","native-host","--synthetic","--invitation-file","test.json","--encoder-tuning"];
+        let parsed=Cli::try_parse_from(base.into_iter().chain([r#"{"hardware_gop_seconds":10}"#])).unwrap();
+        let Command::NativeHost {video,..} = parsed.command else {panic!("expected host")};
+        assert_eq!(video.encoder_tuning.unwrap().hardware_gop_seconds,Some(10));
+        for bad in [r#"{"hardware_gop_seconds":0}"#,r#"{"unknown":true}"#] {
+            assert!(Cli::try_parse_from(base.into_iter().chain([bad])).is_err());
+        }
+    }
     #[test]
     fn synthetic_dimensions_are_explicit_bounded_and_do_not_affect_desktop_capture() {
         let base=["uu","native-host","--invitation-file","generated.eclipse-invite.json"];
@@ -288,7 +307,7 @@ async fn main() -> Result<()> {
         Command::NativeHost { video,bind, invitation_file, monitor, all_monitors, synthetic, synthetic_width, synthetic_height, allow_input, audio, synthetic_audio, fps, bitrate_kbps, encoder, pairing_seconds, max_seconds, client_quality } => {
             let source=if all_monitors {uu_capture::CaptureSource::Desktop{initial_monitor:None}}else if synthetic {uu_capture::CaptureSource::Synthetic{width:synthetic_width,height:synthetic_height,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
             let (codec,rate_control)=video.policy(bitrate_kbps)?;
-            native_cli::host(uu_core::native::HostConfig{encoder_tuning:Default::default(),session:None,video_policy:client_quality.then(||uu_core::native_quality::Policy{codecs:vec![codec],preferred_codec:Some(codec)}),codec,rate_control,bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,encoder:encoder.preference(),session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
+            native_cli::host(uu_core::native::HostConfig{encoder_tuning:video.encoder_tuning.unwrap_or_default(),session:None,video_policy:client_quality.then(||uu_core::native_quality::Policy{codecs:vec![codec],preferred_codec:Some(codec)}),codec,rate_control,bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,encoder:encoder.preference(),session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
         },
         Command::NativeProbe {codec,invitation_file,frames,timeout_seconds,report,audio_loss_every,progress_seconds,max_frame_gap_seconds} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0),progress_seconds,max_frame_gap_seconds,codec.map(NativeCodec::codec)).await,
         Command::Plugins{id,enabled}=> {

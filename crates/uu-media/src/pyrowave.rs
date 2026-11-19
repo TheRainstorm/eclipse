@@ -669,7 +669,7 @@ mod tests {
         use crate::encoder::{Settings,Tuning,AmdQuality,LowPower,Preference,RateControl};
         let settings=Settings{codec:VideoCodec::Pyrowave,width:1920,height:1080,fps:165,bitrate_kbps:200000,
             preference:Preference::Hardware,rate_control:RateControl::Cbr,hdr:false,source_hdr:None,
-            tuning:Tuning{amd_quality:AmdQuality::Balanced,intel_target_usage:4,intel_low_power:LowPower::Off,nvidia_quality_vs_speed:Some(75)}};
+            tuning:Tuning{amd_quality:AmdQuality::Balanced,intel_target_usage:4,intel_low_power:LowPower::Off,nvidia_quality_vs_speed:Some(75),..Default::default()}};
         validate_encoder_profile(&settings).unwrap();
         assert!(validate_encoder_profile(&Settings{hdr:true,..settings}).is_err());
         assert!(validate_encoder_profile(&Settings{rate_control:RateControl::Vbr{peak_kbps:400000},..settings}).is_err());

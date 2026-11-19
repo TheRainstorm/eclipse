@@ -59,7 +59,7 @@ impl Driver {
         for path in nodes {
             let id=path.file_name().and_then(|name|std::fs::read_to_string(std::path::Path::new("/sys/class/drm").join(name).join("device/vendor")).ok());
             let vendor=id.and_then(|id|u16::from_str_radix(id.trim().trim_start_matches("0x"),16).ok());
-            if (vendor==Some(0x1002) && settings.tuning.amd_quality!=super::AmdQuality::Speed)
+            if (vendor==Some(0x1002) && settings.tuning.custom_amd())
                 || (vendor==Some(0x10de) && settings.tuning.nvidia_quality_vs_speed.is_some())
                 || (vendor==Some(0x8086) && settings.tuning.custom_intel()) {
                 failures.push("当前 VA-API 后端不支持所选厂商调参；Intel 请用 QSV，AMD/NVIDIA 自定义参数需要 Windows 后端".into());
@@ -111,7 +111,7 @@ impl Driver {
             profile: Profile::Baseline,
             level: Level::L5_2,
             pred_structure: PredictionStructure::LowDelay {
-                limit: (settings.fps * 2) as u16,
+                limit: settings.tuning.gop_frames(settings.fps).unwrap_or(settings.fps * 2) as u16,
             },
             initial_tunings: tunings(settings),
         };

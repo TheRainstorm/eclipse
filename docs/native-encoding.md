@@ -2,9 +2,27 @@
 
 此接口用于 Eclipse 原生主机，不影响 UU 兼容模式远端选择的编码器。Linux 使用 VA-API；Windows 自动模式在默认 AMD 适配器上优先使用原生 AMF，其它平台硬件使用显卡驱动注册的 Media Foundation 编码器；显式 Intel 使用 VPL。硬件格式支持 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit，以实际驱动初始化结果为准。
 
-“应用设置 → 服务端设置 → 编码”默认自动选择硬件，也可选择“硬件编码（必需）”或软件编码。旧邀请文件共享入口和 CLI 继续保留软件默认值；CLI 使用 `native-host --encoder software|auto|hardware|vaapi`，`uu lan host` 使用相同选项。`hardware` 要求当前平台硬编成功，`vaapi` 为 Linux 专用选项。
+在被控端打开服务端设置的编码页即可选择编码器。图形界面默认自动选择硬件。命令行的 `native-host`、`lan host` 和 `internet host` 默认使用软件编码，支持 `--encoder software|auto|hardware|vaapi|intel|amd|nvidia`。`hardware` 要求硬编成功，`vaapi` 用于 Linux。
 
 H.264 CBR 自动模式在硬件初始化失败时可回退 OpenH264，CPU 输入运行失败时从新的 IDR 参考链继续；GPU 输入运行失败会明确报错，避免将缺少 CPU 像素的纹理交给软件编码器。界面报告实际后端；诊断日志保存具体硬件失败原因。必须硬件模式直接报错，不用软件成功掩盖硬件失败。非法码率在调用驱动前被拒绝，当前编码器保留。
+
+## 按硬件调节串流延迟
+
+先在串流诊断中查看实际编码后端，再在被控端修改对应选项。保存服务端设置并按界面提示重启共享后，新连接使用所选参数。客户端仍可选择编码格式、分辨率、帧率和码率。
+
+| 设置 | 适用路径 | 用途与默认行为 |
+| --- | --- | --- |
+| 硬件关键帧间隔，1–60 秒 | MFT、oneVPL、AMF、VA-API | 较长间隔减少周期性大帧，较短间隔提供更多独立恢复点。默认 MFT、oneVPL 和 VA-API 为 2 秒，AMF 按需发关键帧。首帧和丢包恢复可提前请求关键帧。 |
+| 画质 / 速度，0–100 | Windows Intel MFT、NVIDIA MFT | 0 偏向速度，100 偏向画质。默认尽量申请 0。显式设置会核验驱动回读。Intel 在自动或硬件模式下可以保留 D3D11 输入。 |
+| Target Usage、低功耗引擎、初始 VBV | Intel oneVPL | Target Usage 为 1–7，7 偏向速度。显式 Intel 或修改 oneVPL 参数时使用该后端。默认尝试固定功能引擎和 3 帧 VBV。初始 VBV 可设 1–5 帧，驱动可能有更高的下限。该路径目前经系统内存输入。 |
+| 质量预设、输入队列容量、初始 VBV | Windows AMD AMF | 支持速度、均衡、画质。输入队列可设 1–16 帧，VBV 可设 1–5 帧。两者默认交给驱动。队列容量表示驱动允许接收的上限，实际在途帧数取决于提交和输出。 |
+| 空间自适应量化 | Windows AMD AMF | 支持自动、启用、停用。H.264 和 HEVC 使用 VBAQ，AV1 使用 CAQ。它会改变同一帧内的码率分配。 |
+
+VBV 约束编码器允许的码流突发。以 48 Mbps、60 FPS 的 CBR 为例，一帧预算是 800,000 位，约 100 kB。VBR 按初始峰值计算，oneVPL 按驱动的 kB 单位向上取整。同一编码会话中调整目标码率会保留初始缓冲容量。较小的预算可能降低复杂场景或关键帧的画质。MFT 的缓冲属性随编码格式使用不同单位，因此界面只在 oneVPL 和 AMF 下提供这项设置。[微软缓冲属性](https://learn.microsoft.com/en-us/windows/win32/codecapi/avenccommonbuffersize-property) · [AMD 编码属性对照](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/wiki/Recommended%20FFmpeg%20Encoder%20Settings)
+
+Foundation Sunshine 的 QSV 路径采用单帧异步深度、低延迟码率控制和快速预设。其 NVIDIA 原生接口还支持 P1–P7、空间 AQ 和多遍编码，软件路径提供各自编码库的预设。Eclipse 的 NVIDIA 路径通过 MFT 调节，软件路径使用 OpenH264。涉及后续帧的 lookahead 和 B 帧会改变当前逐输入帧返回编码结果的约定。H.264 CABAC 还需协商 Main 或 High Profile，当前硬编会话使用 Baseline 系列。[Foundation Sunshine 编码配置](https://github.com/AlkaidLab/foundation-sunshine/blob/07d8ae13c658128d267c357196a610fb8b2667f3/src/video.cpp) · [原生 AMF](https://github.com/AlkaidLab/foundation-sunshine/blob/07d8ae13c658128d267c357196a610fb8b2667f3/src/amf/amf_d3d11.cpp) · [Intel VPL 编码参数](https://intel.github.io/libvpl/latest/API_ref/VPL_structs_encode.html) · [微软画质与速度属性](https://learn.microsoft.com/en-us/windows/win32/codecapi/avenccommonqualityvsspeed-property)
+
+三个主机 CLI 入口均支持 `--encoder-tuning`，参数采用与服务端配置相同的 JSON 对象。例如在 Bash 中使用 `--encoder hardware --encoder-tuning '{"hardware_gop_seconds":10,"intel_mf_quality_vs_speed":0}'`。手动还原时关闭对应开关，即可沿用该后端的默认策略。
 
 ## Windows Media Foundation
 

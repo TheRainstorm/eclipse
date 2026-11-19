@@ -160,7 +160,7 @@ pub async fn run(command: Command, dir: PathBuf) -> Result<()> {
             } else {
                 native::CaptureSource::Primary
             };
-            host(lan::Config {encoder_tuning:Default::default(),video_policy:None,codec,rate_control,
+            host(lan::Config {encoder_tuning:video.encoder_tuning.unwrap_or_default(),video_policy:None,codec,rate_control,
                 name,
                 bind,
                 discovery_bind,
