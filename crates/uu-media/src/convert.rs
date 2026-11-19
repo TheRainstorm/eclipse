@@ -320,7 +320,7 @@ pub fn i420_to_rgba(src: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// frame.
 pub fn frame_to_rgba(frame: &RawFrame) -> Vec<u8> {
     match frame.format {
-        PixelFormat::P010|PixelFormat::ScRgb16=>hdr_frame_to_rgba(frame,crate::color::YuvColor::Limited2020Pq,203.),
+        PixelFormat::P010|PixelFormat::ScRgb16=>hdr_frame_to_rgba(frame,crate::color::YuvColor::Limited2020Pq,crate::hdr::DEFAULT_SDR_WHITE_NITS),
         PixelFormat::I420 => {
             i420_to_rgba_strided(&frame.data, frame.width, frame.height, frame.stride)
         }
@@ -633,7 +633,18 @@ mod conversion_equivalence_tests {
 
 /// Convert with the stream's range/matrix, preserving the vector upload path.
 pub fn frame_to_rgba_with_color(frame: &RawFrame, color: crate::color::YuvColor) -> Vec<u8> {
-    if matches!(frame.format,PixelFormat::P010|PixelFormat::ScRgb16) {return hdr_frame_to_rgba(frame,color,203.);}
+    frame_to_rgba_with_white(frame, color, crate::hdr::DEFAULT_SDR_WHITE_NITS)
+}
+
+/// Convert for SDR output using the stream's reference white for HDR pixels.
+pub fn frame_to_rgba_with_white(
+    frame: &RawFrame,
+    color: crate::color::YuvColor,
+    source_white_nits: f32,
+) -> Vec<u8> {
+    if matches!(frame.format, PixelFormat::P010 | PixelFormat::ScRgb16) {
+        return hdr_frame_to_rgba(frame, color, source_white_nits);
+    }
     if color == crate::color::YuvColor::Full601 || frame.format == PixelFormat::Bgra8 {
         return frame_to_rgba(frame);
     }
@@ -756,6 +767,20 @@ fn half_to_float(value:u16)->f32 {
 
 #[cfg(test)] mod hdr_output_tests {
     use super::*;
+    #[test]
+    fn scrgb_cpu_fallback_applies_the_negotiated_white() {
+        use crate::color::YuvColor;
+        // IEEE binary16 1.0 = 80 nits in scRGB.
+        let frame = RawFrame {
+            width: 2, height: 2, stride: 16, format: PixelFormat::ScRgb16,
+            data: 0x3c00u16.to_le_bytes().repeat(16).into(), pts: crate::Timestamp(0),
+            gpu: false, dma_buf: None, d3d11: None,
+        };
+        for (white, expected) in [(203.0, 168u8), (240.0, 156)] {
+            let pixels = frame_to_rgba_with_white(&frame, YuvColor::Limited2020Pq, white);
+            assert_eq!(pixels, [expected, expected, expected, 255].repeat(4));
+        }
+    }
     #[test] fn p010_snapshot_uses_absolute_pq_and_range_before_sdr_mapping() {
         let mut frame=RawFrame{width:4,height:2,format:PixelFormat::P010,stride:12,data:vec![0;36].into(),pts:crate::Timestamp(0),gpu:false,dma_buf:None,d3d11:None};
         for (nits,expected) in [(0.,0u8),(203.,244u8)] {

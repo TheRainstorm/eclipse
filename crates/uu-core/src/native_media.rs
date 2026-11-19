@@ -560,6 +560,10 @@ impl NativePeer {
                         // decoder. Ignore duplicate/unexpected track callbacks.
                         let decoder = prepared.lock().unwrap().take();
                         let Some(decoder) = decoder else { return; };
+                        let frames = match *stats.native_hdr_response.lock().unwrap() {
+                            Some(hdr) => frames.with_source_white(hdr.metadata.sdr_white_nits),
+                            None => frames,
+                        };
                         let task=tokio::spawn(crate::media::receive_video(
                             pc,
                             track,

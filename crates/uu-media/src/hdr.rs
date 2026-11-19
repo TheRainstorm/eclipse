@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[path="present_observation.rs"]
 mod observation;
 pub use observation::RawPresentObservation;
+pub const DEFAULT_SDR_WHITE_NITS: f32 = 203.0;
+
 /// A busy swap chain is retried after returning to the native event loop.
 /// It is neither an unchanged composition nor a successful display receipt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +28,7 @@ impl Default for Metadata {
             min_nits: 0.,
             max_nits: 1000.,
             max_full_frame_nits: 203.,
-            sdr_white_nits: 203.,
+            sdr_white_nits: DEFAULT_SDR_WHITE_NITS,
         }
     }
 }

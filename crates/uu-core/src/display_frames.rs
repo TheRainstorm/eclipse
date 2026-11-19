@@ -45,33 +45,51 @@ pub struct DecodedObservation {
 impl DisplayImage {
     fn track(&self) -> u32 { match self { Self::Rgba(f) => f.0, Self::Decoded(track, ..) => *track } }
     pub fn into_rgba(self) -> DisplayFrame {
+        self.into_rgba_with_white(hdr::DEFAULT_SDR_WHITE_NITS)
+    }
+    pub fn into_rgba_with_white(self, source_white_nits: f32) -> DisplayFrame {
         match self {
             Self::Rgba(frame) => frame,
-            Self::Decoded(track, frame, color) => (track, frame.width, frame.height, uu_media::convert::frame_to_rgba_with_color(&frame, color)),
+            Self::Decoded(track, frame, color) => {
+                let pixels = uu_media::convert::frame_to_rgba_with_white(&frame, color, source_white_nits);
+                (track, frame.width, frame.height, pixels)
+            }
         }
+    }
+}
+/// Color metadata and observation travel with the exact image selected from the mailbox.
+pub struct FrameDelivery {
+    pub image: DisplayImage,
+    pub published: std::time::Instant,
+    pub observation: Option<DecodedObservation>,
+    pub source_white_nits: f32,
+}
+impl FrameDelivery {
+    pub fn into_rgba(self) -> DisplayFrame {
+        self.image.into_rgba_with_white(self.source_white_nits)
     }
 }
 #[derive(Default)]
 struct Mailbox {
     generation: u64,
-    images: BTreeMap<u32, (DisplayImage, std::time::Instant, Option<DecodedObservation>)>,
+    images: BTreeMap<u32, FrameDelivery>,
     waits: BTreeMap<u32, std::collections::VecDeque<(std::time::Instant, f32)>>,
     // Per-track lifetime totals: published, replaced before delivery, delivered.
     counts: BTreeMap<u32, [u64; 3]>,
 }
 impl Mailbox {
-    fn pop_first(&mut self) -> Option<(DisplayImage, std::time::Instant, Option<DecodedObservation>)> {
+    fn pop_first(&mut self) -> Option<FrameDelivery> {
         let track = *self.images.keys().next()?;
         self.pop_track(track)
     }
-    fn pop_track(&mut self, track: u32) -> Option<(DisplayImage, std::time::Instant, Option<DecodedObservation>)> {
-        let (frame, published, observation) = self.images.remove(&track)?;
+    fn pop_track(&mut self, track: u32) -> Option<FrameDelivery> {
+        let delivery = self.images.remove(&track)?;
         let now = std::time::Instant::now();
         let waits = self.waits.entry(track).or_default();
-        waits.push_back((now, now.duration_since(published).as_secs_f32() * 1000.0));
+        waits.push_back((now, now.duration_since(delivery.published).as_secs_f32() * 1000.0));
         while waits.len() > 120 { waits.pop_front(); }
         self.counts.entry(track).or_default()[2] += 1;
-        Some((frame, published, observation))
+        Some(delivery)
     }
 }
 type Pending = Arc<Mutex<Mailbox>>;
@@ -79,6 +97,7 @@ type Waker = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
 #[derive(Clone)]
 pub struct FrameSender {
+    source_white_nits: f32,
     generation: u64,
     pending: Pending,
     wake: mpsc::SyncSender<()>,
@@ -121,7 +140,7 @@ impl FrameLatch {
         {
             return None;
         }
-        let (DisplayImage::Decoded(track, next, next_color), _, Some(next_owner)) =
+        let FrameDelivery { image: DisplayImage::Decoded(track, next, next_color), observation: Some(next_owner), .. } =
             mailbox.images.get(&owner.track)?
         else {
             return None;
@@ -145,8 +164,9 @@ impl FrameLatch {
         if !compatible(next) {
             return None;
         }
-        let (image, _, observed) = mailbox.pop_track(owner.track)?;
-        let observation = observed?;
+        let delivery = mailbox.pop_track(owner.track)?;
+        let image = delivery.image;
+        let observation = delivery.observation?;
         let taken_at = observation.receive.map(|_| std::time::Instant::now());
         Some(LatchedFrame {
             image,
@@ -163,6 +183,7 @@ pub fn channel() -> (FrameSender, FrameReceiver) {
     let planar = Arc::new(std::sync::atomic::AtomicBool::new(false));
     (
         FrameSender {
+            source_white_nits: hdr::DEFAULT_SDR_WHITE_NITS,
             generation: 0,
             pending: pending.clone(),
             wake: tx,
@@ -183,9 +204,14 @@ impl FrameSender {
         }
         mailbox.images.clear();
         mailbox.waits.clear();
-        Self { generation: mailbox.generation, ..self.clone() }
+        Self { generation: mailbox.generation, source_white_nits: hdr::DEFAULT_SDR_WHITE_NITS, ..self.clone() }
     }
     pub fn generation(&self) -> u64 { self.generation }
+    /// The authenticated answer belongs to this media source alone.
+    pub(crate) fn with_source_white(mut self, white_nits: f32) -> Self {
+        self.source_white_nits = white_nits;
+        self
+    }
 
     pub fn send(&self, frame: DisplayFrame) -> Result<(), mpsc::SendError<()>> {
         self.send_image(DisplayImage::Rgba(frame))
@@ -208,7 +234,7 @@ impl FrameSender {
         if decoded {
             self.send_delivery_timed(image,observation)
         } else {
-            self.send_delivery_timed(DisplayImage::Rgba(image.into_rgba()),observation)
+            self.send_delivery_timed(DisplayImage::Rgba(image.into_rgba_with_white(self.source_white_nits)),observation)
         }
     }
     fn send_image(&self, frame: DisplayImage) -> Result<(), mpsc::SendError<()>> {
@@ -222,7 +248,7 @@ impl FrameSender {
             let mut mailbox = self.pending.lock().unwrap();
             if mailbox.generation != self.generation { return Ok(None); }
             let track = frame.track();
-            let replaced = mailbox.images.insert(track, (frame, std::time::Instant::now(), observation));
+            let replaced = mailbox.images.insert(track, FrameDelivery { image: frame, published: std::time::Instant::now(), observation, source_white_nits: self.source_white_nits });
             let counts = mailbox.counts.entry(track).or_default();
             counts[0] += 1;
             counts[1] += u64::from(replaced.is_some());
@@ -268,7 +294,7 @@ impl FrameReceiver {
     /// Opt in before starting a GUI receiver. CLI consumers retain RGBA.
     pub fn enable_planar(&self) { self.planar.store(true, std::sync::atomic::Ordering::Release); }
     pub fn try_recv(&mut self) -> Result<DisplayFrame, mpsc::TryRecvError> {
-        self.try_recv_image().map(DisplayImage::into_rgba)
+        self.try_recv_delivery().map(FrameDelivery::into_rgba)
     }
     pub fn try_recv_image(&mut self) -> Result<DisplayImage, mpsc::TryRecvError> {
         self.try_recv_timed_image().map(|(image, _)| image)
@@ -276,12 +302,12 @@ impl FrameReceiver {
     /// Publication time of this exact mailbox image, on the local monotonic
     /// clock. It is neither the host capture time nor GPU/display completion.
     pub fn try_recv_timed_image(&mut self) -> Result<(DisplayImage, std::time::Instant), mpsc::TryRecvError> {
-        self.try_recv_delivery().map(|(image,published,_)|(image,published))
+        self.try_recv_delivery().map(|d| (d.image, d.published))
     }
     pub fn try_recv_observed_image(&mut self)->Result<(DisplayImage,Option<DecodedObservation>),mpsc::TryRecvError> {
-        self.try_recv_delivery().map(|(image,_,observation)|(image,observation))
+        self.try_recv_delivery().map(|d| (d.image, d.observation))
     }
-    fn try_recv_delivery(&mut self)->Result<(DisplayImage,std::time::Instant,Option<DecodedObservation>),mpsc::TryRecvError> {
+    pub fn try_recv_delivery(&mut self) -> Result<FrameDelivery, mpsc::TryRecvError> {
         loop {
             if let Some(frame) = self.pending.lock().unwrap().pop_first() {
                 return Ok(frame);
@@ -291,8 +317,9 @@ impl FrameReceiver {
     }
     pub fn blocking_recv(&mut self) -> Option<DisplayFrame> {
         loop {
-            if let Some((frame, _, _)) = self.pending.lock().unwrap().pop_first() {
-                return Some(frame.into_rgba());
+            let delivery = self.pending.lock().unwrap().pop_first();
+            if let Some(delivery) = delivery {
+                return Some(delivery.into_rgba());
             }
             self.wake.recv().ok()?;
         }
@@ -303,6 +330,33 @@ mod tests {
     use super::*;
     fn observed(client:&crate::video_e2e::Client,epoch:u64,pts:u64)->DecodedObservation {
         DecodedObservation{media_epoch:epoch,track:0,pts_us:pts,source:None,token:client.frame_for_pts(epoch,0,pts),receive:None}
+    }
+    #[test]
+    fn hdr_white_is_owned_by_the_delivered_image_across_cpu_planar_and_renewal() {
+        let p010 = || RawFrame {
+            width: 2, height: 2, stride: 4, pts: Timestamp(0), format: PixelFormat::P010,
+            data: [545u16, 545, 545, 545, 512, 512].into_iter()
+                .flat_map(|sample| (sample << 6).to_le_bytes()).collect::<Vec<_>>().into(),
+            gpu: false, d3d11: None, dma_buf: None,
+        };
+        for planar in [false, true] {
+            let (base, mut rx) = channel();
+            if planar { rx.enable_planar(); }
+            let tx = base.clone().with_source_white(240.0);
+            tx.send_decoded(0, p010(), YuvColor::Limited2020Pq).unwrap();
+            let held = rx.try_recv_delivery().unwrap();
+            assert_eq!(held.source_white_nits, 240.0);
+            assert_eq!(matches!(held.image, DisplayImage::Decoded(..)), planar);
+            let renewed = tx.renew();
+            tx.send_decoded(0, p010(), YuvColor::Limited2020Pq).unwrap();
+            assert!(rx.try_recv().is_err());
+            renewed.send_decoded(0, p010(), YuvColor::Limited2020Pq).unwrap();
+            assert_eq!(rx.try_recv().unwrap().3, [223, 223, 223, 255].repeat(4));
+            assert_eq!(held.into_rgba().3, [207, 207, 207, 255].repeat(4));
+            let current = renewed.with_source_white(240.0);
+            current.send_decoded(0, p010(), YuvColor::Limited2020Pq).unwrap();
+            assert_eq!(rx.blocking_recv().unwrap().3, [207, 207, 207, 255].repeat(4));
+        }
     }
     fn decoded(pts:u64,value:u8)->RawFrame {RawFrame::new_i420(2,2,vec![value;6],Timestamp(pts))}
     fn owned(pts: u64, source: DecoderSource) -> DecodedObservation {
@@ -498,10 +552,10 @@ mod tests {
         let (tx, mut rx) = channel();
         assert_eq!(rx.delivery_wait_ms(0), None);
         tx.send((0, 1, 1, vec![])).unwrap();
-        tx.pending.lock().unwrap().images.get_mut(&0).unwrap().1 -= std::time::Duration::from_secs(1);
+        tx.pending.lock().unwrap().images.get_mut(&0).unwrap().published -= std::time::Duration::from_secs(1);
         let replaced_at = std::time::Instant::now();
         tx.send((0, 2, 1, vec![])).unwrap();
-        assert!(tx.pending.lock().unwrap().images.get(&0).unwrap().1 >= replaced_at);
+        assert!(tx.pending.lock().unwrap().images.get(&0).unwrap().published >= replaced_at);
         // Timing must accompany the delivered replacement, not an earlier wake.
         let (image, published) = rx.try_recv_timed_image().unwrap();
         assert!(published >= replaced_at);

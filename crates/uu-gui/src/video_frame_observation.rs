@@ -236,6 +236,30 @@ mod tests {
         assert!(observation.current_identity().is_none());
     }
     #[test]
+    fn cpu_hdr_fallback_uses_per_window_source_white_from_the_first_frame() {
+        use uu_core::display_frames::{DisplayImage, PixelFormat, RawFrame, Timestamp, YuvColor};
+        let image = || DisplayImage::Decoded(0, RawFrame {
+            width: 2, height: 2, stride: 4, pts: Timestamp(0), format: PixelFormat::P010,
+            data: [545u16, 545, 545, 545, 512, 512].into_iter()
+                .flat_map(|sample| (sample << 6).to_le_bytes()).collect::<Vec<_>>().into(),
+            gpu: false, dma_buf: None, d3d11: None,
+        }, YuvColor::Limited2020Pq);
+        let ctx = eframe::egui::Context::default();
+        let stats = Arc::new(MediaStats::default());
+        let mut first = super::super::VideoTexture::new_observed(&ctx, None, image(), &stats, None, 240.0);
+        let second = super::super::VideoTexture::new(&ctx, None, image());
+        let check = |texture: &super::super::VideoTexture, gray| {
+            let pixels = texture.snapshot().unwrap().pixels;
+            assert_eq!(pixels.len(), 4);
+            assert!(pixels.iter().all(|p| p.to_array() == [gray, gray, gray, 255]));
+        };
+        check(&first, 207);
+        check(&second, 223);
+        first.set_observed(&ctx, image(), &stats, None, 203.0);
+        check(&first, 223);
+        check(&second, 223);
+    }
+    #[test]
     fn converted_rgba_identity_stays_with_its_texture_and_legacy_set_clears_it() {
         let stats = Arc::new(MediaStats::default());
         let ctx = eframe::egui::Context::default();
@@ -249,7 +273,7 @@ mod tests {
         };
         let image = || DisplayImage::Rgba((0, 2, 2, vec![0; 16]));
         let mut texture =
-            super::super::VideoTexture::new_observed(&ctx, None, image(), &stats, Some(frozen));
+            super::super::VideoTexture::new_observed(&ctx, None, image(), &stats, Some(frozen), 203.0);
         assert_eq!(
             texture.fallback_frame_identity().unwrap().actual_pts_us,
             123

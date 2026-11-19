@@ -685,16 +685,17 @@ impl App {
             self.hud_cache.invalidate();
         }
         let mut frames = Vec::new();
-        while let Ok(f) = h.frames.try_recv_observed_image() {
-            if f.1.is_some_and(|frozen|frozen.receive.is_some()) {
-                if let Some(observation)=video_texture::frame_observation::FrameObservation::new(&h.stats,&f.0,f.1) {
+        while let Ok(f) = h.frames.try_recv_delivery() {
+            if f.observation.is_some_and(|frozen|frozen.receive.is_some()) {
+                if let Some(observation)=video_texture::frame_observation::FrameObservation::new(&h.stats,&f.image,f.observation) {
                     observation.trace(uu_core::pipeline_trace::Stage::MailboxTake);
                 }
             }
             frames.push(f);
         }
         let mut arrived=Vec::new();
-        for (image,observation) in frames {
+        for delivery in frames {
+            let uu_core::display_frames::FrameDelivery {image, observation, source_white_nits, ..} = delivery;
             let idx=match &image {uu_core::display_frames::DisplayImage::Rgba(f)=>f.0,uu_core::display_frames::DisplayImage::Decoded(track,..)=>*track};
             if !self.recorded_connection {
                 if let (Some(sessions::ConnectionTarget::NativeProfile{id,..}),Some(store))=(self.stream_target.as_ref().map(|t|t.connection.base()),&self.workspace.store) {
@@ -702,20 +703,18 @@ impl App {
                 }
                 self.recorded_connection=true;
             }
-            let source_white=h.stats.native_hdr_response.lock().unwrap().as_ref().map_or(203.,|r|r.metadata.sdr_white_nits);
             arrived.push(idx);
             match self.textures.get_mut(&idx) {
-                Some(t) => t.set_observed(ctx, image,&h.stats,observation),
+                Some(t) => t.set_observed(ctx, image,&h.stats,observation,source_white_nits),
                 None => {
                     if native && (self.status.starts_with("正在")||["Establishing", "Connecting", "Preparing", "Verifying", "Waiting"].iter().any(|p|self.status.starts_with(p))) {self.status=uu_i18n::text("原生串流已连接").into();}
                     h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"backend":h.stats.backend(),"video_size":h.stats.res()}));
-                    let texture = video_texture::VideoTexture::new_observed(ctx, self.video_gl.as_ref(), image,&h.stats,observation);
+                    let texture = video_texture::VideoTexture::new_observed(ctx, self.video_gl.as_ref(), image,&h.stats,observation,source_white_nits);
                     #[cfg(windows)]
                     if video_texture::late_latch_enabled() { texture.set_frame_latch(h.frames.latch()); }
                     self.textures.insert(idx, texture);
                 }
             }
-            if let Some(texture)=self.textures.get_mut(&idx){texture.set_source_white(source_white);}
 
             self.unpresented.insert(idx);
         }

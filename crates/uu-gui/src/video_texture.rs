@@ -84,13 +84,13 @@ pub fn enable_gpu_video(gl: &glow::Context) {
 }
 impl VideoTexture {
     pub fn new(ctx: &egui::Context, gl: Option<&Arc<glow::Context>>, image: DisplayImage) -> Self {
-        Self::new_with_observation(ctx,gl,image,None)
+        Self::new_with_observation(ctx,gl,image,None,uu_core::display_frames::hdr::DEFAULT_SDR_WHITE_NITS)
     }
-    pub fn new_observed(ctx:&egui::Context,gl:Option<&Arc<glow::Context>>,image:DisplayImage,stats:&Arc<uu_core::media::MediaStats>,frozen:Option<uu_core::display_frames::DecodedObservation>)->Self {
+    pub fn new_observed(ctx:&egui::Context,gl:Option<&Arc<glow::Context>>,image:DisplayImage,stats:&Arc<uu_core::media::MediaStats>,frozen:Option<uu_core::display_frames::DecodedObservation>,source_white_nits:f32)->Self {
         let observation=FrameObservation::new(stats,&image,frozen);
-        Self::new_with_observation(ctx,gl,image,observation)
+        Self::new_with_observation(ctx,gl,image,observation,source_white_nits)
     }
-    fn new_with_observation(ctx:&egui::Context,gl:Option<&Arc<glow::Context>>,image:DisplayImage,observation:Option<FrameObservation>)->Self {
+    fn new_with_observation(ctx:&egui::Context,gl:Option<&Arc<glow::Context>>,image:DisplayImage,observation:Option<FrameObservation>,source_white_nits:f32)->Self {
         let gpu = gl.and_then(|gl| match unsafe { Planes::new(gl.clone()) } {
             Ok(p) => Some(Arc::new(Mutex::new(p))),
             Err(e) => {
@@ -106,7 +106,7 @@ impl VideoTexture {
             fallback: None,
             fallback_pixels:None,
             fallback_observation:None,
-            source_white_nits:203.,
+            source_white_nits,
         };
         texture.set_with_observation(ctx, image,observation);
         texture
@@ -127,7 +127,6 @@ impl VideoTexture {
         }
         None
     }
-    pub fn set_source_white(&mut self,white:f32){if white.is_finite()&&(40.0..=1000.0).contains(&white){self.source_white_nits=white;}}
     pub fn set_continuity_active(&self,active:bool,fps:u32){self.continuity.lock().unwrap().set_active(active,fps);}
     pub fn clear_continuity(&self){self.continuity.lock().unwrap().clear();}
     pub fn record_new_image(&self){self.continuity.lock().unwrap().submit(std::time::Instant::now());}
@@ -150,7 +149,8 @@ impl VideoTexture {
                 "event":"native_video_completion_failed","phase":error.phase,"kind":error.kind,"leases":error.leases})),
         }
     }
-    pub fn set_observed(&mut self,ctx:&egui::Context,image:DisplayImage,stats:&Arc<uu_core::media::MediaStats>,frozen:Option<uu_core::display_frames::DecodedObservation>) {
+    pub fn set_observed(&mut self,ctx:&egui::Context,image:DisplayImage,stats:&Arc<uu_core::media::MediaStats>,frozen:Option<uu_core::display_frames::DecodedObservation>,source_white_nits:f32) {
+        self.source_white_nits = source_white_nits;
         let observation=FrameObservation::new(stats,&image,frozen);
         self.set_with_observation(ctx,image,observation)
     }
@@ -186,7 +186,7 @@ impl VideoTexture {
             gpu.layout = None;
             gpu.pending = None;
         }
-        let (_, w, h, rgba) = image.into_rgba();
+        let (_, w, h, rgba) = image.into_rgba_with_white(self.source_white_nits);
         self.size = [w as usize, h as usize];
         let image = Arc::new(egui::ColorImage::from_rgba_unmultiplied(self.size, &rgba));
         self.fallback_pixels=Some(image.clone());
