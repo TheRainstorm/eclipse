@@ -178,20 +178,18 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                 });
                 ui.end_row();
                 ui.label(uu_i18n::text("码率"));
+                let native_bitrate = !state.host_managed_bitrate;
+                let selected = super::settings::displayed_bitrate_preset(s.bitrate, native_bitrate);
                 combo(
                     ui,
                     "settings-bitrate",
-                    if state.streaming {super::settings::bitrate_label(s.bitrate,!state.host_managed_bitrate)}else{uu_i18n::text(super::BITRATE_PRESETS[s.bitrate])},
+                    uu_i18n::text(super::BITRATE_PRESETS[selected]),
                     |ui| {
                         for i in [6,5,0,1,2,3,4] {
                             let label=uu_i18n::text(super::BITRATE_PRESETS[i]);
                             if i==6&&!state.native {continue;}
-                            if (!state.host_managed_bitrate&&i==0)||(state.host_managed_bitrate&&state.streaming&&i==5){continue;}
-                            if !state.host_managed_bitrate&&i==5 {
-                                if crate::theme::selectable_label(ui,matches!(s.bitrate,0|5),label).clicked(){s.bitrate=5;}
-                            }else if state.host_managed_bitrate&&state.streaming&&i==0 {
-                                if crate::theme::selectable_label(ui,matches!(s.bitrate,0|5),label).clicked(){s.bitrate=0;}
-                            }else{crate::theme::selectable_value(ui,&mut s.bitrate, i, label);}
+                            if super::settings::displayed_bitrate_preset(i,native_bitrate)!=i {continue;}
+                            if crate::theme::selectable_label(ui,selected==i,label).clicked(){s.bitrate=i;}
                         }
                     },
                 );
@@ -648,6 +646,21 @@ mod language_tests {
 #[cfg(test)]
 mod parameter_tests {
     use super::*;
+
+    #[test]
+    fn native_profile_shows_lan_quality_for_both_automatic_bitrate_values() {
+        for bitrate in [0, 5] {
+            let mut settings = super::super::settings::ClientSettings { bitrate, ..Default::default() };
+            let ctx = egui::Context::default();
+            let output = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| client_editor(ui, &mut settings, &mut Section::Encoding));
+            });
+            let label = uu_i18n::text("推荐码率（LAN Quality）");
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == label && !text.galley.elided)));
+            assert_eq!(settings.bitrate, bitrate);
+        }
+    }
 
     #[test]
     fn saved_video_choices_are_readable_in_the_settings_grid() {

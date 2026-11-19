@@ -8,8 +8,15 @@ use std::{
 
 pub use uu_core::client_settings::{ClientSettings, CodecPreference, CursorMode};
 
+pub(super) fn displayed_bitrate_preset(index:usize, native:bool)->usize {
+    match (index,native) {
+        (0,true)=>5,
+        (5,false)=>0,
+        _=>index,
+    }
+}
 pub(super) fn bitrate_label(index:usize,native:bool)->&'static str {
-    uu_i18n::text(super::BITRATE_PRESETS[if native&&index==0 {5}else if !native&&index==5 {0}else{index}])
+    uu_i18n::text(super::BITRATE_PRESETS[displayed_bitrate_preset(index,native)])
 }
 pub(super) fn recommended_bitrate(settings:&ClientSettings,actual_size:Option<[u32;2]>,actual_codec:Option<&str>)->Option<u32> {
     use uu_core::native::VideoCodec;

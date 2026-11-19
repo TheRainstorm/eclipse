@@ -654,13 +654,14 @@ impl super::App {
         let mut effective=self.preferences.client.clone();effective.fps=self.native_quality_request().fps;
         let recommended=super::settings::recommended_bitrate(&effective,actual.or_else(||self.preferences.resolved_bounds(self.local_display())),codec.as_deref());
         let order:&[usize]=if native{&[6,5,1,2,3,4]}else{&[0,1,2,3,4]};
+        let selected=super::settings::displayed_bitrate_preset(self.bitrate_idx,native);
         for &index in order {
             let label=super::BITRATE_PRESETS[index];
             let label=uu_i18n::text(label);
-            let title=if index==6{uu_i18n::text("按总预算自动分配")}else if index==5{uu_i18n::text("推荐码率")}else if index==0{uu_i18n::text("原画 · 服务端策略")}else{label};
+            let title=if index==6{uu_i18n::text("按总预算自动分配")}else if index==0{uu_i18n::text("原画 · 服务端策略")}else{label};
             let hint=if index==5 {recommended.map_or_else(||uu_i18n::text("自动计算").into(),|kbps|format!("{:.1} Mbps",kbps as f64/1000.))}else if index==4{format!("{} Mbps",self.custom_mbps)}else{String::new()};
             let custom=index==4;
-            let response=menu_row(ui,title,None,self.bitrate_idx==index||(native&&index==5&&self.bitrate_idx==0)||(!native&&index==0&&self.bitrate_idx==5),custom,&hint,false);
+            let response=menu_row(ui,title,None,selected==index,custom,&hint,false);
             if custom&&(response.hovered()||response.clicked()){self.stream_menu.quality_detail=Some((QualityDetail::Bitrate,response.rect));}
             else if response.hovered(){self.stream_menu.quality_detail=None;}
             if !custom&&response.clicked(){self.bitrate_idx=index;self.confirm_quality(ui);}
