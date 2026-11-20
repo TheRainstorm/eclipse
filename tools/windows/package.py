@@ -138,6 +138,13 @@ def archive_name(revision):
     return f'eclipse-windows-x64-{revision[:12]}.zip'
 
 
+def package_target(base, checkout):
+    # Cargo's local fingerprints can reuse native objects from another
+    # worktree. Keep package artifacts separate from ordinary Cargo builds.
+    checkout_id = hashlib.sha256(os.fsencode(checkout.resolve())).hexdigest()[:12]
+    return Path(base) / f'windows-package-{checkout_id}'
+
+
 def build_package(output, vpl_archive=None, rebuild=False):
     revision = clean_revision()
     archive = output / archive_name(revision)
@@ -161,11 +168,14 @@ def build_package(output, vpl_archive=None, rebuild=False):
     metadata = json.loads(subprocess.check_output(
         ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'],
         cwd=ROOT, text=True, encoding='utf-8'))
-    binaries = Path(metadata['target_directory']) / TARGET / 'release'
-    sdk, standard, sdk_metadata = plugin_sdk.build(ROOT, TARGET, ['uu-gui', 'uu-cli'])
-    dispatcher = vpl_runtime.build_dispatcher(Path(metadata['target_directory']) / 'vpl-runtime', vpl_archive)
+    base_target = Path(metadata['target_directory'])
+    target = package_target(base_target, ROOT)
+    environment = dict(os.environ, CARGO_TARGET_DIR=str(target))
+    binaries = target / TARGET / 'release'
+    sdk, standard, sdk_metadata = plugin_sdk.build(ROOT, TARGET, ['uu-gui', 'uu-cli'], environment=environment)
+    dispatcher = vpl_runtime.build_dispatcher(base_target / 'vpl-runtime', vpl_archive)
     pyrowave = pyrowave_runtime.build(jobs=min(6,int(os.environ.get('CARGO_BUILD_JOBS','6'))),
-        output=Path(metadata['target_directory'])/'pyrowave-runtime'/TARGET,target=TARGET)
+        output=base_target/'pyrowave-runtime'/TARGET,target=TARGET)
     if clean_revision() != revision:
         raise RuntimeError('构建期间提交号发生变化，请重新打包')
     output.mkdir(parents=True, exist_ok=True)
@@ -195,7 +205,7 @@ def build_package(output, vpl_archive=None, rebuild=False):
                     'runtime_sources': {'intel_vpl': vpl_runtime.COMMIT,'pyrowave':pyrowave_runtime.LOCK},
                     'sha256': {filename: sha256(staging / filename) for filename in (*REQUIRED, sdk.name, standard.name)}}
         (staging / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-        bundled_plugins.stage(staging, manifest, TARGET, [], output.parent / 'plugins', sdk)
+        bundled_plugins.stage(staging, manifest, TARGET, [], output.parent / 'plugins', sdk, environment=environment)
         verify_imports(staging)
         (staging / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         zip_path = Path(temp) / archive.name

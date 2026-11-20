@@ -45,7 +45,7 @@ UU 与壁纸合集分别位于 `plugins/uu/`、`plugins/wallpaper-collects/`，�
 源码或 `tools/windows` 有未提交改动时拒绝打包，避免版本号与实际源码不一致；提交后再运行即可。
 
 重复执行会先核验已有同提交 ZIP 的完整文件清单、哈希和目标平台，符合时直接复用并更新最新包指针，不调用 Cargo 或下载运行库源码。`--rebuild` 可强制执行构建流程，仍保留 Cargo 缓存；显式提供 `--vpl-archive` 时也执行构建流程。`cargo check` 和 `cargo test` 分别产生检查与测试产物，不等于已经生成可安装的 release 包。
-构建沿用 Cargo 配置的目标目录（支持 `CARGO_TARGET_DIR`），输出目录可用 `--output-dir /path/to/packages` 指定。
+打包用的 Rust 产物放在 Cargo 目标目录（支持 `CARGO_TARGET_DIR`）里的 `windows-package-<工作区标识>` 子目录。每个检出目录有独立的打包缓存，可反复构建同一工作区；日常编译与实验请使用各自的 Cargo 目标目录。输出目录可用 `--output-dir /path/to/packages` 指定。
 新包统一输出到忽略 Git 的 `artifacts/packages`；仓库旧 `dist/uu-gui-win64` 不再更新。
 
 Intel VPL 源码固定为 `674d015bcb294bc39fa276e99a652ea045423e82`，下载归档的 SHA256 为 `9d5d3c221b9d41468e04add6855cf5eec6df06dae7be649f84e1f846c98e38fb`。首次构建需要下载约 13 MB；以后在 Cargo 目标目录的 `vpl-runtime` 中复用并重新校验源码缓存。离线环境可提前下载该归档，再传入 `--vpl-archive /path/to/source.tar.gz`，同样校验完整哈希。构建不安装驱动。实际 HEVC / AV1 能力仍取决于 Intel GPU 和系统 GPU runtime；直接使用 `cargo build` 时也需让标准 `libvpl.dll` 位于程序目录或系统受信任的 DLL 搜索目录。

@@ -66,6 +66,15 @@ class ReleaseTests(unittest.TestCase):
     def test_valid_package(self):
         self.assertEqual(sync.verify_package(self.make_bundle())['source_commit'], 'a' * 40)
 
+    def test_package_target_is_stable_and_isolates_checkouts_with_a_shared_cargo_target(self):
+        base = self.root / 'cargo-target'
+        main = self.root / 'main'
+        experiment = self.root / 'experiment'
+        main_target = package.package_target(base, main)
+        self.assertEqual(main_target.parent, base)
+        self.assertEqual(main_target, package.package_target(base, main))
+        self.assertNotEqual(main_target, package.package_target(base, experiment))
+
     def test_same_revision_package_is_verified_and_reused_without_a_compiler(self):
         archive=self.make_bundle(with_plugin=True).rename(self.root/(package.archive_name('a'*40)))
         with patch.object(package,'clean_revision',return_value='a'*40), patch.object(package,'check_tools',side_effect=AssertionError('compiler must not run')), contextlib.redirect_stdout(io.StringIO()):
@@ -117,10 +126,13 @@ class ReleaseTests(unittest.TestCase):
             package.bundled_plugins.export(manifest,original.read,output)
         manifest.pop('bundled_plugins')
         manifest['sha256'] = {name:digest for name,digest in manifest['sha256'].items() if not name.startswith('plugins/')}
+        environment = {'CARGO_TARGET_DIR': str(self.root / 'windows-package')}
         with patch.object(package.bundled_plugins.subprocess,'run') as run:
-            package.bundled_plugins.stage(application,manifest,package.TARGET,[],output,self.root/'build-sdk.dll')
+            package.bundled_plugins.stage(application,manifest,package.TARGET,[],output,self.root/'build-sdk.dll',
+                                          environment=environment)
         self.assertIn('--application',run.call_args.args[0])
         self.assertIs(run.call_args.kwargs['stdout'],sys.stderr)
+        self.assertTrue(all(call.kwargs['env'] is environment for call in run.call_args_list))
         package.bundled_plugins.verify(manifest,lambda name:(application/name).read_bytes())
         self.assertEqual(set(manifest['bundled_plugins']),{'wallpaper-collects','uu'})
 

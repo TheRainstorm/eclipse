@@ -68,14 +68,15 @@ def verify(manifest, read):
             raise ValueError('Bundled plugin source or SDK differs from application')
 
 
-def stage(application, manifest, target, features, output, build_sdk):
+def stage(application, manifest, target, features, output, build_sdk, *, environment=None):
     """Reuse package_plugin's SDK/import probe and retain its standalone asset."""
     application, output = Path(application), Path(output)
     definition = json.loads((ROOT / 'extensions/wallpaper-collects/plugin.json').read_text())
     subprocess.run([sys.executable, str(ROOT / 'tools/release/package_plugin.py'),
                     '--manifest', str(ROOT / 'extensions/wallpaper-collects/plugin.json'),
                     '--target', target, '--application', str(application),
-                    '--output-dir', str(output), '--features', *features], check=True, cwd=ROOT, stdout=sys.stderr)
+                    '--output-dir', str(output), '--features', *features], check=True, cwd=ROOT, stdout=sys.stderr,
+                   env=environment)
     source = manifest['source_commit']
     archive = output / f"eclipse-plugin-{definition['id']}-{target}-{source[:12]}.zip"
     library = definition['library'] + '.dll' if 'windows' in target else 'lib' + definition['library'] + '.so'
@@ -88,7 +89,7 @@ def stage(application, manifest, target, features, output, build_sdk):
     subprocess.run([sys.executable, str(ROOT/'tools/release/package_uu.py'),
                     '--application', str(application), '--build-sdk', str(build_sdk),
                     '--target', target, '--output-dir', str(output), '--features', *features],
-                   check=True, cwd=ROOT, stdout=sys.stderr)
+                   check=True, cwd=ROOT, stdout=sys.stderr, env=environment)
     manifest['bundled_plugins']['uu'] = 'uu_compat.dll' if 'windows' in target else 'libuu_compat.so'
     manifest['bundled_plugin_sources'] = {'uu': source}
     manifest['bundled_plugin_notices'] = {'uu': ['LICENSE', 'ENGINE-THIRD-PARTY-NOTICES.txt']}
