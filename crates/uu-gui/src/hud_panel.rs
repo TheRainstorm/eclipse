@@ -206,9 +206,9 @@ impl Metrics {
             |v| format!("{} ± {} ms", number(Some(v[0])), number(Some(v[1]))),
         );
         let loss = valid(self.loss).map_or_else(|| "—".into(), |v| format!("{v:.2}%"));
-        // Compact HUD fields must not recenter when a link crosses 9.9 → 10.0.
-        // Four fixed glyph cells keep common LAN throughput values stable.
-        let bandwidth=valid(self.throughput()).map_or_else(||"----".into(),|v|format!("{v:>4.1}"));
+        // Keep a stable width for the active video stream's measured bitrate.
+        let bandwidth = valid(self.bitrate)
+            .map_or_else(|| " ----".into(), |v| format!("{v:>5.1}"));
         format!("BW {bandwidth} Mbps · RTT {rtt} · Loss {loss}")
     }
     fn stages_label(&self) -> String {
@@ -888,17 +888,18 @@ mod tests {
         }
     }
     #[test]
-    fn compact_network_uses_interface_throughput_and_estimate_requires_all_components() {
+    fn compact_network_uses_current_video_bitrate_and_estimate_requires_all_components() {
         let mut m=Metrics{bitrate:Some(99.),link:Some(uu_core::link_metrics::Snapshot{rx_mbps:Some(12.),tx_mbps:Some(0.4),ping_ms:None}),rtt:Some([1.5,0.32]),loss:Some(0.),process:[Some(1.);4],queues:[Some(0.);3],..Default::default()};
-        assert_eq!(m.network_label(),"BW 12.4 Mbps · RTT 1.5 ± 0.32 ms · Loss 0.00%");
+        assert_eq!(m.network_label(),"BW  99.0 Mbps · RTT 1.5 ± 0.32 ms · Loss 0.00%");
+        assert_eq!(m.throughput(), Some(12.4));
         assert!(m.stages_label().ends_with("Est. ≈4.75 ±— ms"));
         m.queues[2]=None;assert!(m.stages_label().ends_with("Est. —"));
-        m.link.as_mut().unwrap().tx_mbps=None;assert!(m.network_label().starts_with("BW ---- Mbps"));
-        m.link=Some(uu_core::link_metrics::Snapshot{rx_mbps:Some(8.2),tx_mbps:Some(0.),ping_ms:None});
+        m.bitrate = None;
+        assert!(m.network_label().starts_with("BW  ---- Mbps"));
+        m.bitrate = Some(8.2);
         let one_digit=m.network_label();
-        m.link=Some(uu_core::link_metrics::Snapshot{rx_mbps:Some(12.4),tx_mbps:Some(0.),ping_ms:None});
-        let two_digit=m.network_label();
-        assert_eq!(one_digit.find(" Mbps"),two_digit.find(" Mbps"),"bandwidth field must keep a fixed character width");
+        m.bitrate = Some(133.);
+        assert_eq!(one_digit.find(" Mbps"), m.network_label().find(" Mbps"));
         let rows=detail_rows(&m);
         assert_eq!(rows.iter().take(6).map(|r|r.label).collect::<Vec<_>>(),["画面","帧率","编解码","网络","延迟","端到端"]);
         let latency=&rows[4].values;assert_eq!(latency.iter().filter(|v|v.line==1).count(),5);
