@@ -173,6 +173,17 @@ impl Window {
     pub fn request_redraw(&self) {
         let post = {
             let mut state = self.window_state.lock().unwrap();
+            // DefWindowProc owns the message loop during an interactive move or
+            // resize. Let that loop consume pointer input before painting. A
+            // chain of posted redraw messages has priority over mouse moves.
+            if state.window_flags.contains(WindowFlags::MARKER_IN_SIZE_MOVE) {
+                state.redraw_requested = true;
+                drop(state);
+                unsafe {
+                    RedrawWindow(self.hwnd(), ptr::null(), 0, RDW_INTERNALPAINT);
+                }
+                return;
+            }
             !mem::replace(&mut state.redraw_message_pending, true)
         };
         if post {
