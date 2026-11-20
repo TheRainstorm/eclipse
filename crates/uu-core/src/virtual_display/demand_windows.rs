@@ -278,15 +278,34 @@ fn select_configuration(
     driver::demand_configuration(directory)?;
     Ok(Configuration::Private(directory.to_path_buf()))
 }
+fn ready_target(record: &Record) -> Result<Option<Target>> {
+    let instance = record.instance.as_ref().ok_or(Error::UnknownSlot)?;
+    if !driver::verify_demand_device(instance, &record.token.to_string(), true)? {
+        return Ok(None);
+    }
+    let mut targets = targets_for_instance(instance)?;
+    if targets.len() > 1 {
+        return Err(fail("持久虚拟显示器的目标身份不唯一，未接管或移除该设备。"));
+    }
+    targets.pop().map(Some).ok_or(Error::TargetPending)
+}
+pub(super) fn check_missing_target(scope: &str, id: LeaseId, key: &TargetKey) -> Result<()> {
+    let state = load()?;
+    let record = state.records.iter().find(|r| {
+        r.scope == scope && r.lease == id.0 && r.ready && r.target.as_ref() == Some(key)
+    }).ok_or(Error::UnknownSlot)?;
+    // An absent PnP node can be recreated; a new key on the same node can be
+    // adopted. If the original key just came back, keep its existing claim.
+    if ready_target(record)?.is_some_and(|target| target.key == *key) {
+        return Err(Error::TargetPending);
+    }
+    Ok(())
+}
 /// Adopt a completed device by its protected logical identity, never its name.
 fn adopt_ready(scope:&str,id:LeaseId)->Result<Option<(Target,Box<dyn Claim>)>> {
     let mut state=load()?;
     let Some(record)=state.records.iter().find(|r|r.scope==scope&&r.lease==id.0&&r.ready).cloned() else{return Ok(None);};
-    let Some(instance)=&record.instance else{return Ok(None);};
-    if !driver::verify_demand_device(instance,&record.token.to_string(),true)? {return Ok(None);}
-    let mut targets=targets_for_instance(instance)?;
-    if targets.len()>1 {return Err(fail("持久虚拟显示器的目标身份不唯一，未接管或移除该设备。"));}
-    let Some(target)=targets.pop() else{return Err(Error::TargetPending);};
+    let Some(target) = ready_target(&record)? else { return Ok(None); };
     let claim=super::super::ownership_windows::claim(&target.key)?;
     // Windows may change the adapter LUID after a reboot. The protected PnP
     // instance and token remain authoritative; publish the fresh full key.

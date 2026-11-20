@@ -138,26 +138,42 @@ impl Manager {
     pub fn set_enabled(&self,id:LeaseId,enabled:bool)->Result<Display> {
         if !enabled {
             self.remove_owned(id,None,false)?;
-        } else {
-            let record={
-                let mut entries=self.lock()?;
-                let record=self.saved_records()?.into_iter().find(|r|r.id==id.0);
-                if let Some(entry)=entries.get(&id) {
-                    if entry.display.cleanup_pending {return Err(Error::CleanupPending{id,message:entry.display.last_error.clone().unwrap_or_default()});}
-                    let current=self.backend.inventory()?.targets.into_iter().find(|t|t.key==entry.target).ok_or(Error::UnknownSlot)?;
-                    if current.active {return Ok(entry.display.clone());}
-                    let existing:Vec<_>=entries.values().map(|e|(e.target.clone(),e.display.spec)).collect();
-                    let position=record.as_ref().filter(|r|r.restore_layout).and_then(|r|r.position);
-                    let target=self.backend.reconnect(&entry.target,entry.display.spec,position,&existing)?;
-                    let entry=entries.get_mut(&id).unwrap();
-                    entry.display.active=target.active;entry.display.actual=target.actual;entry.display.source=target.source;
-                    return Ok(entry.display.clone());
-                }
-                self.saved_records()?.into_iter().find(|r|r.id==id.0).ok_or(Error::UnknownSlot)?
-            };
-            self.create_restored(&record)?;
+            return self.list()?.into_iter().find(|d|d.id==id).ok_or(Error::UnknownSlot);
         }
-        self.list()?.into_iter().find(|d|d.id==id).ok_or(Error::UnknownSlot)
+        self.ensure_catalog()?;
+        let mut entries = self.lock()?;
+        let record = self.saved_records()?.into_iter().find(|r| r.id == id.0);
+        if let Some(entry) = entries.get(&id) {
+            if entry.display.cleanup_pending {
+                return Err(Error::CleanupPending { id, message: entry.display.last_error.clone().unwrap_or_default() });
+            }
+            if let Some(current) = self.backend.inventory()?.targets.into_iter().find(|t| t.key == entry.target) {
+                let target = if current.active {
+                    current
+                } else {
+                    let existing: Vec<_> = entries.values().map(|e| (e.target.clone(), e.display.spec)).collect();
+                    let position = record.as_ref().filter(|r| r.restore_layout).and_then(|r| r.position);
+                    self.backend.reconnect(&entry.target, entry.display.spec, position, &existing)?
+                };
+                let display = &mut entries.get_mut(&id).unwrap().display;
+                display.active = target.active;
+                display.actual = target.actual;
+                display.source = target.source;
+                return Ok(display.clone());
+            }
+            if record.is_none() { return Err(Error::UnknownSlot); }
+            self.backend.check_missing_target(id, &entry.target)?;
+            let viewed = self.viewers.lock().map_err(|_| platform("display viewers are poisoned"))?
+                .values().any(|displays| displays.contains(&id));
+            if entry.display.owner != Owner::Manual || viewed {
+                return Err(platform(uu_i18n::text("这块虚拟显示器仍有串流会话。请先断开使用这块屏幕的会话，再重试启用。")));
+            }
+            // The old claim must be released before the normal allocation path
+            // reconciles the ledger. Keep enable, disable and delete serialized.
+            entries.remove(&id);
+        }
+        let record = record.ok_or(Error::UnknownSlot)?;
+        self.create_target_locked(&mut entries, Owner::Manual, record.spec, None, Some(&record), None)
     }
     pub fn set_restore_layout(&self,id:LeaseId,restore:bool)->Result<()> {
         let mut entries=self.lock()?;

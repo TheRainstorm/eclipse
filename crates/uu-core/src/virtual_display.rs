@@ -384,6 +384,11 @@ trait Backend: Send + Sync {
         Ok(None)
     }
     fn allocation_configures_mode(&self)->bool {false}
+    /// Verify the claimed target disappeared before its claim can be released
+    /// and the saved display reacquired. Missing topology alone is insufficient.
+    fn check_missing_target(&self, _id: LeaseId, _key: &TargetKey) -> Result<()> {
+        Err(Error::UnknownSlot)
+    }
     fn reconnect(&self,key:&TargetKey,spec:Spec,_position:Option<Position>,_existing:&[(TargetKey,Spec)])->Result<Target> {self.reconfigure(key,spec).map_err(|e|Error::Platform(e.message))}
     fn position(&self,_key:&TargetKey)->Result<Option<Position>> {Ok(None)}
     fn rename(&self,_key:&TargetKey,_name:&str)->Result<()> {Ok(())}
@@ -763,6 +768,17 @@ impl Manager {
         spec.validate()?;
         self.ensure_catalog()?;
         let mut entries = self.lock()?;
+        self.create_target_locked(&mut entries, owner, spec, initial_session, saved, retention)
+    }
+    fn create_target_locked(
+        &self,
+        entries: &mut BTreeMap<LeaseId, Entry>,
+        owner: Owner,
+        spec: Spec,
+        initial_session: Option<&str>,
+        saved: Option<&policy::SavedDisplay>,
+        retention: Option<bool>,
+    ) -> Result<Display> {
         if owner == Owner::Manual && self.manual_closing.load(Ordering::Acquire) {
             return Err(Error::HostClosing);
         }
@@ -778,10 +794,10 @@ impl Manager {
         let saved=saved.or(reusable.as_ref());
         let limit=self.limit.load(Ordering::Acquire);
         if saved.is_none() && self.saved_records()?.len()>=usize::from(MAX_DISPLAY_LIMIT) {return Err(Error::LimitReached{limit:MAX_DISPLAY_LIMIT});}
-        if saved.is_none_or(|s|!s.enabled) && self.allocated_count(&entries)? >=usize::from(limit) {return Err(Error::LimitReached{limit});}
+        if saved.is_none_or(|s|!s.enabled) && self.allocated_count(entries)? >=usize::from(limit) {return Err(Error::LimitReached{limit});}
         let id = LeaseId(saved.map_or_else(Uuid::new_v4,|s|s.id));
         // Validate metadata before publishing any Windows device.
-        let display_name = match saved.filter(|s|!s.name.is_empty()) {Some(saved)=>saved.name.clone(),None=>self.next_display_name(&entries)?};
+        let display_name = match saved.filter(|s|!s.name.is_empty()) {Some(saved)=>saved.name.clone(),None=>self.next_display_name(entries)?};
         let preparation_before = self.backend.preparation_observation()?;
         if self.preparation.recovery_pending()
             || preparation_before.is_some_and(|state| state.recovery_pending)
@@ -818,7 +834,7 @@ impl Manager {
                 Some((target,claim))
             }else{None}
         }else{None};
-        let mut selected = if restored.is_some(){restored}else{match self.claim_available(&entries) {
+        let mut selected = if restored.is_some(){restored}else{match self.claim_available(entries) {
             Err(Error::DriverMissing) if saved.is_some()=>return Err(Error::DriverMissing),
             Err(Error::DriverMissing) if capacity.is_some()=>None,
             result=>result?,
@@ -844,7 +860,7 @@ impl Manager {
                 if status.phase != preparation::Phase::Ready {
                     return Err(Error::Preparation(status));
                 }
-                selected = self.claim_available(&entries)?;
+                selected = self.claim_available(entries)?;
             } else {
                 self.backend.provision()?;
                 selected = self.claim_available(&entries)?;

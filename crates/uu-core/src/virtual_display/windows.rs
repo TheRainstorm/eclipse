@@ -198,6 +198,10 @@ impl Backend for Windows {
         scoped_worker(|| demand::reinstall(&scope, package))?
     }
     fn allocation_configures_mode(&self)->bool {true}
+    fn check_missing_target(&self, id: LeaseId, key: &TargetKey) -> Result<()> {
+        let (scope, _) = self.demand_scope()?;
+        scoped_worker(|| demand::check_missing_target(&scope, id, key))?
+    }
     fn allocate_configured(&self,id:LeaseId,name:&str,spec:Spec,position:Option<Position>,existing:&[(TargetKey,Spec)])->Result<Option<(Target,Box<dyn Claim>)>> {
         if !scoped_worker(demand::prepared)?? {self.prepare_on_demand(None)?;}
         let (scope,saved) = self.demand_scope()?;
@@ -949,10 +953,14 @@ fn position_of(topology:&Topology,key:&TargetKey)->Result<Option<Position>> {
     let p=unsafe{source.Anonymous.sourceMode.position};Ok(Some(Position{x:p.x,y:p.y}))
 }
 fn owned_placements(before:&Topology,existing:&[(TargetKey,Spec)])->Result<Vec<(TargetKey,Spec,Option<Position>)>> {
-    existing.iter().map(|(key,spec)| {
-        let path=before.paths.iter().find(|p|target_key(p).is_ok_and(|(k,_)|k==*key));
-        Ok((key.clone(),path.map(|p|actual(p,&before.modes)).transpose()?.flatten().unwrap_or(*spec),position_of(before,key)?))
-    }).collect()
+    let mut placements = Vec::new();
+    for (key, spec) in existing {
+        // Preserve siblings that were active before the mutation. Cached leases
+        // of other removed or disconnected devices are not activation requests.
+        let Some(path) = before.paths.iter().find(|p| target_key(p).is_ok_and(|(k, _)| k == *key)) else { continue };
+        placements.push((key.clone(), actual(path, &before.modes)?.unwrap_or(*spec), position_of(before, key)?));
+    }
+    Ok(placements)
 }
 fn configure_owned_set(desired:&[(TargetKey,Spec,Option<Position>)],before:Option<&DisplaySnapshot>,retiring:Option<&TargetKey>)->Result<()> {
     if desired.is_empty()&&retiring.is_none() {return Ok(());}
@@ -1185,6 +1193,12 @@ fn deactivate_keys(keys: &BTreeSet<TargetKey>, require_other_active: bool, mode_
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restoring_one_display_leaves_other_missing_claims_disconnected() {
+        let missing = TargetKey { adapter: (1, 0), target: 3, monitor_path: "removed".into() };
+        let active = Topology { paths: Vec::new(), modes: Vec::new() };
+        assert!(owned_placements(&active, &[(missing, Spec::default())]).unwrap().is_empty());
+    }
     #[test]
     fn headless_forced_routes_do_not_turn_cached_edid_into_a_connected_monitor() {
         // R reports IN_USE | FORCED_AVAILABILITY_SYSTEM and cached 27E1 EDID,

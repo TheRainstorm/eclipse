@@ -46,6 +46,15 @@ impl Drop for FakeClaim {
 }
 impl Backend for Arc<Fake> {
     fn on_demand(&self)->bool {self.on_demand.load(Ordering::Relaxed)}
+    fn check_missing_target(&self, id: LeaseId, key: &TargetKey) -> Result<()> {
+        if self.identities.lock().unwrap().get(&id) != Some(key) {
+            return Err(Error::UnknownSlot);
+        }
+        if self.adopt_pending.load(Ordering::Relaxed) {
+            return Err(Error::TargetPending);
+        }
+        Ok(())
+    }
     fn check_driver_reinstall(&self) -> Result<()> { Ok(()) }
     fn reinstall_driver(&self, _: &[(String, Vec<u8>)]) -> Result<()> {
         assert!(self.identities.lock().unwrap().values().all(|key|
@@ -1582,6 +1591,66 @@ fn definitions_are_metadata_until_enabled_and_reuse_identity_on_every_enable() {
     let next=another_manager(&backend);next.configure_saved_displays(&path).unwrap();next.restore_saved_displays().unwrap();
     assert_eq!(next.list().unwrap()[0].id,definition.id);assert!(backend.targets.lock().unwrap().is_empty());
     next.remove(definition.id).unwrap();assert!(next.list().unwrap().is_empty());std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn enable_restores_only_the_removed_device_and_waits_for_an_enumerating_instance() {
+    let (manager, backend) = fixture();
+    backend.on_demand.store(true, Ordering::Relaxed);
+    let path = saved_policy(&manager);
+    let gate = Arc::new(crate::shared_host::SessionGate::default());
+    manager.register_host(&gate);
+    let _active = gate.claim("streaming-peer").unwrap();
+    let session = Uuid::new_v4();
+    let _session = manager.session_guard(session);
+    let physical = backend.targets.lock().unwrap()[0].clone();
+    manager.select_session_source(session, false, |_| {
+        Ok(uu_capture::CaptureSource::Monitor(physical.source.clone()))
+    }).unwrap();
+    let display = manager.add_display().unwrap();
+    let first = manager.set_enabled(display.id, true).unwrap();
+    let viewer = Uuid::new_v4();
+    let _viewer = manager.session_guard(viewer);
+    manager.select_session_source(viewer, false, |_| {
+        Ok(uu_capture::CaptureSource::Monitor(first.source.clone()))
+    }).unwrap();
+    let old_key = manager.lock().unwrap()[&first.id].target.clone();
+    backend.targets.lock().unwrap().retain(|target| target.key != old_key);
+
+    // A missing CCD target while its PnP node is still starting must retain its claim.
+    backend.adopt_pending.store(true, Ordering::Relaxed);
+    assert!(matches!(manager.set_enabled(first.id, true), Err(Error::TargetPending)));
+    assert!(backend.is_claimed(&old_key).unwrap());
+    assert_eq!(backend.provision_calls.load(Ordering::SeqCst), 1);
+
+    // Uninstalling the PnP node leaves the same in-memory lease and saved definition.
+    backend.adopt_pending.store(false, Ordering::Relaxed);
+    assert!(manager.set_enabled(first.id, true).is_err());
+    assert!(backend.is_claimed(&old_key).unwrap());
+    manager.release_session(viewer).unwrap();
+    backend.fail_recover.store(true, Ordering::Relaxed);
+    assert!(manager.set_enabled(first.id, true).is_err());
+    let pending = manager.list().unwrap().remove(0);
+    assert_eq!(pending.id, first.id);
+    assert!(pending.enabled && !pending.active);
+    assert_eq!(backend.provision_calls.load(Ordering::SeqCst), 1);
+    backend.fail_recover.store(false, Ordering::Relaxed);
+    let restored = manager.set_enabled(first.id, true).unwrap();
+    assert!(restored.active && restored.enabled);
+    assert_eq!(restored.id, first.id);
+    assert_eq!(restored.name, first.name);
+    assert_ne!(restored.source, first.source);
+    assert!(!backend.is_claimed(&old_key).unwrap());
+    manager.set_enabled(first.id, true).unwrap();
+    let saved = manager.saved_records().unwrap();
+    assert_eq!(saved.len(), 1);
+    assert!(backend.is_claimed(&saved[0].target).unwrap());
+    assert_eq!(backend.provision_calls.load(Ordering::SeqCst), 2);
+    assert!(backend.removed.lock().unwrap().is_empty());
+    assert!(backend.targets.lock().unwrap().iter().any(|t| t.key == physical.key && t.active));
+    manager.require_open_session(session).unwrap();
+    manager.remove(first.id).unwrap();
+    std::fs::remove_dir_all(path).unwrap();
 }
 #[test]
 fn a_temporary_manual_display_disables_only_after_its_last_viewer_disconnects() {
