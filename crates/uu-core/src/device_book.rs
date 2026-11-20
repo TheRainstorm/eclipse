@@ -229,12 +229,15 @@ impl Destination {
 pub struct Route {
     pub id: String,
     pub destination: Destination,
+    #[serde(default, skip_serializing_if = "crate::internet::PathPolicy::is_automatic")]
+    pub turn_path: crate::internet::PathPolicy,
 }
 impl Route {
     pub fn new(destination: Destination) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             destination,
+            turn_path: Default::default(),
         }
     }
 }
@@ -401,6 +404,9 @@ impl Book {
             for route in &profile.routes {
                 valid_id(&route.id)?;
                 ensure!(routes.insert(&route.id), "{}", uu_i18n::format!("连接地址标识重复"));
+                ensure!(route.turn_path.is_automatic()
+                    || matches!(&route.destination, Destination::Vps { .. }),
+                    "TURN path selection requires a TURN server route");
                 match &route.destination {
                     Destination::Ip {
                         address,
@@ -717,10 +723,31 @@ impl Store {
                 profile.selected_client=v.selected_client.clone();
                 profile.display_clients=v.display_clients.clone();
                 profile.last_connected=v.last_connected;profile.preview=v.preview.clone();
+                for route in &mut profile.routes {
+                    route.turn_path = if matches!(&route.destination, Destination::Vps { .. }) {
+                        v.routes.iter().find(|old| old.id == route.id)
+                            .map(|old| old.turn_path).unwrap_or_default()
+                    } else {
+                        Default::default()
+                    };
+                }
                 *v = profile;
             } else {
                 b.devices.push(profile);
             }
+            Ok(())
+        })
+    }
+    pub fn select_turn_path(
+        &self, device: &str, route: &str, path: crate::internet::PathPolicy,
+    ) -> Result<()> {
+        self.edit(|book| {
+            let id = book.device(device)?.id.clone();
+            let profile = book.devices.iter_mut().find(|profile| profile.id == id).unwrap();
+            let route = profile.routes.iter_mut().find(|item| item.id == route)
+                .filter(|item| matches!(&item.destination, Destination::Vps { .. }))
+                .context(uu_i18n::text("连接地址已移除"))?;
+            route.turn_path = path;
             Ok(())
         })
     }
@@ -1519,6 +1546,14 @@ mod tests {
         );
         store.save_device(a.clone()).unwrap();
         store.save_device(b.clone()).unwrap();
+        use crate::internet::PathPolicy;
+        assert!(serde_json::to_value(b.route().unwrap()).unwrap().get("turn_path").is_none());
+        let frozen_default = store.publish_launch(&b.id).unwrap();
+        store.select_turn_path(&b.id, &b.selected_route, PathPolicy::DirectOnly).unwrap();
+        store.save_device(b.clone()).unwrap();
+        assert_eq!(store.launch(&b.id).unwrap().route.turn_path, PathPolicy::DirectOnly);
+        assert_eq!(Launch::read(&frozen_default).unwrap().route.turn_path, PathPolicy::Automatic);
+        assert!(store.select_turn_path(&a.id, &a.selected_route, PathPolicy::RelayOnly).is_err());
         let snapshot = store.publish_launch(&a.id).unwrap();
         store
             .edit(|book| {

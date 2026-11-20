@@ -2,7 +2,7 @@
 //! created before device authentication. Media retains its existing pipeline.
 use crate::{
     device_auth::{AuthIo, MAX_AUTH_MESSAGE},
-    direct_ice::InternetIce,
+    direct_ice::{InternetIce, PathPolicy},
     internet::{Connection, Transport},
     native_media::NativePeer,
     native_signaling::SessionSignaling,
@@ -225,7 +225,10 @@ impl Bootstrap {
         let mut peer = Peer(NativePeer::new_direct(&connection.ice, None, false).await?);
         let dc = peer.pc.create_data_channel(LABEL, None).await?;
         let io = DataIo::attach(dc);
-        let offer = envelope(peer.description(true).await?);
+        let mut offer = envelope(peer.description(true).await?);
+        if connection.ice.path() == PathPolicy::DirectOnly {
+            offer["payload"]["direct_only"] = json!(true);
+        }
         connection.transport.send(offer.clone()).await?;
         let answer = tokio::time::timeout(Duration::from_secs(30), connection.transport.receive())
             .await

@@ -97,6 +97,7 @@ pub async fn view(
                 device_auth: true,
                 expected_peer: expected.clone(),
                 profile: Some(launch.profile.clone()),
+                path_policy: launch.route.turn_path,
                 ..Default::default()
             }
         }

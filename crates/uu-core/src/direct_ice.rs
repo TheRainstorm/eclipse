@@ -1,7 +1,8 @@
 //! Native internet ICE: direct candidates have priority; authorized connection
 //! services may supply per-session TURN credentials for automatic fallback.
 use anyhow::{ensure, Context, Result};
-use std::net::{IpAddr, Ipv4Addr};
+use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use webrtc::{
     ice::url::{ProtoType, SchemeType, Url},
     ice_transport::ice_server::RTCIceServer,
@@ -20,11 +21,21 @@ pub struct InternetIce {
     path: PathPolicy,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PathPolicy {
     #[default]
     Automatic,
+    DirectOnly,
+    RelayOnly,
+    #[serde(skip)]
     PublicIpv4Direct,
+}
+
+impl PathPolicy {
+    pub(crate) fn is_automatic(&self) -> bool {
+        *self == Self::Automatic
+    }
 }
 
 impl std::fmt::Debug for InternetIce {
@@ -40,10 +51,17 @@ impl std::fmt::Debug for InternetIce {
 
 impl InternetIce {
     pub(crate) fn with_path(mut self, path: PathPolicy) -> Result<Self> {
-        if path == PathPolicy::PublicIpv4Direct {
-            ensure!(!self.force_relay, "connection service requires TURN relay");
-            self.turn.clear();
-            self.development_relay = false;
+        match path {
+            PathPolicy::Automatic => {}
+            PathPolicy::DirectOnly | PathPolicy::PublicIpv4Direct => {
+                ensure!(!self.force_relay, "{}", uu_i18n::text("此连接服务要求使用 TURN 中转。"));
+                self.turn.clear();
+                self.development_relay = false;
+            }
+            PathPolicy::RelayOnly => {
+                ensure!(!self.turn.is_empty(), "{}", uu_i18n::text("此服务器未提供可用的 TURN 中转配置。"));
+                self.force_relay = true;
+            }
         }
         self.path = path;
         Ok(self)
@@ -202,6 +220,26 @@ pub(crate) fn accept_public_ipv4(sdp: &str) -> Result<String> {
     public_ipv4_sdp(sdp)
 }
 
+/// Older hosts can still advertise TURN. Omit their relay candidates from
+/// connectivity checks, retaining the endpoints to recognize peer mappings.
+pub(crate) fn without_relay(sdp: &str) -> Result<(String, Vec<SocketAddr>)> {
+    validate_sdp(sdp, true)?;
+    let mut direct = String::with_capacity(sdp.len());
+    let mut relays = Vec::new();
+    for line in sdp.split_inclusive('\n') {
+        if line.starts_with("a=candidate:") {
+            let fields: Vec<_> = line.split_whitespace().skip(4).take(4).collect();
+            if let [address, port, "typ", "relay"] = fields.as_slice() {
+                relays.push(SocketAddr::new(address.parse()?, port.parse()?));
+                continue;
+            }
+        }
+        direct.push_str(line);
+    }
+    validate_sdp(&direct, false).context(uu_i18n::text("对端未提供直连候选。"))?;
+    Ok((direct, relays))
+}
+
 pub(crate) fn validate_sdp(sdp: &str, development_relay: bool) -> Result<()> {
     ensure!(sdp.len() <= 256 * 1024, "direct SDP exceeds size limit");
     let mut candidates = 0;
@@ -283,6 +321,32 @@ mod tests {
         assert!(!format!("{ice:?}").contains("fixture-secret"));
         assert!(validate_sdp("a=candidate:1 1 udp 1 192.0.2.1 1234 typ relay\r\n", true).is_ok());
         assert!(room(&header,false).is_err());
+    }
+
+    #[test]
+    fn turn_path_choices_apply_to_both_gathering_and_remote_candidates() {
+        let entries = serde_json::json!({"iceServers":[{
+            "urls":["turn:relay.example:3478", "stun:stun.example:3478"],
+            "username":"fixture-user","credential":"fixture-secret"}]});
+        let automatic = room(&entries, true).unwrap();
+        assert_eq!(automatic.configuration().ice_transport_policy, RTCIceTransportPolicy::All);
+        assert_eq!(automatic.configuration().ice_servers.len(), 2);
+        let direct = automatic.clone().with_path(PathPolicy::DirectOnly).unwrap();
+        assert_eq!(direct.configuration().ice_transport_policy, RTCIceTransportPolicy::All);
+        assert_eq!(direct.configuration().ice_servers.len(), 1);
+        assert!(!direct.development_relay());
+        let relay = automatic.with_path(PathPolicy::RelayOnly).unwrap();
+        assert_eq!(relay.configuration().ice_transport_policy, RTCIceTransportPolicy::Relay);
+        assert!(InternetIce::default().with_path(PathPolicy::RelayOnly).is_err());
+
+        let ipv4 = "a=candidate:1 1 udp 2 192.0.2.1 49005 typ host\r\n";
+        let ipv6 = "a=candidate:2 1 udp 2 2001:db8::1 49005 typ host\r\n";
+        let turn = "a=candidate:3 1 udp 1 192.0.2.1 49153 typ relay\r\n";
+        assert_eq!(
+            without_relay(&[ipv4, turn, ipv6].concat()).unwrap(),
+            ([ipv4, ipv6].concat(), vec!["192.0.2.1:49153".parse().unwrap()]),
+        );
+        assert!(without_relay(turn).is_err());
     }
 
     #[test]

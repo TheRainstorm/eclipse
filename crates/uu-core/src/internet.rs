@@ -56,7 +56,7 @@ pub struct Settings {
     pub device_auth: bool,
     pub expected_peer: Option<String>,
     pub profile: Option<String>,
-    /// Ephemeral diagnostics policy selected for this CLI invocation.
+    /// Policy resolved for this connection from its route or CLI options.
     #[serde(skip)]
     pub path_policy: PathPolicy,
 }

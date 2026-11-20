@@ -2,6 +2,7 @@
 use super::{compact_context_menu, muted, theme, Action, DeviceView, Info, Profile, Workspace};
 use eframe::egui;
 use uu_core::device_book::{Destination, LaunchConfig};
+use uu_core::internet::PathPolicy;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -78,6 +79,31 @@ impl Workspace {
                             }
                         }
                         self.refresh(); ui.close_menu();
+                    }
+                }
+                if let Ok(route) = profile.route() {
+                    if matches!(&route.destination, Destination::Vps { .. }) {
+                        ui.separator();
+                        ui.weak(uu_i18n::text("媒体路径 · 下次连接生效"));
+                        for (path, label, help) in [
+                            (PathPolicy::Automatic, "自动（直连优先）", "优先尝试 P2P，直连不可用时走 TURN 中转。"),
+                            (PathPolicy::DirectOnly, "强制直连", "只使用 P2P，直连失败时结束本次连接。"),
+                            (PathPolicy::RelayOnly, "强制中转", "使用 TURN 中转，需要服务器提供中转配置。"),
+                        ] {
+                            if theme::selectable_label(ui, route.turn_path == path, uu_i18n::text(label))
+                                .on_hover_text(uu_i18n::text(help)).clicked()
+                            {
+                                if path != route.turn_path {
+                                    if let Some(store) = &self.store {
+                                        if let Err(error) = store.select_turn_path(&profile.id, &route.id, path) {
+                                            self.feedback.error(self.device_scope(), uu_i18n::format!("无法保存媒体路径：{error:#}"));
+                                        }
+                                    }
+                                    self.refresh();
+                                }
+                                ui.close_menu();
+                            }
+                        }
                     }
                 }
             });

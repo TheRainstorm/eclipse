@@ -119,6 +119,9 @@ pub(crate) async fn serve_connection_with_permit(
     ensure!(
         crate::device_channel::is_bootstrap(&first),
         "{}", uu_i18n::format!("控制端仍使用旧配对文件协议，请升级并通过短码完成设备配对"));
+    if first["payload"]["direct_only"] == true {
+        connection.ice = connection.ice.with_path(crate::internet::PathPolicy::DirectOnly)?;
+    }
     let ice = connection.ice.clone();
     let mut bootstrap = tokio::select! {
         result=Bootstrap::host(connection,first)=>result?,
