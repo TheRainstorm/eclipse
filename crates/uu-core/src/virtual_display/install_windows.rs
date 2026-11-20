@@ -1016,13 +1016,13 @@ fn uninstall_isolated_device(device: &mut DeviceNode) -> Result<()> {
     wake.join().map_err(|_|Error::Platform("isolated device wakeup worker panicked".into()))?;
     result
 }
-pub(super) fn remove_demand_device(instance:&str,token:&str,ready:bool) -> Result<()> {
-    if !verify_demand_device(instance,token,ready)? { return Ok(()); }
+pub(super) fn remove_demand_device(instance:&str,token:&str,ready:bool) -> Result<bool> {
+    if !verify_demand_device(instance,token,ready)? { return Ok(false); }
     if let Some(mut device)=open_demand_device(instance)? {
         if device.value("WUDF","DeviceGroupId").is_ok_and(|group|group==format!("EclipseVDD-{token}")) {uninstall_isolated_device(&mut device)?;} else {device.rollback()?;}
     }
     if open_demand_device(instance)?.is_some() { return Err(Error::Platform("exact virtual device removal is not yet complete".into())); }
-    Ok(())
+    Ok(true)
 }
 /// Only the receipt, pinned driver and inactive-target checks in the capacity
 /// migration path authorize this legacy operation. Names never authorize it.

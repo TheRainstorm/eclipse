@@ -401,11 +401,21 @@ impl Host {
         let state=self.state.lock().unwrap();
         state.selected.as_deref()==Some(source)||state.names.get(state.catalog.current_id as usize).is_some_and(|name|name==source)
     }
+    pub(crate) fn selection_changing(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        self.switching() || state.selected.as_ref() != state.names.get(state.catalog.current_id as usize)
+    }
     pub fn select(&self, id: i32) -> Option<bool> {
         if self.switching.load(Ordering::Acquire) {
             return None;
         }
         let mut state = self.state.lock().unwrap();
+        // The reset holds this flag before reading selections under this lock.
+        // A concurrent switch is either observed or rejected before retiring media.
+        #[cfg(windows)]
+        if crate::virtual_display::Manager::shared().preparation_in_flight() {
+            return None;
+        }
         if !state.catalog.screens.iter().any(|s| s.id == id) {
             return None;
         }
@@ -833,14 +843,17 @@ mod tests {
         );
         assert!(valid(&host.catalog()));
         assert_eq!(host.catalog().screens[0].refresh_hz,165);
+        assert!(!host.selection_changing());
         assert_eq!(host.select(999), None);
         assert_eq!(host.select(1), Some(true));
+        assert!(host.selection_changing());
         assert_eq!(
             host.prepare_monitors(vec![monitor("b", false), monitor("a", true)], None)
                 .unwrap(),
             CaptureSource::Monitor("b".into())
         );
         assert_eq!(host.catalog().current_id, 1);
+        assert!(!host.selection_changing());
         assert_eq!(
             host.prepare_monitors(vec![monitor("a", true)], None).unwrap(),
             CaptureSource::Monitor("a".into())

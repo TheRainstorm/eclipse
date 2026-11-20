@@ -480,6 +480,7 @@ pub(crate) struct HostControl {
     server_managed:AtomicBool,
     admin_busy:AtomicBool,
     displays:Mutex<Option<Arc<crate::native_displays::Host>>>,
+    capture_monitor: std::sync::OnceLock<String>,
     pending_display:Mutex<Option<u64>>,
     control_channel: Mutex<std::sync::Weak<RTCDataChannel>>,
     stopped:AtomicBool,
@@ -691,6 +692,7 @@ impl HostControl {
             quality_error:Arc::default(),
             session:Mutex::new(None),server_managed:AtomicBool::new(false),admin_busy:AtomicBool::new(false),
             displays:Mutex::new(None),
+            capture_monitor: Default::default(),
             pending_display:Mutex::new(None),
             control_channel: Mutex::default(),
             stopped:AtomicBool::new(false),
@@ -710,7 +712,18 @@ impl HostControl {
         })
     }
     pub fn follow_desktop_mapping(&self,mapping:Option<uu_capture::DesktopMapping>) {
+        if let Some(interface) = mapping.as_ref().and_then(|mapping| mapping.monitor_interface()) {
+            let _ = self.capture_monitor.set(interface.to_owned());
+        }
         if let Some(worker)=&self.worker {*worker.state.mapping.lock().unwrap()=mapping;}
+    }
+    pub(crate) fn stable_capture_monitor(&self) -> Option<&str> {
+        if self.stopped.load(Ordering::Acquire)
+            || self.displays.lock().unwrap().as_ref().is_some_and(|d| d.selection_changing())
+        {
+            return None;
+        }
+        self.capture_monitor.get().map(String::as_str)
     }
     pub fn set_displays(&self,displays:Option<Arc<crate::native_displays::Host>>){*self.displays.lock().unwrap()=displays;}
     pub async fn request_mode_renewal(&self, displays: &crate::native_displays::Host) -> Result<()> {

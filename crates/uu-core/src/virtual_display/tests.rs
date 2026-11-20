@@ -55,7 +55,18 @@ impl Backend for Arc<Fake> {
         }
         Ok(())
     }
-    fn check_driver_reinstall(&self) -> Result<()> { Ok(()) }
+    fn check_driver_reinstall(&self, captures: &[(String, Option<String>)]) -> Result<()> {
+        let owned = self.identities.lock().unwrap();
+        let targets = self.targets.lock().unwrap();
+        let removing: Vec<_> = targets.iter().filter(|t| owned.values().any(|k| *k == t.key)).collect();
+        for (peer, interface) in captures {
+            if !removing.is_empty() && interface.as_ref().is_none_or(|monitor|
+                removing.iter().any(|t| &t.key.monitor_path == monitor)) {
+                return Err(Error::Platform(format!("capture in use: {peer}")));
+            }
+        }
+        Ok(())
+    }
     fn reinstall_driver(&self, _: &[(String, Vec<u8>)]) -> Result<()> {
         assert!(self.identities.lock().unwrap().values().all(|key|
             self.targets.lock().unwrap().iter().all(|target| &target.key != key)));
@@ -1471,8 +1482,17 @@ fn display_mode_edit_preserves_the_active_session_and_updates_durable_intent() {
     manager.remove(display.id).unwrap();std::fs::remove_dir_all(path).unwrap();
 }
 
-#[test]
-fn driver_reinstall_clears_only_managed_definitions_after_sessions_finish() {
+#[tokio::test]
+async fn driver_reinstall_protects_each_current_capture_without_ending_independent_streams() {
+    async fn capture(lease: &crate::shared_host::SessionLease, gate: &crate::shared_host::SessionGate, monitor: &str) {
+        let control = crate::native_control::HostControl::new(false, None, None).await;
+        let rect = uu_capture::DesktopRect { x: 0, y: 0, width: 1920, height: 1080 };
+        control.follow_desktop_mapping(Some(uu_capture::DesktopMapping::new(rect).with_monitor_interface(monitor)));
+        gate.attach_control(lease.id(), control);
+        lease.progress(crate::native::HostStatus::Streaming {
+            width: 1920, height: 1080, fps: 60, audio: String::new(), encoder: String::new(),
+        });
+    }
     let (manager, backend) = fixture();
     backend.on_demand.store(true, Ordering::SeqCst);
     manager.preparation_owner.store(true, Ordering::SeqCst);
@@ -1487,14 +1507,37 @@ fn driver_reinstall_clears_only_managed_definitions_after_sessions_finish() {
     assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst), 0);
     assert_eq!(manager.list().unwrap().len(), 2);
     let original = backend.targets.lock().unwrap()[0].clone();
-
-    drop(active);
+    let target = manager.lock().unwrap()[&definition.id].target.clone();
+    let second = gate.claim("second-peer").unwrap();
+    capture(&active, &gate, &target.monitor_path).await;
+    capture(&second, &gate, &target.monitor_path).await;
+    assert!(manager.reinstall_driver().is_err());
+    capture(&active, &gate, &original.key.monitor_path).await;
+    assert!(manager.reinstall_driver().unwrap_err().to_string().contains("second-peer"));
+    assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst), 0);
+    capture(&second, &gate, &original.key.monitor_path).await;
     manager.reinstall_driver().unwrap();
+    assert!(!*active.stopped().borrow());
+    assert!(!*second.stopped().borrow());
     assert_eq!(backend.driver_reinstalls.load(Ordering::SeqCst), 1);
     assert!(manager.list().unwrap().is_empty());
     let targets = backend.targets.lock().unwrap();
     assert_eq!(targets[0].key, original.key);
     assert_eq!(targets[0].actual, original.actual);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn driver_reinstall_can_stage_the_missing_driver_during_an_unidentified_session() {
+    let (manager, backend) = fixture();
+    let path = saved_policy(&manager);
+    backend.on_demand.store(true, Ordering::SeqCst);
+    let gate = Arc::new(crate::shared_host::SessionGate::default());
+    manager.register_host(&gate);
+    let unknown = gate.claim("preparing").unwrap();
+    manager.reinstall_driver().unwrap();
+    assert_eq!(backend.driver_reinstalls.load(Ordering::SeqCst), 1);
+    assert!(!*unknown.stopped().borrow());
     std::fs::remove_dir_all(path).unwrap();
 }
 

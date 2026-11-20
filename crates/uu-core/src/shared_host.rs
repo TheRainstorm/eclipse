@@ -142,6 +142,16 @@ impl SessionGate {
         let mut sessions: Vec<_> = self.active.lock().unwrap().iter().map(|(id,s)| (id.clone(),s.peer.clone(),s.status.clone())).collect();
         sessions.sort_by(|a,b|a.0.cmp(&b.0)); sessions
     }
+    pub(crate) fn driver_reinstall_captures(&self) -> Vec<(String, Option<String>)> {
+        self.active.lock().unwrap().values().map(|session| {
+            let interface = match session.status {
+                crate::native::HostStatus::Streaming { .. } => session.control.as_ref()
+                    .and_then(|control| control.stable_capture_monitor()).map(str::to_owned),
+                _ => None,
+            };
+            (session.record.name.clone(), interface)
+        }).collect()
+    }
     pub(crate) fn attach_control(&self, session: &str, control: Arc<crate::native_control::HostControl>) {
         if let Some(active) = self.active.lock().unwrap().get_mut(session) {
             let input = active.input.intersection(control.max_input_permissions());

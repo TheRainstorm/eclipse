@@ -286,7 +286,8 @@ impl DxgiCapture {
             _ => return Err(CaptureError::NoBackend),
         };
         let identity=output_identity(&selected)?;
-        let mapping=crate::DesktopMapping::new(crate::DesktopRect{x:selected.monitor.x,y:selected.monitor.y,width:selected.monitor.width,height:selected.monitor.height});
+        let mapping=crate::DesktopMapping::new(crate::DesktopRect{x:selected.monitor.x,y:selected.monitor.y,width:selected.monitor.width,height:selected.monitor.height})
+            .with_monitor_interface(&identity.monitor_interface);
         let (mut device, mut context) = (None, None);
         unsafe {
             D3D11CreateDevice(

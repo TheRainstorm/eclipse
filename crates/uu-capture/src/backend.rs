@@ -107,7 +107,7 @@ pub struct DesktopRect {
 }
 
 #[derive(Clone)]
-pub struct DesktopMapping(std::sync::Arc<MappingState>);
+pub struct DesktopMapping(std::sync::Arc<MappingState>, Option<std::sync::Arc<str>>);
 struct MappingState {
     bounds:std::sync::Mutex<(Option<DesktopRect>,u64)>,
     live:std::sync::atomic::AtomicBool,
@@ -116,7 +116,14 @@ struct MappingState {
 impl DesktopMapping {
     pub fn new(rect:DesktopRect)->Self {Self(std::sync::Arc::new(MappingState {
         bounds:std::sync::Mutex::new((Some(rect),0)),live:std::sync::atomic::AtomicBool::new(true),revision:std::sync::atomic::AtomicU64::new(0),
-    }))}
+    }), None)}
+    /// The Windows monitor interface pinned by this capture across DXGI recovery.
+    /// The source name, position and display number can all change independently.
+    pub fn with_monitor_interface(mut self, interface: &str) -> Self {
+        self.1 = Some(interface.into());
+        self
+    }
+    pub fn monitor_interface(&self) -> Option<&str> { self.1.as_deref() }
     pub fn get(&self)->Option<DesktopRect> {self.0.bounds.lock().unwrap().0}
     /// Serialize coordinate injection with retirement.
     pub fn lock(&self)->std::sync::MutexGuard<'_,(Option<DesktopRect>,u64)> {self.0.bounds.lock().unwrap()}

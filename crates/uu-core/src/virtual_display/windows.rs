@@ -189,9 +189,9 @@ impl Backend for Windows {
         };
         scoped_worker(|| demand::prepare(package))?
     }
-    fn check_driver_reinstall(&self) -> Result<()> {
+    fn check_driver_reinstall(&self, captures: &[(String, Option<String>)]) -> Result<()> {
         let (scope, _) = self.demand_scope()?;
-        worker(move || demand::check_reinstall(&scope))?
+        scoped_worker(|| demand::check_reinstall(&scope, captures))?
     }
     fn reinstall_driver(&self, package: &[(String, Vec<u8>)]) -> Result<()> {
         let (scope, _) = self.demand_scope()?;
@@ -626,6 +626,52 @@ struct Scene {
     instances: HashSet<String>,
     supported_adapters: BTreeMap<(u32, i32), String>,
 }
+fn adapter_instance(devices: &DeviceSet, luid: LUID) -> Result<String> {
+    let mut name: DISPLAYCONFIG_ADAPTER_NAME = unsafe { zeroed() };
+    name.header = header::<DISPLAYCONFIG_ADAPTER_NAME>(DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME, luid, 0);
+    get_info(&mut name)?;
+    devices.interface_instance(&name.adapterDevicePath)
+}
+
+pub(super) fn check_reinstall_captures(captures: &[(String, Option<String>)], mtt_instances: &[String]) -> Result<()> {
+    if mtt_instances.is_empty() || captures.is_empty() {
+        return Ok(());
+    }
+    let unknown = |client: &str| Error::Platform(uu_i18n::format!("暂时无法确认 {client} 正在串流哪块显示器。请等待连接或切屏完成后再重试。"));
+    let active = query(QDC_ONLY_ACTIVE_PATHS).map_err(|_| unknown(&captures[0].0))?;
+    let devices = DeviceSet::displays().map_err(|_| unknown(&captures[0].0))?;
+    let identities: Vec<_> = active.paths.iter().map(|path| target_key(path).ok().map(|(key, _)| key)).collect();
+    let source = |path: &DISPLAYCONFIG_PATH_INFO| (adapter(path.sourceInfo.adapterId), path.sourceInfo.id);
+    let origin = |path: &DISPLAYCONFIG_PATH_INFO| {
+        let mode = active.modes.get(source_mode_index(path) as usize)?;
+        if mode.infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE || (adapter(mode.adapterId), mode.id) != source(path) {
+            return None;
+        }
+        let position = unsafe { mode.Anonymous.sourceMode.position };
+        Some((position.x, position.y))
+    };
+    for (client, monitor) in captures {
+        let monitor = monitor.as_deref().ok_or_else(|| unknown(client))?;
+        let mut matches = active.paths.iter().zip(&identities).filter(|(_, identity)| {
+            identity.as_ref().is_some_and(|key| key.monitor_path.eq_ignore_ascii_case(monitor))
+        });
+        let (captured, _) = matches.next().ok_or_else(|| unknown(client))?;
+        if matches.next().is_some() { return Err(unknown(client)); }
+        let captured_origin = origin(captured);
+        for path in &active.paths {
+            // Clones can share a CCD source or, across adapters, a desktop origin.
+            let same_source = source(path) == source(captured);
+            let origins = captured_origin.zip(origin(path));
+            if !same_source && origins.is_some_and(|(a, b)| a != b) { continue; }
+            let instance = adapter_instance(&devices, path.targetInfo.adapterId).map_err(|_| unknown(client))?;
+            if mtt_instances.iter().any(|mtt| mtt.eq_ignore_ascii_case(&instance)) {
+                if !same_source && origins.is_none() { return Err(unknown(client)); }
+                return Err(Error::Platform(uu_i18n::format!("{client} 正在串流要移除的虚拟显示器或它的复制屏。请先切换到其它显示器或断开该会话。")));
+            }
+        }
+    }
+    Ok(())
+}
 fn scene() -> Result<Scene> {
     let devices = DeviceSet::displays()?;
     let instances = devices.supported_instances()?;
@@ -641,17 +687,9 @@ fn scene() -> Result<Scene> {
         if !seen.insert(id) {
             continue;
         }
-        let mut name: DISPLAYCONFIG_ADAPTER_NAME = unsafe { zeroed() };
-        name.header = header::<DISPLAYCONFIG_ADAPTER_NAME>(
-            DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME,
-            path.targetInfo.adapterId,
-            0,
-        );
-        if get_info(&mut name).is_ok() {
-            if let Ok(instance) = devices.interface_instance(&name.adapterDevicePath) {
-                if instances.contains(&instance) {
-                    supported_adapters.insert(id, instance);
-                }
+        if let Ok(instance) = adapter_instance(&devices, path.targetInfo.adapterId) {
+            if instances.contains(&instance) {
+                supported_adapters.insert(id, instance);
             }
         }
     }

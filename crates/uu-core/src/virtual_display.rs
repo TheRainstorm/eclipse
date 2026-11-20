@@ -369,7 +369,7 @@ trait Backend: Send + Sync {
     fn on_demand(&self) -> bool { false }
     fn configure_store(&self, _directory:&std::path::Path, _saved:&[TargetKey], _retained:&[LeaseId]) -> Result<()> { Ok(()) }
     fn prepare_on_demand(&self, _package:Option<&[(String,Vec<u8>)]>) -> Result<()> { Err(Error::Unsupported) }
-    fn check_driver_reinstall(&self) -> Result<()> { Err(Error::Unsupported) }
+    fn check_driver_reinstall(&self, _captures: &[(String, Option<String>)]) -> Result<()> { Err(Error::Unsupported) }
     fn reinstall_driver(&self, _package: &[(String, Vec<u8>)]) -> Result<()> { Err(Error::Unsupported) }
     fn allocate(&self, _id:LeaseId) -> Result<Option<(Target,Box<dyn Claim>)>> { Ok(None) }
     fn allocate_configured(&self,id:LeaseId,_name:&str,_spec:Spec,_position:Option<Position>,_existing:&[(TargetKey,Spec)]) -> Result<Option<(Target,Box<dyn Claim>)>> {self.allocate(id)}

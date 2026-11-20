@@ -122,7 +122,7 @@ pub(super) fn prepare(package: &[(String, Vec<u8>)]) -> Result<()> {
     })
 }
 
-pub(super) fn check_reinstall(scope: &str) -> Result<()> {
+pub(super) fn check_reinstall(scope: &str, captures: &[(String, Option<String>)]) -> Result<()> {
     let state = load()?;
     if state.records.iter().any(|record| record.scope != scope) {
         return Err(fail(uu_i18n::text("其它 Eclipse 配置仍有虚拟显示器。请从所属配置移除后再重装驱动。")));
@@ -140,14 +140,15 @@ pub(super) fn check_reinstall(scope: &str) -> Result<()> {
             }
         }
     }
-    if driver::demand_instances()?.iter().any(|instance| !owned.contains(&instance.to_ascii_lowercase())) {
+    let nodes = driver::demand_instances()?;
+    if nodes.iter().any(|instance| !owned.contains(&instance.to_ascii_lowercase())) {
         return Err(fail(uu_i18n::text("Windows 中还有其它程序安装的 Mtt 虚拟显示器。请先在原驱动管理器中移除，再重装 Eclipse 的驱动。")));
     }
-    Ok(())
+    check_reinstall_captures(captures, &nodes)
 }
 
 pub(super) fn reinstall(scope: &str, package: &[(String, Vec<u8>)]) -> Result<()> {
-    check_reinstall(scope)?;
+    check_reinstall(scope, &[])?;
     reconcile_owner(scope, &BTreeSet::new())?;
     recover_uninstalled_legacy()?;
     let mut state = load()?;
@@ -176,19 +177,20 @@ pub(super) fn retire_idle_pool() -> Result<()> {
     capacity::retire_legacy_pool(&directory, &BTreeSet::new())?;
     driver::retire_uninstalled_configuration(&directory)
 }
-fn recover_record(record: &Record) -> Result<()> {
+fn recover_record(record: &Record) -> Result<bool> {
     let token = record.token.to_string();
     let instance = match &record.instance {
         Some(instance) => Some(instance.clone()),
         None => driver::find_unbound_demand(&token)?,
     };
-    if let Some(instance) = instance {
-        driver::remove_demand_device(&instance, &token, record.ready)?;
-    }
+    let removed = match instance {
+        Some(instance) => driver::remove_demand_device(&instance, &token, record.ready)?,
+        None => false,
+    };
     if let Some(base) = load()?.directory {
         driver::remove_monitor_configuration(&base, record.token, record.restore_configuration.as_deref())?;
     }
-    Ok(())
+    Ok(removed)
 }
 pub(super) fn reconcile_owner(scope: &str, retained: &BTreeSet<Uuid>) -> Result<()> {
     let mut state = load()?;
@@ -488,7 +490,7 @@ pub(super) fn create_named(scope:&str,id:LeaseId,saved:&BTreeSet<TargetKey>,name
                 .unwrap()
                 .clone();
             match recover_record(&record) {
-                Ok(()) => {
+                Ok(_) => {
                     state.records.retain(|r| r.token != token);
                     save(&state)?;
                     Err(error)
@@ -531,21 +533,31 @@ fn remove_with_context(key: &TargetKey,context:Option<(&DisplaySnapshot,&[(Targe
             // Uninstalling a live IDD directly can replay a cached clone mode
             // for a surviving sibling even after a successful extension.
             let mut detached=before.scene.active.clone();
-            detached.paths.retain(|path|target_key(path).is_ok_and(|(k,_)|k!=*key));
-            if !detached.paths.is_empty() {
+            // Abort if a foreign identity becomes unreadable. Leaving it out
+            // of this topology would also detach that screen.
+            let mut retiring = None;
+            for (index, path) in detached.paths.iter().enumerate() {
+                if target_key(path)?.0 == *key { retiring = Some(index); }
+            }
+            if let Some(index) = retiring.filter(|_| detached.paths.len() > 1) {
+                detached.paths.remove(index);
                 let mut submitted=false;
                 if let Err(error)=apply(&detached,&mut submitted) {tracing::warn!(%error,"owned monitor detach will finish through exact device removal");}
             }
             #[cfg(test)] eprintln!("remove detached {:?}",timer.elapsed());
         }
     }
-    recover_record(&record)?;
+    let removed = recover_record(&record)?;
     #[cfg(test)] eprintln!("remove uninstalled {:?}",timer.elapsed());
     // Windows can select an older mode for the new connected combination.
     // Restore only this scope's surviving, exactly owned display specifications
     // from immediately before this removal; never replay a global layout.
     let (baseline,survivors)=context.unwrap_or((&before,&survivors));
-    configure_owned_set(survivors,Some(baseline),Some(key))?;
+    // An external uninstall has already finished. Retire its ledger and
+    // configuration without resubmitting a desktop on which another capture runs.
+    if removed || context.is_some() {
+        configure_owned_set(survivors,Some(baseline),Some(key))?;
+    }
     state.records.retain(|r| r.token != record.token);
     save(&state)?;
     if state.records.is_empty() && driver::demand_instances()?.is_empty() {

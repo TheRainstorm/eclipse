@@ -521,8 +521,8 @@ impl Manager {
         self.clear_saved_displays()
     }
 
-    /// Local service action. Stop new admissions before checking that the host
-    /// is idle, and keep the display catalog locked across removal and install.
+    /// Freeze admission and source changes, then recheck the streams against
+    /// the devices we will actually remove. Independent captures keep running.
     pub(crate) fn reinstall_driver(&self) -> Result<()> {
         if !self.backend.on_demand() {
             return Err(Error::Unsupported);
@@ -530,22 +530,22 @@ impl Manager {
         if !self.preparation_owner.load(Ordering::Acquire) {
             return Err(Error::AdministratorRequired);
         }
-        let check_idle = || {
+        let check_captures = || {
             if self.manual_closing.load(Ordering::Acquire) {
                 return Err(Error::HostClosing);
             }
-            if self.preparation_streams(None) != 0 {
-                return Err(platform(uu_i18n::text("请先结束此主机上的所有串流，再清理并重装虚拟显示器驱动。")));
-            }
-            Ok(())
+            let hosts = self.hosts.lock().map_err(|_| platform("host session registry is poisoned"))?;
+            let captures = hosts.iter().filter_map(Weak::upgrade)
+                .flat_map(|host| host.driver_reinstall_captures()).collect::<Vec<_>>();
+            drop(hosts);
+            self.backend.check_driver_reinstall(&captures)
         };
-        check_idle()?;
+        check_captures()?;
         let package = self.backend.download_capacity_driver().map_err(|failure| platform(failure.message))?;
         let mut entries = self.lock()?;
         let _edit = self.begin_layout_change()?;
-        check_idle()?;
+        check_captures()?;
         self.saved_file()?.read()?;
-        self.backend.check_driver_reinstall()?;
         let ids: Vec<_> = entries.keys().copied().collect();
         for id in ids {
             self.remove_locked(&mut entries, id, None, false)?;
