@@ -64,6 +64,7 @@ impl DisplayLayout {
         changed
     }
     pub fn last_selected(&self) -> Option<i32> {self.last_selected}
+    pub fn last_source(&self) -> Option<&str> { self.last_source.as_deref() }
     pub fn remembered(&self, screens: &[RemoteScreen]) -> Option<i32> {
         if let Some(name) = &self.last_source {
             // Native numeric IDs are only stable within a host session. Match

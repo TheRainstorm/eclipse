@@ -33,6 +33,7 @@ mod names;
 const INITIAL_REQUEST:&str="x-eclipse-initial-display-client";
 const INITIAL_REPLY:&str="x-eclipse-initial-display-host";
 const INITIAL_SUPPORTED:&str="x-eclipse-initial-display-supported";
+const PREFERRED_SOURCE: &str = "x-eclipse-preferred-display-source";
 
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(tag="kind",rename_all="snake_case",deny_unknown_fields)]
@@ -161,6 +162,12 @@ pub fn initial_offered(sdp:&RTCSessionDescription)->Result<bool> {
     Ok(value==Some(true))
 }
 
+pub(crate) fn preferred_initial_source(sdp: &RTCSessionDescription) -> Result<Option<String>> {
+    let source: Option<String> = read_initial(sdp, PREFERRED_SOURCE)?;
+    ensure!(source.as_deref().is_none_or(|name| valid_source(name, false)), "invalid preferred display source");
+    Ok(source)
+}
+
 #[derive(Default)]
 struct Selection {
     names_metadata:names::Names,
@@ -184,7 +191,7 @@ impl Host {
         host.state.lock().unwrap().selected=initial_monitor.clone();
         Some(std::sync::Arc::new(host))
     }
-    pub fn prepare(&self) -> anyhow::Result<CaptureSource> {
+    pub fn prepare(&self, preferred: Option<&str>) -> anyhow::Result<CaptureSource> {
         self.switching.store(false, Ordering::Release);
         if crate::native::uses_desktop_portal() {
             let mut state = self.state.lock().unwrap();
@@ -198,7 +205,7 @@ impl Host {
             for screen in &mut state.catalog.screens {screen.kind=crate::screen_control::PORTAL_CHOICE_KIND;}
             return Ok(CaptureSource::Primary);
         }
-        self.prepare_monitors(crate::native::monitors()?)
+        self.prepare_monitors(crate::native::monitors()?, preferred)
     }
     /// Resolve the first source before opening a capture. Source names are the
     /// stable cross-connection identity; numeric IDs are only a legacy fallback.
@@ -221,7 +228,7 @@ impl Host {
             matches[0].name.clone()
         };
         self.state.lock().unwrap().selected=Some(name);
-        self.prepare_monitors(monitors)
+        self.prepare_monitors(monitors, None)
     }
     /// CCD activation precedes DXGI publication. Wait without ever opening the
     /// default output, which may already be duplicated by another connection.
@@ -241,10 +248,18 @@ impl Host {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
     }
-    fn prepare_monitors(&self, mut monitors: Vec<CaptureMonitor>) -> anyhow::Result<CaptureSource> {
+    fn prepare_monitors(&self, mut monitors: Vec<CaptureMonitor>, preferred: Option<&str>) -> anyhow::Result<CaptureSource> {
         anyhow::ensure!(!monitors.is_empty(), "{}", uu_i18n::format!("当前没有可共享的显示器"));
         sort_monitors(&mut monitors);
         let mut state = self.state.lock().unwrap();
+        // Only the first offer may prefer a remembered source. Later epochs
+        // follow the committed selection. Missing or ambiguous names fall back.
+        if let Some(preferred) = preferred.filter(|_| state.names.is_empty()) {
+            let mut matches = monitors.iter().filter(|m| display_name(&m.name) == preferred);
+            if let Some(monitor) = matches.next().filter(|_| matches.next().is_none()) {
+                state.selected = Some(monitor.name.clone());
+            }
+        }
         if let Some(index)=state.selected.as_ref().and_then(|name|monitors.iter().position(|m|&m.name==name)) {
             if index>=MAX_DISPLAYS {monitors.swap(index,MAX_DISPLAYS-1);}
         }
@@ -452,6 +467,7 @@ struct Pending {
 #[derive(Default)]
 struct InitialState {
     request:Option<InitialRequest>,
+    preferred_source: Option<String>,
     offer_written:bool,
     sent:bool,
     finished:bool,
@@ -481,13 +497,24 @@ impl Client {
         Ok(())
     }
     pub fn initial_request(&self)->Option<InitialRequest> {self.state.lock().unwrap().initial.request.clone()}
+    pub fn prefer_initial_source(&self, source: &str) {
+        let mut state = self.state.lock().unwrap();
+        if !state.initial.offer_written && valid_source(source, false) {
+            state.initial.preferred_source = Some(source.to_owned());
+        }
+    }
     pub fn initial_supported(&self)->bool {self.state.lock().unwrap().initial.supported}
     pub fn take_initial_result(&self)->Option<std::result::Result<InitialReply,String>> {self.state.lock().unwrap().initial.result.take()}
     pub(crate) fn write_initial_offer(&self, sdp:&mut RTCSessionDescription)->Result<()> {
         let mut state=self.state.lock().unwrap();
         let initial=&mut state.initial;
         if initial.offer_written {return Ok(());}
-        if let Some(request)=&initial.request {request.add(sdp)?;initial.sent=true;}
+        if let Some(request)=&initial.request {
+            request.add(sdp)?;
+            initial.sent=true;
+        } else if let Some(source) = &initial.preferred_source {
+            add_initial(sdp, PREFERRED_SOURCE, source)?;
+        }
         initial.offer_written=true;
         Ok(())
     }
@@ -573,7 +600,7 @@ mod tests {
     #[test]
     fn windows_catalog_uses_system_number_order_and_preserves_exact_source_identity() {
         let host=Host::default();
-        let source=host.prepare_monitors(vec![monitor(r"\\.\DISPLAY17",false),monitor(r"\\.\DISPLAY2",false),monitor(r"\\.\DISPLAY1",true)]).unwrap();
+        let source=host.prepare_monitors(vec![monitor(r"\\.\DISPLAY17",false),monitor(r"\\.\DISPLAY2",false),monitor(r"\\.\DISPLAY1",true)],None).unwrap();
         assert_eq!(source,CaptureSource::Monitor(r"\\.\DISPLAY1".into()));
         assert_eq!(host.catalog().screens.iter().map(|s|s.display_name.as_str()).collect::<Vec<_>>(),[r"\\.\DISPLAY1",r"\\.\DISPLAY2",r"\\.\DISPLAY17"]);
         // Source identity wins over an ID saved before natural ordering.
@@ -657,6 +684,46 @@ mod tests {
         assert!(client.initial_supported());assert!(client.take_initial_result().is_none());
         assert!(client.request_initial(InitialRequest::Virtual{spec:crate::virtual_display::Spec::default()}).is_err());
     }
+
+    #[test]
+    fn remembered_display_is_offered_once_and_opens_directly_without_reordering_screens() {
+        let client = Client::default();
+        client.prefer_initial_source("b");
+        let mut first = description();
+        client.write_initial_offer(&mut first).unwrap();
+        assert!(InitialRequest::read(&first).unwrap().is_none());
+        let preferred = preferred_initial_source(&first).unwrap();
+        let host = Host::default();
+        let monitors = vec![monitor("b", false), monitor("a", true)];
+        assert_eq!(
+            host.prepare_monitors(monitors.clone(), preferred.as_deref()).unwrap(),
+            CaptureSource::Monitor("b".into())
+        );
+        assert_eq!(host.catalog().screens[0].display_name, "a");
+        assert_eq!(host.catalog().current_id, 1);
+
+        let mut next = description();
+        client.write_initial_offer(&mut next).unwrap();
+        assert!(preferred_initial_source(&next).unwrap().is_none());
+        assert_eq!(host.select(0), Some(true));
+        assert_eq!(
+            host.prepare_monitors(monitors.clone(), preferred.as_deref()).unwrap(),
+            CaptureSource::Monitor("a".into())
+        );
+        assert_eq!(
+            Host::default().prepare_monitors(monitors, Some("missing")).unwrap(),
+            CaptureSource::Monitor("a".into())
+        );
+
+        let fixed = Client::default();
+        fixed.prefer_initial_source("b");
+        let requested = InitialRequest::Existing { id: 0, source: "a".into() };
+        fixed.request_initial(requested.clone()).unwrap();
+        let mut offer = description();
+        fixed.write_initial_offer(&mut offer).unwrap();
+        assert_eq!(InitialRequest::read(&offer).unwrap(), Some(requested));
+        assert!(preferred_initial_source(&offer).unwrap().is_none());
+    }
     #[test]
     fn initial_old_host_falls_back_only_for_existing_and_replies_must_match_request() {
         let ordinary=Client::default();ordinary.write_initial_offer(&mut description()).unwrap();
@@ -726,7 +793,7 @@ mod tests {
     fn scope_rejects_unknown_ids_and_keeps_selection_by_name_across_reordering_and_hotplug() {
         let host = Host::default();
         assert_eq!(
-            host.prepare_monitors(vec![monitor("b", false), monitor("a", true)])
+            host.prepare_monitors(vec![monitor("b", false), monitor("a", true)], None)
                 .unwrap(),
             CaptureSource::Monitor("a".into())
         );
@@ -735,13 +802,13 @@ mod tests {
         assert_eq!(host.select(999), None);
         assert_eq!(host.select(1), Some(true));
         assert_eq!(
-            host.prepare_monitors(vec![monitor("b", false), monitor("a", true)])
+            host.prepare_monitors(vec![monitor("b", false), monitor("a", true)], None)
                 .unwrap(),
             CaptureSource::Monitor("b".into())
         );
         assert_eq!(host.catalog().current_id, 1);
         assert_eq!(
-            host.prepare_monitors(vec![monitor("a", true)]).unwrap(),
+            host.prepare_monitors(vec![monitor("a", true)], None).unwrap(),
             CaptureSource::Monitor("a".into())
         );
         assert_eq!(host.catalog().current_id, 0);
@@ -749,7 +816,7 @@ mod tests {
     #[test]
     fn refresh_adds_targets_without_publishing_a_pending_or_missing_source_as_current() {
         let host=Host::default();
-        host.prepare_monitors(vec![monitor("a",true),monitor("b",false)]).unwrap();
+        host.prepare_monitors(vec![monitor("a",true),monitor("b",false)],None).unwrap();
         host.dimensions(320,240);
         assert_eq!(host.select(1),Some(true));
         host.refresh_monitors(vec![monitor("a",true),monitor("b",false),monitor("c",false)]).unwrap();

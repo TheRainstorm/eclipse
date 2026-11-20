@@ -538,6 +538,11 @@ async fn send_video(
     let frame_trace=crate::frame_trace::offered(&offer.sdp);
     let video_e2e=crate::video_e2e::offered(&offer.sdp);
     let initial_request=crate::native_displays::InitialRequest::read(&offer.sdp)?;
+    let preferred_initial = if initial_request.is_none() && displays.is_some() {
+        crate::native_displays::preferred_initial_source(&offer.sdp)?
+    } else {
+        None
+    };
     let initial_supported=displays.is_some() && !uses_desktop_portal();
     let display_lifetime=virtuals.clone();
     let virtuals=virtuals.filter(|_|crate::native_virtual_display::offered(&offer.sdp));
@@ -554,7 +559,7 @@ async fn send_video(
         let virtuals=virtuals.clone();
         let request=initial_request.filter(|request| initial_supported || request.virtual_spec().is_some());
         let (source,reply)=tokio::task::spawn_blocking(move||->Result<_> {
-            let Some(request)=request else{return Ok((displays.prepare()?,None));};
+            let Some(request)=request else{return Ok((displays.prepare(preferred_initial.as_deref())?,None));};
             ensure!(initial_supported,"initial virtual displays require an enumerable desktop source");
             let (source,created)=match &request {
                 crate::native_displays::InitialRequest::Existing{..}=>(displays.prepare_initial(&request)?,None),

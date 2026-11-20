@@ -302,6 +302,8 @@ impl App {
             if let Err(error)=stats.native_displays.request_initial(initial) {
                 self.status=error.to_string();self.displays.notice=self.status.clone();return;
             }
+        } else if let Some(source) = self.displays.layout.last_source() {
+            stats.native_displays.prefer_initial_source(source);
         }
         let result=if let Some(path)=profile {
             (||->anyhow::Result<_>{
