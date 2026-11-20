@@ -28,3 +28,7 @@ On Windows 11 and newer, `WM_DPICHANGED` uses the operating system's suggested o
 The `ScaleFactorChanged` event and its `InnerSizeWriter` are still delivered. As in upstream #4341, the modern Windows placement branch uses the suggested rectangle instead of a callback-overridden size; see the upstream [InnerSizeWriter regression #4721](https://github.com/rust-windowing/winit/issues/4721). The current egui integration does not override that writer. A future consumer requiring a custom DPI-change size needs a separately verified adaptation rather than silently changing this backport's placement policy.
 
 Validate with owned native windows moving in both directions between monitors with different DPI, including a window's suggested rectangle, final monitor/size, and DPI-event sequence. Model or synthetic-message tests alone do not verify Windows Shell migration behavior. Keep normal, maximized, and borderless-fullscreen restoration checks separate.
+
+## Windows custom-frame drag coordinates
+
+Post the current cursor position in the low and high words of the shared drag message for moves and resizes. A rejected post releases the pending drag so the user can retry. See the signed screen-coordinate contract for [WM_NCLBUTTONDOWN](https://learn.microsoft.com/en-us/windows/desktop/inputdev/wm-nclbuttondown).
