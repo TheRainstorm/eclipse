@@ -52,7 +52,7 @@ pub fn record_bootstrap_error(error: &anyhow::Error) {
     }
 }
 
-pub fn init_background_logging() -> Result<()> {
+pub fn initialize_background() -> Result<()> {
     anyhow::ensure!(
         process_user(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })?
             == "S-1-5-18",
@@ -68,7 +68,9 @@ pub fn init_background_logging() -> Result<()> {
                 .canonicalize().context("解析受保护后台安装位置失败")?,
         "后台进程必须从安装位置启动"
     );
-    let directory = paths.runtime_config()?.log_dir();
+    let config = paths.runtime_config()?;
+    let directory = config.log_dir();
+    config.select_for_process()?;
     std::fs::create_dir_all(&directory).context("创建后台日志目录失败")?;
     let path = directory.join("service.log");
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 4 * 1024 * 1024) {

@@ -58,13 +58,13 @@ use windows_sys::Win32::{
     System::{RemoteDesktop::*, Threading::*},
 };
 
-fn verify_acl(path: &Path) -> Result<()> {
+fn verify_acl(path: &[u16]) -> Result<()> {
     let mut owner = ptr::null_mut();
     let mut dacl = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
     let error = unsafe {
         GetNamedSecurityInfoW(
-            wide(path.as_os_str()).as_ptr(),
+            path.as_ptr(),
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
@@ -135,11 +135,15 @@ pub fn protect(path: &Path) -> Result<()> {
         meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
         "后台服务目录不能包含重解析点"
     );
-    verify_acl(path).with_context(|| format!("核验服务路径权限失败：{}", path.display()))?;
+    // Windows canonicalize produces an extended-length path (\\?\) for
+    // Win32 calls that would otherwise use MAX_PATH.
+    let extended = path.canonicalize().with_context(|| format!("解析受保护服务路径失败：{}", path.display()))?;
+    let name = wide(extended.as_os_str());
+    verify_acl(&name).with_context(|| format!("核验服务路径权限失败：{}", path.display()))?;
     let descriptor = Descriptor::administrators()?;
     winok(unsafe {
         SetFileSecurityW(
-            wide(path.as_os_str()).as_ptr(),
+            name.as_ptr(),
             OWNER_SECURITY_INFORMATION
                 | GROUP_SECURITY_INFORMATION
                 | DACL_SECURITY_INFORMATION
@@ -151,9 +155,12 @@ pub fn protect(path: &Path) -> Result<()> {
 }
 pub fn directory(path: &Path) -> Result<()> {
     if !path.try_exists().with_context(|| format!("检查服务目录失败：{}", path.display()))? {
+        let parent = path.parent().context("缺少受保护服务目录的上级路径")?;
+        let name = path.file_name().context("缺少受保护服务目录名称")?;
+        let extended = parent.canonicalize().with_context(|| format!("解析受保护服务目录失败：{}", parent.display()))?.join(name);
         let descriptor = Descriptor::administrators()?;
         let attributes = descriptor.attributes();
-        winok(unsafe { CreateDirectoryW(wide(path.as_os_str()).as_ptr(), &attributes) })
+        winok(unsafe { CreateDirectoryW(wide(extended.as_os_str()).as_ptr(), &attributes) })
             .with_context(|| format!("创建受保护服务目录失败：{}", path.display()))?;
     }
     protect(path)
@@ -982,6 +989,29 @@ fn import_plugins_locked(source: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires an elevated Windows token; exercises only a disposable directory"]
+    fn protects_and_revalidates_service_paths_beyond_max_path() {
+        require_administrator().unwrap();
+        let root = std::env::temp_dir().join(format!("eclipse-long-acl-{}", uuid::Uuid::new_v4()));
+        directory(&root).unwrap();
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        }
+        let _fixture = Fixture(root.clone());
+        let first = root.join("version-".repeat(14));
+        let second = first.join("diagnostics-".repeat(14));
+        directory(&first).unwrap();
+        directory(&second).unwrap();
+        let log = second.join("eclipse-transport-generated.jsonl");
+        assert!(wide(log.as_os_str()).len() > 260);
+        fs::write(&log, b"generated diagnostic").unwrap();
+        protect_tree(&root).unwrap();
+        protect_tree(&root).unwrap();
+        assert_eq!(fs::read(&log).unwrap(), b"generated diagnostic");
+    }
+
     #[test]
     fn plugin_sync_allows_missing_private_data_but_requires_program_directories() {
         let root=std::env::temp_dir().join(format!("eclipse-plugin-sync-{}",uuid::Uuid::new_v4()));

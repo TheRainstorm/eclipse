@@ -267,7 +267,7 @@ async fn main() -> Result<()> {
     #[cfg(not(windows))]
     let background=false;
     #[cfg(windows)]
-    if background {if let Err(error)=service_cli::init_background_logging(){service_cli::record_bootstrap_error(&error);return Err(error);}}
+    if background {if let Err(error)=service_cli::initialize_background(){service_cli::record_bootstrap_error(&error);return Err(error);}}
     if !background {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -285,9 +285,6 @@ async fn main() -> Result<()> {
         let Command::Service { command } = cli.command else { unreachable!() };
         return service_cli::relocate(command).await;
     }
-    #[cfg(windows)]
-    let config = if background {uu_core::service_admin::windows::Paths::discover()?.runtime_config()?}else{Config::from_env()?};
-    #[cfg(not(windows))]
     let config = Config::from_env()?;
     config.ensure_dirs().await?;
     #[cfg(windows)]

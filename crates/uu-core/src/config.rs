@@ -30,6 +30,8 @@ struct ConfigCache {
     initialize: Mutex<()>,
 }
 
+static PROCESS_CONFIG: ConfigCache = ConfigCache::new();
+
 impl ConfigCache {
     const fn new() -> Self {
         Self { value: OnceLock::new(), initialize: Mutex::new(()) }
@@ -43,9 +45,22 @@ impl ConfigCache {
         let config = factory()?;
         Ok(self.value.get_or_init(|| config).clone())
     }
+
+    #[cfg(any(windows, test))]
+    fn select(&self, config: Config) -> Result<(), CoreError> {
+        let _guard = self.initialize.lock().unwrap_or_else(|poison| poison.into_inner());
+        self.value.set(config).map_err(|_| CoreError::Config("process profile already selected".into()))
+    }
 }
 
 impl Config {
+    /// Bind a Windows service process to its already verified configuration.
+    /// Every later lookup, including diagnostic writers, uses this selection.
+    #[cfg(windows)]
+    pub fn select_for_process(self) -> Result<(), CoreError> {
+        PROCESS_CONFIG.select(self)
+    }
+
     /// Windows uses `eclipse-data` beside the executable by default; Linux keeps
     /// XDG storage unless a portable directory or saved selection exists.
     /// Select once: adding/removing the directory while running must not split
@@ -53,8 +68,7 @@ impl Config {
     /// After successful resolution, reuse the whole configuration. Recoverable
     /// default-storage migration errors leave the cache empty so callers can retry.
     pub fn from_env() -> Result<Self, CoreError> {
-        static CONFIG: ConfigCache = ConfigCache::new();
-        CONFIG.get_or_try_init(Self::resolve_from_env)
+        PROCESS_CONFIG.get_or_try_init(Self::resolve_from_env)
     }
 
     fn resolve_from_env() -> Result<Self, CoreError> {
@@ -491,6 +505,20 @@ mod tests {
         let cached = cache.get_or_try_init(|| panic!("configuration already resolved")).unwrap();
         assert_eq!(cached.profile_dir(), Some(root));
         assert!(cached.signaling_host.is_empty());
+    }
+
+    #[test]
+    fn explicit_process_profile_is_used_for_later_diagnostic_lookups() {
+        let cache = ConfigCache::new();
+        let state = Path::new("protected-state");
+        cache.select(Config {
+            data_dir: "protected-data".into(),
+            state_dir: state.into(),
+            signaling_host: String::new(),
+        }).unwrap();
+        let selected = cache.get_or_try_init(|| panic!("portable resolution must never run")).unwrap();
+        assert_eq!(selected.state_dir.join("diagnostics"), state.join("diagnostics"));
+        assert!(cache.select(Config::in_profile(Path::new("different-profile"))).is_err());
     }
 
     #[test]
