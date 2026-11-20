@@ -1,13 +1,13 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-20T04:59:34Z",
+  "updated_at": "2026-11-20T06:17:32Z",
   "files": {
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "bd341c1fec24f4546012f80470421b263394f51139076cabbbb24e8fe1637b8e",
-      "size": 143404,
-      "normalized_sha256": "bd341c1fec24f4546012f80470421b263394f51139076cabbbb24e8fe1637b8e"
+      "sha256": "a551eeb65f254a8c0b8384a09f423c6ef3d19388717611c13221148d3240c1da",
+      "size": 144041,
+      "normalized_sha256": "a551eeb65f254a8c0b8384a09f423c6ef3d19388717611c13221148d3240c1da"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -155,9 +155,9 @@
     },
     "crates/uu-cli/src/main.rs": {
       "role": "index",
-      "sha256": "3e8ef6173b0fbb612dd73f86c57386628c0df19806a003f0f6ed817d676e7f15",
-      "size": 26653,
-      "normalized_sha256": "3e8ef6173b0fbb612dd73f86c57386628c0df19806a003f0f6ed817d676e7f15"
+      "sha256": "362f53b1f65fcae406e506a5ebb50bbd0f548f997337db8e43e97fba02be7cf8",
+      "size": 27942,
+      "normalized_sha256": "362f53b1f65fcae406e506a5ebb50bbd0f548f997337db8e43e97fba02be7cf8"
     },
     "crates/uu-cli/src/native_cli.rs": {
       "role": "index",
@@ -407,9 +407,9 @@
     },
     "crates/uu-core/src/internet.rs": {
       "role": "index",
-      "sha256": "6d6114016e10c6a09585e51425ee133249562f97a9d4109f5ea3464115794469",
-      "size": 26023,
-      "normalized_sha256": "6d6114016e10c6a09585e51425ee133249562f97a9d4109f5ea3464115794469"
+      "sha256": "56f3d308756f4fb86fb80f9c42d268053044f9f40065c0ac46498d62ed76afb4",
+      "size": 26036,
+      "normalized_sha256": "56f3d308756f4fb86fb80f9c42d268053044f9f40065c0ac46498d62ed76afb4"
     },
     "crates/uu-core/src/internet/enrollment.rs": {
       "role": "index",
@@ -422,6 +422,12 @@
       "sha256": "f79d608be52ed27f49ec3ae6c3076f0089d66a46d570cb7874e7d4c7efa25da1",
       "size": 11816,
       "normalized_sha256": "f79d608be52ed27f49ec3ae6c3076f0089d66a46d570cb7874e7d4c7efa25da1"
+    },
+    "crates/uu-core/src/internet/nat.rs": {
+      "role": "index",
+      "sha256": "ce3c11687f0e6fca500eadec53f60e4fc6730e94a9bd2cefcaee1573a73bf04b",
+      "size": 15603,
+      "normalized_sha256": "ce3c11687f0e6fca500eadec53f60e4fc6730e94a9bd2cefcaee1573a73bf04b"
     },
     "crates/uu-core/src/internet/self_hosted.rs": {
       "role": "index",
