@@ -310,19 +310,40 @@ impl Bootstrap {
     }
     pub fn closed_signal(&self) -> watch::Receiver<bool> { self.io.state.clone() }
 }
+
+async fn signaling_failure(
+    peer: &mut watch::Receiver<RTCPeerConnectionState>,
+    provider: &mut watch::Receiver<bool>,
+) -> anyhow::Error {
+    tokio::select! {
+        _ = peer.wait_for(|state| matches!(state, RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed)) =>
+            anyhow::anyhow!("{}", uu_i18n::text("设备配对通道已关闭")),
+        _ = provider.wait_for(|closed| *closed) =>
+            anyhow::anyhow!("{}", uu_i18n::text("连接服务已关闭")),
+    }
+}
+
 #[async_trait::async_trait]
 impl SessionSignaling for Bootstrap {
     async fn send(&mut self, value: Value) -> Result<()> {
         ensure!(
             self.io.authenticated.load(Ordering::Acquire),
             "{}", uu_i18n::format!("设备尚未获得授权"));
-        AuthIo::send(&mut self.io, value).await
+        tokio::select! {
+            result = AuthIo::send(&mut self.io, value) => result,
+            error = signaling_failure(&mut self.peer.0.states, &mut self.provider.closed) => Err(error),
+        }
     }
     async fn receive(&mut self) -> Result<Value> {
         ensure!(
             self.io.authenticated.load(Ordering::Acquire),
             "{}", uu_i18n::format!("设备尚未获得授权"));
-        AuthIo::receive(&mut self.io).await
+        // A failed ICE peer need not report a data channel close. An offer or
+        // answer wait must still retire when the bootstrap cannot carry it.
+        tokio::select! {
+            result = AuthIo::receive(&mut self.io) => result,
+            error = signaling_failure(&mut self.peer.0.states, &mut self.provider.closed) => Err(error),
+        }
     }
     async fn disconnected(&mut self) -> Result<()> {
         ensure!(!*self.provider.closed.borrow(), "{}", uu_i18n::format!("连接服务已关闭"));
@@ -349,6 +370,20 @@ mod tests {
     struct Memory {
         tx: mpsc::Sender<Value>,
         rx: mpsc::Receiver<Value>,
+    }
+    #[tokio::test]
+    async fn signaling_failure_waits_through_transient_disconnect_but_finishes_on_failed_ice() {
+        let (peer, mut state) = watch::channel(RTCPeerConnectionState::Disconnected);
+        let (_provider, mut provider) = watch::channel(false);
+        let wait = signaling_failure(&mut state, &mut provider);
+        tokio::pin!(wait);
+        tokio::select! {
+            biased;
+            _ = &mut wait => panic!("a transient disconnect must not retire signaling"),
+            _ = tokio::task::yield_now() => {},
+        }
+        peer.send_replace(RTCPeerConnectionState::Failed);
+        tokio::time::timeout(Duration::from_secs(1), wait).await.unwrap();
     }
     #[async_trait::async_trait]
     impl Transport for Memory {
