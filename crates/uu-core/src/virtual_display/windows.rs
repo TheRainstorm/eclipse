@@ -962,6 +962,11 @@ fn owned_placements(before:&Topology,existing:&[(TargetKey,Spec)])->Result<Vec<(
     }
     Ok(placements)
 }
+fn mode_matches(requested: Spec, observed: Spec) -> bool {
+    requested.width == observed.width && requested.height == observed.height
+        && requested.refresh_millihz.abs_diff(observed.refresh_millihz) <= 1
+        && requested.hdr == observed.hdr
+}
 fn configure_owned_set(desired:&[(TargetKey,Spec,Option<Position>)],before:Option<&DisplaySnapshot>,retiring:Option<&TargetKey>)->Result<()> {
     if desired.is_empty()&&retiring.is_none() {return Ok(());}
     let mut owned:BTreeSet<_>=desired.iter().map(|(k,_,_)|k.clone()).collect();
@@ -1003,17 +1008,51 @@ fn configure_owned_set(desired:&[(TargetKey,Spec,Option<Position>)],before:Optio
     let proposal=compact_topology(proposal)?;
     let mut submitted=false;
     apply(&proposal,&mut submitted)?;
-    let active=query(QDC_ONLY_ACTIVE_PATHS)?;
+    // A successful CCD apply can initially publish the new target in its boot
+    // mode. Wait for the exact targets before setting color once, then verify
+    // their modes on a fresh read. Foreign topology changes fail immediately.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let read_owned = |verify_modes: bool| -> Result<Topology> {
+        loop {
+            let topology = query(QDC_ONLY_ACTIVE_PATHS)?;
+            if foreign(&topology)? != preserved {
+                return Err(Error::Platform("another display changed during owned display connection".into()));
+            }
+            let mut mismatch = None;
+            for (key, requested, _) in desired {
+                let path = topology.paths.iter().find(|p| target_key(p).is_ok_and(|(k, _)| &k == key));
+                if !verify_modes && path.is_some() { continue; }
+                let observed = match path {
+                    Some(path) => actual(path, &topology.modes),
+                    None => Ok(None),
+                };
+                if !matches!(&observed, Ok(Some(mode)) if mode_matches(*requested, *mode)) {
+                    mismatch = Some((key, requested, observed));
+                    break;
+                }
+            }
+            let Some((key, requested, observed)) = mismatch else { return Ok(topology); };
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                let observed = match observed {
+                    Ok(Some(mode)) => format!("{mode:?}"),
+                    Ok(None) => "target not active".into(),
+                    Err(error) => error.to_string(),
+                };
+                return Err(Error::Platform(format!(
+                    "virtual display mode did not settle for {}: requested {requested:?}, actual {observed}",
+                    key.monitor_path
+                )));
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(50)));
+        }
+    };
+    let active=read_owned(false)?;
     for (key,spec,_) in desired {
         let path=active.paths.iter().find(|p|target_key(p).is_ok_and(|(k,_)|&k==key)).ok_or(Error::UnknownSlot)?;
         set_color(path,spec.hdr)?;
     }
-    let committed=query(QDC_ONLY_ACTIVE_PATHS)?;
-    if foreign(&committed)?!=preserved {return Err(Error::Platform("another display changed during owned display connection".into()));}
-    for (key,spec,_) in desired {
-        let path=committed.paths.iter().find(|p|target_key(p).is_ok_and(|(k,_)|&k==key)).ok_or(Error::UnknownSlot)?;
-        if !actual(path,&committed.modes)?.is_some_and(|s|s.width==spec.width&&s.height==spec.height&&s.refresh_millihz.abs_diff(spec.refresh_millihz)<=1&&s.hdr==spec.hdr) {return Err(Error::Platform("owned display connection did not match the requested mode".into()));}
-    }
+    read_owned(true)?;
     // Preference storage is not ownership or device removal. The application
     // retains its own per-definition position even if the Windows cache lags.
     if let Err(error)=provision::capacity::persist_owned_live(&authorized) {tracing::warn!(%error,"Windows connected-display preference was not saved");}
@@ -1081,12 +1120,7 @@ fn configure_mode(key: &TargetKey, spec: Spec, existing:bool, extend_right:bool)
                     ));
                 };
                 let readback = actual(path, &committed.modes)?;
-                if readback.is_some_and(|actual| {
-                    actual.width == spec.width
-                        && actual.height == spec.height
-                        && actual.refresh_millihz.abs_diff(spec.refresh_millihz) <= 1
-                        && actual.hdr == spec.hdr
-                }) {
+                if readback.is_some_and(|actual| mode_matches(spec, actual)) {
                     let source = source_name(path)?;
                     if !source.is_empty() {
                         return Ok(Target {
@@ -1193,6 +1227,7 @@ fn deactivate_keys(keys: &BTreeSet<TargetKey>, require_other_active: bool, mode_
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn restoring_one_display_leaves_other_missing_claims_disconnected() {
         let missing = TargetKey { adapter: (1, 0), target: 3, monitor_path: "removed".into() };
