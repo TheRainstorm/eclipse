@@ -1390,9 +1390,11 @@ pub(super) fn switch_demand_configuration(expected:&Path,next:&Path)->Result<()>
     if code!=0 {return Err(os_error("select owned display configuration",code));}
     Ok(())
 }
-pub(super) fn remove_monitor_configuration(base:&Path,token:Uuid)->Result<()> {
+pub(super) fn remove_monitor_configuration(base:&Path,token:Uuid,restore:Option<&Path>)->Result<()> {
     let directory=base.join(format!("monitor-{token}"));
-    if current_configuration()?.as_deref()==Some(directory.as_path()) {switch_demand_configuration(&directory,base)?;}
+    if current_configuration()?.as_deref()==Some(directory.as_path()) {
+        switch_demand_configuration(&directory,restore.unwrap_or(base))?;
+    }
     if !directory.try_exists().map_err(|e|Error::Platform(e.to_string()))? {return Ok(());}
     let attrs=unsafe{GetFileAttributesW(path_wide(&directory).as_ptr())};
     if attrs==INVALID_FILE_ATTRIBUTES||attrs&FILE_ATTRIBUTE_REPARSE_POINT!=0 {return Err(Error::Platform("owned monitor configuration was redirected".into()));}

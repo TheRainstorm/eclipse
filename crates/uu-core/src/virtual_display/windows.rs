@@ -952,8 +952,7 @@ fn configure_owned_set(desired:&[(TargetKey,Spec,Option<Position>)],before:Optio
     if let Some(key)=retiring {owned.insert(key.clone());}
     // Every desired path must still be backed by our exact same-scope ledger.
     let anchor=desired.first().map(|v|&v.0).or(retiring).ok_or(Error::UnknownSlot)?;
-    let mut authorized=demand::owned_keys(anchor)?;
-    if let Some(key)=retiring {authorized.insert(key.clone());}
+    let authorized=demand::owned_keys(anchor,retiring)?;
     if !owned.is_subset(&authorized) {return Err(Error::WrongOwner);}
     let fresh=scene()?;
     let foreign=|topology:&Topology|->Result<_> {
@@ -1008,7 +1007,7 @@ fn configure_owned_mode(key:&TargetKey,spec:Spec,creation:bool)->std::result::Re
     // A new PnP monitor may become active between enumeration and this call
     // when Windows applies its saved connected-display configuration. The
     // exact owned claim permits both states; observe it afresh under the lock.
-    let observed=(||->Result<_>{let owned=demand::owned_keys(key)?;let active=scene()?.active.paths.iter().any(|p|target_key(p).is_ok_and(|(candidate,_)|&candidate==key));Ok((owned,active))})();
+    let observed=(||->Result<_>{let owned=demand::owned_keys(key,None)?;let active=scene()?.active.paths.iter().any(|p|target_key(p).is_ok_and(|(candidate,_)|&candidate==key));Ok((owned,active))})();
     let (owned,active)=observed.map_err(|error|ActivationFailure{message:error.to_string(),activated:true})?;
     let target=configure_mode(key,spec,active,creation)?;
     let result=provision::capacity::persist_owned_live(&owned);

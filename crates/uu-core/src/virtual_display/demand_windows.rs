@@ -24,6 +24,8 @@ struct Record {
     instance: Option<String>,
     target: Option<TargetKey>,
     ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restore_configuration: Option<PathBuf>,
 }
 fn fail(message: impl Into<String>) -> Error {
     Error::Platform(message.into())
@@ -140,7 +142,9 @@ fn recover_record(record: &Record) -> Result<()> {
     if let Some(instance) = instance {
         driver::remove_demand_device(&instance, &token, record.ready)?;
     }
-    if let Some(base)=load()?.directory {driver::remove_monitor_configuration(&base,record.token)?;}
+    if let Some(base) = load()?.directory {
+        driver::remove_monitor_configuration(&base, record.token, record.restore_configuration.as_deref())?;
+    }
     Ok(())
 }
 pub(super) fn reconcile_owner(scope: &str, retained: &BTreeSet<Uuid>) -> Result<()> {
@@ -167,7 +171,7 @@ pub(super) fn reconcile_owner(scope: &str, retained: &BTreeSet<Uuid>) -> Result<
     Ok(())
 }
 enum Configuration {
-    Private,
+    Private(PathBuf),
     // New independently hosted nodes inherit the external driver's advertised
     // modes. Never switch VDDPATH or write a per-monitor EDID in this mode.
     Shared(Option<PathBuf>),
@@ -188,6 +192,17 @@ fn shared_configuration(current: Option<PathBuf>) -> Result<Configuration> {
     }
     Ok(Configuration::Shared(current))
 }
+fn owns_all_instances(state: &State, installed: &[String]) -> Result<bool> {
+    for instance in installed {
+        let Some(record) = state.records.iter().find(|record| record.instance.as_ref() == Some(instance)) else {
+            return Ok(false);
+        };
+        if !driver::verify_demand_device(instance, &record.token.to_string(), true)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
 /// Retire a proven Eclipse legacy pool, or coexist with the existing driver
 /// using its unchanged configuration and a separately owned PnP instance.
 fn select_configuration(
@@ -196,40 +211,29 @@ fn select_configuration(
     saved: &BTreeSet<TargetKey>,
 ) -> Result<Configuration> {
     let current = driver::current_configuration()?;
-    if current.as_deref() == Some(directory) {
-        let installed = driver::demand_instances()?;
-        if installed.iter().any(|instance| !state.records.iter().any(|record| record.instance.as_ref() == Some(instance))) {
-            return shared_configuration(current);
-        }
-        return Ok(Configuration::Private);
-    }
+    let installed = driver::demand_instances()?;
+    let all_owned = owns_all_instances(state, &installed)?;
     if let Some(current) = current {
-        let owned = capacity::legacy_owned(&current)?;
-        let installed = driver::demand_instances()?;
-        if owned.is_empty() || installed.iter().any(|id| !owned.contains(id)) {
+        // The registry path can survive an external adapter uninstall. If
+        // every actual instance is ours, use the new monitor's own EDID and
+        // restore that path after its independently hosted driver starts.
+        if all_owned {
+            return Ok(Configuration::Private(current));
+        }
+        if current == directory {
             return shared_configuration(Some(current));
         }
-        if !installed.is_empty() {
-            capacity::retire_legacy_pool(&current, saved)?;
+        let legacy = capacity::legacy_owned(&current)?;
+        if installed.iter().any(|instance| !legacy.contains(instance)) {
+            return shared_configuration(Some(current));
         }
-        // Device absence includes phantom nodes; compare the exact registry
-        // value again before clearing only the stale, proven-owned pathname.
+        capacity::retire_legacy_pool(&current, saved)?;
         driver::retire_uninstalled_configuration(&current)?;
-    } else {
-        let owned: BTreeSet<_> = state
-            .records
-            .iter()
-            .filter_map(|r| r.instance.as_ref())
-            .collect();
-        if driver::demand_instances()?
-            .iter()
-            .any(|instance| !owned.contains(instance))
-        {
-            return shared_configuration(None);
-        }
+    } else if !all_owned {
+        return shared_configuration(None);
     }
     driver::demand_configuration(directory)?;
-    Ok(Configuration::Private)
+    Ok(Configuration::Private(directory.to_path_buf()))
 }
 /// Adopt a completed device by its protected logical identity, never its name.
 fn adopt_ready(scope:&str,id:LeaseId)->Result<Option<(Target,Box<dyn Claim>)>> {
@@ -314,11 +318,20 @@ pub(super) fn create_named(scope:&str,id:LeaseId,saved:&BTreeSet<TargetKey>,name
     };
     verify_package(&directory)?;
     let current=driver::current_configuration()?;
-    if let Some(record)=state.records.iter().find(|r|current.as_ref()==Some(&directory.join(format!("monitor-{}",r.token)))) {
-        driver::switch_demand_configuration(&directory.join(format!("monitor-{}",record.token)),&directory)?;
+    if let Some(record) = state.records.iter().find(|record| {
+        current.as_ref() == Some(&directory.join(format!("monitor-{}", record.token)))
+    }) {
+        driver::switch_demand_configuration(
+            &directory.join(format!("monitor-{}", record.token)),
+            record.restore_configuration.as_deref().unwrap_or(&directory),
+        )?;
     }
     let settings = select_configuration(&state, &directory, saved)?;
     let token = Uuid::new_v4();
+    let restore_configuration = match &settings {
+        Configuration::Private(path) if path != &directory => Some(path.clone()),
+        _ => None,
+    };
     state.records.push(Record {
         scope: scope.into(),
         lease: id.0,
@@ -326,14 +339,15 @@ pub(super) fn create_named(scope:&str,id:LeaseId,saved:&BTreeSet<TargetKey>,name
         instance: None,
         target: None,
         ready: false,
+        restore_configuration,
     });
     save(&state)?;
     let result = (|| -> Result<(Target, Box<dyn Claim>)> {
         let private_override = match &settings {
-            Configuration::Private => {
+            Configuration::Private(restore) => {
                 let path = driver::stage_monitor_configuration(&directory, token, id.0, name, spec)?;
-                driver::switch_demand_configuration(&directory, &path)?;
-                Some(path)
+                driver::switch_demand_configuration(restore, &path)?;
+                Some((path, restore))
             }
             Configuration::Shared(expected) => {
                 if driver::current_configuration()?.as_ref() != expected.as_ref() {
@@ -386,19 +400,20 @@ pub(super) fn create_named(scope:&str,id:LeaseId,saved:&BTreeSet<TargetKey>,name
         if !driver::verify_demand_device(&instance, &token.to_string(), true)? {
             return Err(Error::UnknownSlot);
         }
+        if let Some((path, restore)) = private_override {
+            driver::switch_demand_configuration(&path, restore)?;
+        } else if let Configuration::Shared(expected) = &settings {
+            if driver::current_configuration()?.as_ref() != expected.as_ref() {
+                return Err(fail("Mtt 配置目录在启用期间已更改，本次设备将被移除。"));
+            }
+            shared_configuration(expected.clone())?;
+        }
+        driver::rename_demand_monitor(&target.key,&token.to_string(),name)?;
         let record = state.records.iter_mut().find(|r| r.token == token).unwrap();
         record.target = Some(target.key.clone());
         record.ready = true;
+        record.restore_configuration = None;
         save(&state)?;
-        if let Some(path) = private_override {
-            driver::switch_demand_configuration(&path, &directory)?;
-        } else if let Configuration::Shared(expected) = settings {
-            if driver::current_configuration()? != expected {
-                return Err(fail("Mtt 配置目录在启用期间已更改，本次设备将被移除。"));
-            }
-            shared_configuration(expected)?;
-        }
-        driver::rename_demand_monitor(&target.key,&token.to_string(),name)?;
         Ok((target, claim))
     })();
     match result {
@@ -503,18 +518,18 @@ pub(super) fn inventory(scope: Option<&str>) -> Result<Inventory> {
 pub(super) fn scope_for(key:&TargetKey)->Result<String> {
     load()?.records.into_iter().find(|r|r.target.as_ref()==Some(key)).map(|r|r.scope).ok_or(Error::UnknownSlot)
 }
-pub(super) fn owned_keys(key: &TargetKey) -> Result<BTreeSet<TargetKey>> {
+pub(super) fn owned_keys(key: &TargetKey, retiring: Option<&TargetKey>) -> Result<BTreeSet<TargetKey>> {
     let state = load()?;
     let scope = &state
         .records
         .iter()
-        .find(|r| r.ready && r.target.as_ref() == Some(key))
+        .find(|r| r.target.as_ref() == Some(key) && (r.ready || retiring == Some(key)))
         .ok_or(Error::UnknownSlot)?
         .scope;
     Ok(state
         .records
         .iter()
-        .filter(|r| r.ready && r.scope == *scope)
+        .filter(|r| r.scope == *scope && (r.ready || retiring.is_some_and(|key| r.target.as_ref() == Some(key))))
         .filter_map(|r| r.target.clone())
         .collect())
 }
@@ -645,7 +660,7 @@ mod live_tests {
                 let third_spec=Spec{width:1280,height:720,..spec};
                 let (third,third_claim)=create_named(&scope,LeaseId(Uuid::new_v4()),&BTreeSet::new(),"Zeus Orion",third_spec)?;
                 // Simulate Windows disabling an existing sibling during PnP.
-                deactivate(&restored.key,&owned_keys(&third.key)?)?;
+                deactivate(&restored.key,&owned_keys(&third.key,None)?)?;
                 desired.push((third.key.clone(),third_spec,None));
                 configure_owned_set(&desired,Some(&before),None)?;
                 if position_of(&query(QDC_ONLY_ACTIVE_PATHS)?,&restored.key)?!=Some(above) {return Err(fail("hotplug did not reconnect the previously enabled screen"));}

@@ -621,9 +621,15 @@ impl State {
                     self.remote_inventory_uncertain = true;
                     self.remote_refresh_requested = !self.remote_refresh_attempted;
                 }
+                let summary = message
+                    .lines()
+                    .next()
+                    .filter(|line| !line.trim().is_empty())
+                    .unwrap_or_else(|| uu_i18n::text("虚拟副屏操作未完成，请检查后台状态或查看诊断详情。"))
+                    .to_owned();
                 self.details = message;
                 self.details_open_requested = true;
-                self.message(Kind::Error, uu_i18n::text("虚拟副屏操作未完成，请刷新确认当前状态。").into());
+                self.message(Kind::Error, summary);
             }
         }
     }
@@ -1195,6 +1201,7 @@ mod tests {
                 && state.preparation.is_none()
         );
         assert!(state.details.contains("generated background recovery"));
+        assert_eq!(state.notice, "generated background recovery is pending");
         let ctx = egui::Context::default();
         for request in [
             LocalRequest::Prepare,

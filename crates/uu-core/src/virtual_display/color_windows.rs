@@ -112,7 +112,7 @@ pub(super) fn set(path: &DISPLAYCONFIG_PATH_INFO, requested_hdr: bool) -> Result
     let state = read(path)?;
     state.configure(
         requested_hdr,
-        || Error::Platform("this virtual target does not support HDR".into()),
+        || Error::Platform(uu_i18n::text("Windows 未报告这块虚拟显示器支持 HDR。").into()),
         |api, requested_hdr| {
             // Select one setter from the successful query. Never compensate an error
             // from the HDR-only API by changing the combined legacy HDR/WCG switch.

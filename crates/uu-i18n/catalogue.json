@@ -2172,6 +2172,7 @@
   "已登记的准备会在空闲时继续；无需重复点击，也不会中断正在使用的副屏。": "Queued preparation continues when the host is idle. No need to click again; displays in use stay connected.",
   "准备虚拟副屏": "Prepare virtual displays",
   "诊断详情": "Diagnostic details",
+  "Windows 未报告这块虚拟显示器支持 HDR。": "Windows did not report HDR support for this virtual display.",
   "虚拟副屏操作未完成，请刷新确认当前状态。": "The virtual display operation did not complete. Refresh to confirm its current state.",
   "更新或启用源机后台后，可自动准备虚拟副屏。": "Update or enable the host background service to prepare virtual displays automatically.",
   "选择已有配置会加载其参数；输入新名称会用当前参数另存配置。": "Select an existing profile to load its settings, or enter a new name to save the current settings as a new profile.",
