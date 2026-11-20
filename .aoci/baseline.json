@@ -1,13 +1,13 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-20T12:56:02Z",
+  "updated_at": "2026-11-20T14:00:14Z",
   "files": {
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "f5811413e7a110e5d8b6d33c74e1f9f5ed35fbfe3847f93ab770fcec4851439d",
-      "size": 145199,
-      "normalized_sha256": "f5811413e7a110e5d8b6d33c74e1f9f5ed35fbfe3847f93ab770fcec4851439d"
+      "sha256": "1458f672a1f3abb896c9cec286d6a68b9fd8c263406fbb8148940ff5f3d8df22",
+      "size": 145176,
+      "normalized_sha256": "1458f672a1f3abb896c9cec286d6a68b9fd8c263406fbb8148940ff5f3d8df22"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -59,9 +59,9 @@
     },
     "crates/uu-capture/src/backend.rs": {
       "role": "index",
-      "sha256": "e2bc542f8714b23e680c64dc75b9d10ee4fcfbdb34f250fc12d4777157b74eb8",
-      "size": 7941,
-      "normalized_sha256": "e2bc542f8714b23e680c64dc75b9d10ee4fcfbdb34f250fc12d4777157b74eb8"
+      "sha256": "38d552c5cda27304c289cf3a30d5af72057a03b371f88631e1ff902eb7adbdbe",
+      "size": 8049,
+      "normalized_sha256": "38d552c5cda27304c289cf3a30d5af72057a03b371f88631e1ff902eb7adbdbe"
     },
     "crates/uu-capture/src/cursor.rs": {
       "role": "index",
@@ -119,9 +119,9 @@
     },
     "crates/uu-capture/src/windows.rs": {
       "role": "index",
-      "sha256": "267840d94d5354891bd3fa9b4a157fbc079f93a2a44edec665f6718e7084b18c",
-      "size": 44157,
-      "normalized_sha256": "267840d94d5354891bd3fa9b4a157fbc079f93a2a44edec665f6718e7084b18c"
+      "sha256": "b6027103efd0dc9f2fb8e675285c4eec645b52e3ad5e3f94c89b0893c9020b83",
+      "size": 44118,
+      "normalized_sha256": "b6027103efd0dc9f2fb8e675285c4eec645b52e3ad5e3f94c89b0893c9020b83"
     },
     "crates/uu-capture/src/windows_gdi.rs": {
       "role": "index",
@@ -479,9 +479,9 @@
     },
     "crates/uu-core/src/native.rs": {
       "role": "index",
-      "sha256": "1a7449134e6545999e8a6ce06e8dbeebbfb98f6ad7998e7d5608e80774ee42fe",
-      "size": 98040,
-      "normalized_sha256": "1a7449134e6545999e8a6ce06e8dbeebbfb98f6ad7998e7d5608e80774ee42fe"
+      "sha256": "431c3cebe8bcb15d21a7683f87d3df12224e49e35564f634453bdabb981bf3e9",
+      "size": 100126,
+      "normalized_sha256": "431c3cebe8bcb15d21a7683f87d3df12224e49e35564f634453bdabb981bf3e9"
     },
     "crates/uu-core/src/native/capture_worker.rs": {
       "role": "index",
@@ -533,9 +533,9 @@
     },
     "crates/uu-core/src/native_control.rs": {
       "role": "index",
-      "sha256": "a3411cb4f1e397055fd33dc4b0bfcaa1d2a489aa0d68589839b5678c2e729755",
-      "size": 103921,
-      "normalized_sha256": "a3411cb4f1e397055fd33dc4b0bfcaa1d2a489aa0d68589839b5678c2e729755"
+      "sha256": "79c41f04f4bce84ffd4bd4df578da66cb1db3f35e10b217972cc4a32fef79c69",
+      "size": 107826,
+      "normalized_sha256": "79c41f04f4bce84ffd4bd4df578da66cb1db3f35e10b217972cc4a32fef79c69"
     },
     "crates/uu-core/src/native_control/protocol_input.rs": {
       "role": "index",
@@ -575,9 +575,9 @@
     },
     "crates/uu-core/src/native_displays.rs": {
       "role": "index",
-      "sha256": "f2fa22b284dd3826cc7df7ebeaeadc0da5c21ad3b12919e1dde7faa83d252c2c",
-      "size": 46138,
-      "normalized_sha256": "f2fa22b284dd3826cc7df7ebeaeadc0da5c21ad3b12919e1dde7faa83d252c2c"
+      "sha256": "94d37cbae955ea25843824b7f52d418287bf5bde20b176196d4ec7cc606897d1",
+      "size": 48197,
+      "normalized_sha256": "94d37cbae955ea25843824b7f52d418287bf5bde20b176196d4ec7cc606897d1"
     },
     "crates/uu-core/src/native_displays/names.rs": {
       "role": "index",
@@ -803,9 +803,9 @@
     },
     "crates/uu-core/src/shared_capture.rs": {
       "role": "index",
-      "sha256": "07c4318db8b24b285c23949119f9dd0f8a3b600c5b09b27356dd594bf725daee",
-      "size": 51592,
-      "normalized_sha256": "07c4318db8b24b285c23949119f9dd0f8a3b600c5b09b27356dd594bf725daee"
+      "sha256": "94defab9db0d5f249f48c04a6e800aab2d2bcfef83461ae22c3521b663fe2787",
+      "size": 53779,
+      "normalized_sha256": "94defab9db0d5f249f48c04a6e800aab2d2bcfef83461ae22c3521b663fe2787"
     },
     "crates/uu-core/src/shared_host.rs": {
       "role": "index",
@@ -911,15 +911,15 @@
     },
     "crates/uu-core/src/virtual_display/color_windows.rs": {
       "role": "index",
-      "sha256": "6d26065b99be65a614b7de33a02b178bbb1f56c06ee1a715ead1b1f4157985e7",
-      "size": 6014,
-      "normalized_sha256": "6d26065b99be65a614b7de33a02b178bbb1f56c06ee1a715ead1b1f4157985e7"
+      "sha256": "78909c0e252d13130f47e898a71c1fd76c7602b2b54dad27227ed8bf67bb86e9",
+      "size": 6040,
+      "normalized_sha256": "78909c0e252d13130f47e898a71c1fd76c7602b2b54dad27227ed8bf67bb86e9"
     },
     "crates/uu-core/src/virtual_display/demand_windows.rs": {
       "role": "index",
-      "sha256": "d45cd36350fcda8d2eb366ae8a443741588782fe8fa069e85b56c679d9d800e8",
-      "size": 39618,
-      "normalized_sha256": "d45cd36350fcda8d2eb366ae8a443741588782fe8fa069e85b56c679d9d800e8"
+      "sha256": "81e6885e8197593bdefd2ad554d9352d68f8d08c9249d1d9374c944260f1263a",
+      "size": 40411,
+      "normalized_sha256": "81e6885e8197593bdefd2ad554d9352d68f8d08c9249d1d9374c944260f1263a"
     },
     "crates/uu-core/src/virtual_display/driver_download_windows.rs": {
       "role": "index",
@@ -941,9 +941,9 @@
     },
     "crates/uu-core/src/virtual_display/install_windows.rs": {
       "role": "index",
-      "sha256": "6c354a69656571be7d4d05071302a0ba47ecd25dcaa3975d21a3e905e6dbcfc7",
-      "size": 68066,
-      "normalized_sha256": "6c354a69656571be7d4d05071302a0ba47ecd25dcaa3975d21a3e905e6dbcfc7"
+      "sha256": "02b7831a05878808bb88be238d0ddc71c8df0647307ad1079259f1a8141a2bbc",
+      "size": 68121,
+      "normalized_sha256": "02b7831a05878808bb88be238d0ddc71c8df0647307ad1079259f1a8141a2bbc"
     },
     "crates/uu-core/src/virtual_display/ownership_windows.rs": {
       "role": "index",
@@ -983,9 +983,9 @@
     },
     "crates/uu-core/src/virtual_display/windows.rs": {
       "role": "index",
-      "sha256": "d195aedbd71b7ce46e52f7103db5aa77de00db62f900a9c597d768bbc2b58108",
-      "size": 59984,
-      "normalized_sha256": "d195aedbd71b7ce46e52f7103db5aa77de00db62f900a9c597d768bbc2b58108"
+      "sha256": "0807b7d3d47113651658227b309fc49247bc138ab31e5ee80d9fbf87ee35fe60",
+      "size": 59930,
+      "normalized_sha256": "0807b7d3d47113651658227b309fc49247bc138ab31e5ee80d9fbf87ee35fe60"
     },
     "crates/uu-gui/src/bing_wallpaper.rs": {
       "role": "index",
@@ -1355,9 +1355,9 @@
     },
     "crates/uu-gui/src/virtual_display_ui.rs": {
       "role": "index",
-      "sha256": "4a1a3fea1960a92a1e232307b714a1a65ae34f1a30236bec889fbe2465543cf5",
-      "size": 96663,
-      "normalized_sha256": "4a1a3fea1960a92a1e232307b714a1a65ae34f1a30236bec889fbe2465543cf5"
+      "sha256": "adea8e337924368d1794ee233d7850ed95a8130d75fd2872c5445ae427270603",
+      "size": 96985,
+      "normalized_sha256": "adea8e337924368d1794ee233d7850ed95a8130d75fd2872c5445ae427270603"
     },
     "crates/uu-gui/src/wallhaven.rs": {
       "role": "index",
