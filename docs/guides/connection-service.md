@@ -228,6 +228,12 @@ eclipse-cli nat --stun stun:stun.example.com:3478 --json
 
 命令报告本地 UDP 端点和服务器看到的公网映射。可重复传入 `--stun` 比较多个目的地，用 `--bind 192.0.2.20:0` 指定本地网卡地址，或用 `--bind '[::]:0'` 检查 IPv6。同一轮探测使用同一个 UDP 套接字。若不同服务器观察到不同公网 IP，会报告 `multiple_external_addresses`，便于检查上游是否用了不同出口。单地址、单端口 STUN 只提供一份映射观察。要测入站过滤，需要具备两组地址和端口的 RFC 5780 STUN 服务。`nat_type` 根据两方面的证据给出 Full Cone、受限锥形或 Symmetric 等结论。证据不足会显示 `unknown`。 [RFC 5780](https://www.rfc-editor.org/rfc/rfc5780.html)
 
+判读实测时分开看这两个维度。
+
+- **映射**比较同一套接字发往不同目的 IP 和端口时，服务器看到的公网 IP 与端口。四个结果一致支持端点无关映射。同一目的 IP 的不同端口得到不同映射，说明该轮存在端口相关性。用新套接字复测并交换起始端点，可以看出行为是否随路径或先前流量变化。
+- **入站过滤**检查客户端主动联系备用端点之前，能否收到该端点发来的包。分别测试同 IP 异端口、异 IP 异端口。未收到回包时，在主动联系后做对照，区分端点限制与备用路径本身不可达。
+- **Full Cone** 要同时观测到端点无关映射和端点无关过滤。设备防火墙、家庭网关和运营商 NAT 可以共同决定结果。换网络、出口或探测端口时，沿用相同判读流程重新测量。 [RFC 4787 的 UDP 行为术语](https://www.rfc-editor.org/rfc/rfc4787.html#section-4.1)
+
 使用 `eclipse-cli internet probe --settings settings.json --connection-details` 可以显式查看实际串流使用的 UDP 端点、ICE 候选类型及是否中转。用它核对公网打洞结果时，也应检查操作系统去该端点的路由。
 
 只验证公网 IPv4 直连时，在测试主机的 `internet host` 和客户端的 `internet probe` 都加上 `--public-ipv4-direct`。两端在信令中确认使用该模式，媒体只使用公网 IPv4 UDP 和 STUN 候选。客户端可加 `--progress-seconds 1` 查看 ICE 状态和已解码帧数，按 Ctrl+C 结束本次测试。普通连接仍会自动尝试可用路径。
