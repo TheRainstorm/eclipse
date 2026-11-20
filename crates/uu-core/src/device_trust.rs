@@ -156,7 +156,13 @@ impl Permissions {
         details: None,
     };
     pub fn details(self)->PermissionDetails {
-        self.details.unwrap_or(PermissionDetails {keyboard:self.control,mouse:self.control,gamepad:self.control,clipboard:self.control,manage_server:false})
+        self.details.unwrap_or(PermissionDetails {
+            keyboard: self.control,
+            mouse: self.control,
+            gamepad: self.control,
+            clipboard: self.control,
+            manage_server: self.control,
+        })
     }
     pub fn input_permissions(self) -> InputPermissions {
         if !self.view || !self.control { return InputPermissions::NONE; }
@@ -441,14 +447,21 @@ mod tests {
         assert!(PublicDevice::from_public_key("ssh-rsa fixture","Imported").is_err());
     }
     #[test]
-    fn legacy_grants_preserve_signed_wire_format_and_do_not_grant_server_management() {
+    fn default_control_grants_management_without_changing_signed_wire_format() {
         for permission in [Permissions::VIEW,Permissions::CONTROL] {
             let wire=serde_json::to_string(&permission).unwrap();
             assert!(!wire.contains("details"));
             let restored:Permissions=serde_json::from_str(&wire).unwrap();
             assert_eq!(permission,restored);
-            assert!(!restored.details().manage_server);
+            assert_eq!(restored.details().manage_server,permission.control);
         }
+        let disabled=Permissions::CONTROL.with_details(PermissionDetails {
+            manage_server:false,
+            ..Permissions::CONTROL.details()
+        });
+        let restored:Permissions=serde_json::from_slice(&serde_json::to_vec(&disabled).unwrap()).unwrap();
+        assert!(restored.control);
+        assert!(!restored.details().manage_server);
         let permission=Permissions::VIEW.with_details(PermissionDetails{keyboard:true,gamepad:true,..Default::default()});
         permission.validate().unwrap();
         assert_eq!(permission.input_mask(),5);

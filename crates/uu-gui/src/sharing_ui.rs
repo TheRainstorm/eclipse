@@ -280,7 +280,7 @@ struct Pending {
     status: watch::Receiver<PairStatus>,
     code: String,
     control: bool,
-    manage:bool,
+    manage:Option<bool>,
     temporary:bool,
 }
 struct LegacyPending {
@@ -623,7 +623,7 @@ impl HostUi {
                     status: request.status,
                     code: String::new(),
                     control: self.allow_control,
-                    manage:false,
+                    manage:None,
                     temporary:request.method==uu_core::device_auth::PairingMethod::TemporaryCode,
                 });
                 ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
@@ -704,9 +704,17 @@ impl HostUi {
                         } else {
                             Permissions::VIEW
                         };
-                        crate::theme::switch(ui,&mut pending.manage,uu_i18n::text("允许管理服务配置和连接权限"));
-                        let mut details=permission.details();details.manage_server=pending.manage;
-                        let permission=if pending.manage {permission.with_details(details)}else{permission};
+                        let mut details = permission.details();
+                        let mut manage = pending.manage.unwrap_or(details.manage_server);
+                        if crate::theme::switch(ui,&mut manage,uu_i18n::text("允许管理服务配置和连接权限")).changed() {
+                            pending.manage = Some(manage);
+                        }
+                        let permission = if let Some(manage) = pending.manage {
+                            details.manage_server = manage;
+                            permission.with_details(details)
+                        } else {
+                            permission
+                        };
                         let approval = PairApproval::new(&pending.code, permission);
                         ui.horizontal(|ui| {
                             if ui

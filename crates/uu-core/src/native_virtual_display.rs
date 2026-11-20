@@ -469,6 +469,9 @@ impl Host {
         self.manager.select_session_source(self.owner, allow_headless && self.context.permissions.view, select)
     }
     pub fn permitted(context: &SessionContext) -> bool {
+        if context.session_id.as_deref().is_some_and(|id| context.access.sessions.guest(id)) {
+            return false;
+        }
         context
             .access
             .peer_permissions(&context.peer)
