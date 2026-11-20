@@ -19,7 +19,28 @@ impl crate::App {
             return;
         };
         ui.separator();
-        ui.weak(exit_text(&status));
+        let supported = stats.desktop_lock.exit_lock_supported();
+        let can_change = supported && status.can_lock && status.originally_locked.is_some();
+        let mut exit_lock = stats.desktop_lock.exit_lock_override()
+            .filter(|_| can_change)
+            .unwrap_or(status.originally_locked.is_some() && status.locks_on_exit());
+        let hint = if !supported {
+            "请更新远端 Eclipse 后台以修改本次串流的退出锁屏设置。"
+        } else if !status.can_lock {
+            "当前会话没有锁定远端的权限"
+        } else if status.originally_locked.is_none() {
+            "初始锁屏状态未知，本次不会自动锁屏"
+        } else {
+            "本次串流退出时生效。主机有其它会话时，继续保留远端桌面。"
+        };
+        if ui.add_enabled_ui(can_change, |ui| {
+            crate::theme::switch(ui, &mut exit_lock, uu_i18n::text("退出当前串流后锁屏"))
+        }).inner.on_hover_text(uu_i18n::text(hint)).changed() {
+            stats.desktop_lock.set_exit_lock(exit_lock);
+            if let Some(tabs) = &self.workspace_tabs {
+                tabs.actions.borrow_mut().push(crate::stream_workspace::Action::SetExitLock(tabs.active, exit_lock));
+            }
+        }
         if let Some(error) = &status.error {
             ui.colored_label(crate::theme::palette(ui.visuals()).warning, error);
         }
@@ -58,51 +79,5 @@ impl crate::App {
         if stats.desktop_lock.busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
-    }
-}
-fn exit_text(status: &uu_core::host_lock::Status) -> &'static str {
-    uu_i18n::text(if status.policy == uu_core::host_lock::Policy::Never {
-        "退出后保持当前桌面"
-    } else if status.originally_locked.is_none() {
-        "初始锁屏状态未知，本次不会自动锁屏"
-    } else if status.locks_on_exit() {
-        if status.sessions <= 1 {
-            "退出当前串流后锁屏"
-        } else {
-            "最后一个会话结束后锁屏；关闭单个屏幕不会锁屏"
-        }
-    } else {
-        "连接前桌面未锁定，退出后保持当前桌面"
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn exit_explanation_distinguishes_last_session_original_state_and_unknown_state() {
-        let mut status = uu_core::host_lock::Status {
-            policy: uu_core::host_lock::Policy::Restore,
-            originally_locked: Some(true),
-            sessions: 1,
-            can_lock: true,
-            error: None,
-        };
-        assert_eq!(exit_text(&status), uu_i18n::text("退出当前串流后锁屏"));
-        status.sessions = 2;
-        assert_eq!(
-            exit_text(&status),
-            uu_i18n::text("最后一个会话结束后锁屏；关闭单个屏幕不会锁屏")
-        );
-        status.originally_locked = Some(false);
-        assert_eq!(
-            exit_text(&status),
-            uu_i18n::text("连接前桌面未锁定，退出后保持当前桌面")
-        );
-        status.originally_locked = None;
-        assert_eq!(
-            exit_text(&status),
-            uu_i18n::text("初始锁屏状态未知，本次不会自动锁屏")
-        );
     }
 }

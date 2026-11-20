@@ -56,6 +56,7 @@ impl Controller {
         self.0 = match std::mem::take(&mut self.0) {
             State::Idle => State::Idle,
             State::Live(handle) => {
+                handle.stats.desktop_lock.reconnecting(after == AfterClose::Reconnect);
                 let _ = handle.close.send(());
                 State::Closing { handle, after }
             }

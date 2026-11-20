@@ -22,6 +22,9 @@ struct Pending {
 struct State {
     channel: Option<Weak<webrtc::data_channel::RTCDataChannel>>,
     status: Option<Status>,
+    exit_lock_supported: bool,
+    exit_lock: Option<bool>,
+    reconnecting: bool,
     sender: Option<mpsc::Sender<Command>>,
     next: u64,
     pending: Option<Pending>,
@@ -33,6 +36,18 @@ pub struct Client(Mutex<State>);
 impl Client {
     pub fn status(&self) -> Option<Status> {
         self.0.lock().unwrap().status.clone()
+    }
+    pub fn exit_lock_supported(&self) -> bool {
+        self.0.lock().unwrap().exit_lock_supported
+    }
+    pub fn exit_lock_override(&self) -> Option<bool> {
+        self.0.lock().unwrap().exit_lock
+    }
+    pub fn set_exit_lock(&self, enabled: bool) {
+        self.0.lock().unwrap().exit_lock = Some(enabled);
+    }
+    pub fn reconnecting(&self, reconnecting: bool) {
+        self.0.lock().unwrap().reconnecting = reconnecting;
     }
     pub fn busy(&self) -> bool {
         self.0.lock().unwrap().pending.is_some()
@@ -88,6 +103,7 @@ impl Client {
         let mut state = self.0.lock().unwrap();
         state.channel = Some(Arc::downgrade(channel));
         state.status = None;
+        state.exit_lock_supported = false;
         state.sender = Some(sender);
         state.pending = None;
         state.result = None;
@@ -96,6 +112,9 @@ impl Client {
     }
     pub(crate) fn status_received(&self, status: Status) {
         self.0.lock().unwrap().status = Some(status);
+    }
+    pub(crate) fn exit_lock_advertised(&self) {
+        self.0.lock().unwrap().exit_lock_supported = true;
     }
     pub(crate) fn locked(&self, id: u64, error: Option<String>) {
         let mut state = self.0.lock().unwrap();
@@ -117,15 +136,16 @@ impl Client {
         let mut state = self.0.lock().unwrap();
         state.channel = None;
         state.status = None;
+        state.exit_lock_supported = false;
         state.sender = None;
         state.ended = None;
     }
     /// Drive this alongside the still-live viewer future. Unsupported or failed
     /// peers use the host's conservative disconnect grace instead.
     pub(crate) async fn ending(&self) {
-        let (receiver, channel) = {
+        let (receiver, channel, exit_lock) = {
             let mut state = self.0.lock().unwrap();
-            if state.status.is_none() {
+            if state.status.is_none() || state.reconnecting {
                 return;
             }
             let (send, receive) = oneshot::channel();
@@ -133,10 +153,10 @@ impl Client {
                 return;
             };
             state.ended = Some(send);
-            (receive, channel)
+            (receive, channel, state.exit_lock.filter(|_| state.exit_lock_supported))
         };
         let _ = tokio::time::timeout(Duration::from_millis(600), async {
-            crate::native_control::send_session_ending(&channel).await?;
+            crate::native_control::send_session_ending(&channel, exit_lock).await?;
             receiver.await.context("会话退出确认丢失")
         })
         .await;

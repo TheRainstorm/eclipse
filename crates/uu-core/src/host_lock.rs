@@ -55,12 +55,17 @@ struct Cycle {
     original: Option<Desktop>,
     streamed: bool,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Due {
+    at: Instant,
+    requested_lock: bool,
+}
 #[derive(Default)]
 struct Inner {
     backend: Option<Arc<dyn Backend>>,
     policy: Policy,
     cycle: Option<Cycle>,
-    due: Option<Instant>,
+    due: Option<Due>,
     error: Option<String>,
 }
 #[derive(Default)]
@@ -101,12 +106,16 @@ impl State {
             cycle.streamed = true;
         }
     }
-    pub fn end(&self, explicit: bool, now: Instant) {
+    pub fn end(&self, explicit: bool, exit_lock: Option<bool>, now: Instant) {
         let mut state = self.0.lock().unwrap();
+        if state.due.is_some() {
+            // Only a successful new stream consumes the existing grace.
+            return;
+        }
         let armed = state.cycle.as_ref().is_some_and(|c| {
             c.streamed
                 && c.original.is_some()
-                && (state.policy == Policy::Always
+                && exit_lock.unwrap_or_else(|| state.policy == Policy::Always
                     || (state.policy == Policy::Restore && c.original.is_some_and(|d| d.locked)))
         });
         if !armed {
@@ -120,7 +129,7 @@ impl State {
             } else {
                 Duration::from_secs(10)
             };
-        state.due = Some(state.due.map_or(due, |old| old.min(due)));
+        state.due = Some(Due { at: due, requested_lock: exit_lock == Some(true) });
     }
     pub fn status(&self, sessions: usize, allowed: bool) -> Option<Status> {
         let state = self.0.lock().unwrap();
@@ -151,15 +160,17 @@ impl State {
     /// Caller holds SessionGate.active and has proved that no session remains.
     pub fn expire(&self, now: Instant, shutdown: bool) {
         let mut state = self.0.lock().unwrap();
-        if !state.due.is_some_and(|due| shutdown || now >= due) {
+        let Some(due) = state.due.filter(|due| shutdown || now >= due.at) else {
             return;
-        }
+        };
         let cycle = state.cycle.take();
         state.due = None;
         let Some(original) = cycle.and_then(|c| c.original) else {
             return;
         };
-        if state.policy == Policy::Never || (state.policy == Policy::Restore && !original.locked) {
+        if !due.requested_lock
+            && (state.policy == Policy::Never || (state.policy == Policy::Restore && !original.locked))
+        {
             return;
         }
         let Some(backend) = &state.backend else {

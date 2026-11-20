@@ -34,9 +34,11 @@ pub use protocol_input::InputSession;
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Packet {
     DesktopStatus { status: crate::host_lock::Status },
+    DesktopExitLockSupported,
     LockDesktop { request: u64 },
     DesktopLocked { request: u64, error: Option<String> },
     SessionEnding,
+    SessionEndingWithLock { lock: bool },
     SessionEndingAck,
     Quality {request:u64,settings:crate::native_quality::Update},
     QualityApplied {applied:crate::native_quality::Applied},
@@ -84,7 +86,10 @@ async fn send(channel: &RTCDataChannel, packet: Packet) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn send_session_ending(channel: &RTCDataChannel) -> Result<()> { send(channel, Packet::SessionEnding).await }
+pub(crate) async fn send_session_ending(channel: &RTCDataChannel, exit_lock: Option<bool>) -> Result<()> {
+    let packet = exit_lock.map_or(Packet::SessionEnding, |lock| Packet::SessionEndingWithLock { lock });
+    send(channel, packet).await
+}
 
 struct KeyboardOwner {
     lease: crate::input_ownership::Lease,
@@ -792,6 +797,17 @@ impl HostControl {
                 }));
                 let weak = Arc::downgrade(&channel);
                 *host.control_channel.lock().unwrap() = weak.clone();
+                let opened = host.clone();
+                let open_channel = weak.clone();
+                channel.on_open(Box::new(move || {
+                    Box::pin(async move {
+                        if let Some(channel) = open_channel.upgrade() {
+                            if opened.desktop_status().is_some() {
+                                let _ = send(&channel, Packet::DesktopExitLockSupported).await;
+                            }
+                        }
+                    })
+                }));
                 let handler = host.clone();
                 channel.on_message(Box::new(move |message| {
                     let host = handler.clone();
@@ -805,9 +821,13 @@ impl HostControl {
                         if host.stopped.load(Ordering::Acquire){return;}
                         match packet {
                             Some(Packet::LockDesktop{request})=>{tokio::spawn(host.clone().lock_desktop(channel.clone(),request));},
-                            Some(Packet::SessionEnding)=>{
+                            Some(ending @ (Packet::SessionEnding | Packet::SessionEndingWithLock { .. })) => {
+                                let exit_lock = match ending {
+                                    Packet::SessionEndingWithLock { lock } => Some(lock),
+                                    _ => None,
+                                };
                                 let context=host.session.lock().unwrap().clone();
-                                if let Some(context)=context {if let Some(id)=context.session_id {context.access.sessions.session_ending(&id);}}
+                                if let Some(context)=context {if let Some(id)=context.session_id {context.access.sessions.session_ending(&id, exit_lock);}}
                                 let _=send(&channel,Packet::SessionEndingAck).await;
                             },
                             Some(Packet::Quality{request,settings})=>{
@@ -1026,6 +1046,7 @@ impl ViewerControl {
             if incoming.native_media_epoch.load(Ordering::Acquire)!=media_epoch{return Box::pin(async {});}
             match parse(&message.data) {
                 Some(Packet::DesktopStatus{status})=>incoming.desktop_lock.status_received(status),
+                Some(Packet::DesktopExitLockSupported)=>incoming.desktop_lock.exit_lock_advertised(),
                 Some(Packet::DesktopLocked{request,error})=>incoming.desktop_lock.locked(request,error),
                 Some(Packet::SessionEndingAck)=>incoming.desktop_lock.ended(),
                 Some(Packet::QualityApplied{applied})=>{

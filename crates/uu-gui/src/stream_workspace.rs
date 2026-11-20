@@ -84,6 +84,7 @@ pub enum Action {
     Close(u64),
     ToggleLocal,
     CloseGroup(u64),
+    SetExitLock(u64, bool),
     MergeGroup(u64),
     AddDisplay(u64),
     OpenSource { session:u64, source:u64, new_window:bool },
@@ -1065,6 +1066,16 @@ impl State {
             Action::Close(id)=>self.close(&[id],ctx),
             Action::ToggleLocal=>self.toggle_local_desktop(ctx),
             Action::CloseGroup(id)=>{let ids=self.group_ids(id);self.close(&ids,ctx);},
+            Action::SetExitLock(id, enabled) => {
+                let ids = self.group_ids(id);
+                for session in self.windows.iter().flat_map(|window| &window.sessions) {
+                    if ids.contains(&session.id) {
+                        if let Some(controller) = session.app.controller.as_ref() {
+                            controller.stats.desktop_lock.set_exit_lock(enabled);
+                        }
+                    }
+                }
+            }
             Action::Detach(id)=>self.detach(id,ctx),
             Action::Merge(id)=>self.merge(id,ctx),
             Action::MergeGroup(id)=>self.merge_group(id,ctx),

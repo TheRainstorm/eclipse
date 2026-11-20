@@ -49,7 +49,7 @@ fn only_last_session_restores_the_first_admission_snapshot() {
     let b = gate.claim("b").unwrap();
     gate.connected(b.id());
     assert_eq!(backend.queries.load(Ordering::Relaxed), 1);
-    gate.session_ending(a.id());
+    gate.session_ending(a.id(), None);
     drop(a);
     gate.expire_desktop_lock(true);
     assert_eq!(
@@ -57,7 +57,7 @@ fn only_last_session_restores_the_first_admission_snapshot() {
         0,
         "one screen/client cannot lock another"
     );
-    gate.session_ending(b.id());
+    gate.session_ending(b.id(), None);
     drop(b);
     gate.expire_desktop_lock(false);
     assert_eq!(backend.locks.load(Ordering::Relaxed), 1);
@@ -80,7 +80,7 @@ fn unlocked_and_failed_connections_do_not_arm_restore() {
         if connected {
             gate.connected(lease.id());
         }
-        gate.session_ending(lease.id());
+        gate.session_ending(lease.id(), None);
         drop(lease);
         gate.expire_desktop_lock(false);
         assert_eq!(backend.locks.load(Ordering::Relaxed), expected);
@@ -120,9 +120,9 @@ fn reconnect_grace_retains_original_state_and_failed_retry_does_not_extend_it() 
     assert_eq!(backend.locks.load(Ordering::Relaxed), 0);
     drop(retry);
     assert_eq!(gate.desktop.0.lock().unwrap().due, Some(due));
-    gate.desktop.expire(due - Duration::from_millis(1), false);
+    gate.desktop.expire(due.at - Duration::from_millis(1), false);
     assert_eq!(backend.locks.load(Ordering::Relaxed), 0);
-    gate.desktop.expire(due, false);
+    gate.desktop.expire(due.at, false);
     assert_eq!(backend.locks.load(Ordering::Relaxed), 1);
 }
 #[test]
@@ -135,7 +135,7 @@ fn successful_reconnect_cancels_expiry_and_starts_a_new_grace_only_after_exit() 
     gate.connected(next.id());
     assert!(gate.desktop.0.lock().unwrap().due.is_none());
     assert_eq!(backend.queries.load(Ordering::Relaxed), 1);
-    gate.session_ending(next.id());
+    gate.session_ending(next.id(), None);
     drop(next);
     gate.expire_desktop_lock(false);
     assert_eq!(backend.locks.load(Ordering::Relaxed), 1);
@@ -146,7 +146,7 @@ fn policy_changes_and_lock_errors_are_reported_without_automatic_retry_loops() {
     let lease = gate.claim("client").unwrap();
     gate.connected(lease.id());
     backend.fail.store(true, Ordering::Relaxed);
-    gate.session_ending(lease.id());
+    gate.session_ending(lease.id(), None);
     drop(lease);
     gate.expire_desktop_lock(false);
     assert!(gate.desktop_status(None).unwrap().error.is_some());
@@ -156,9 +156,29 @@ fn policy_changes_and_lock_errors_are_reported_without_automatic_retry_loops() {
     let lease = gate.claim("client").unwrap();
     gate.connected(lease.id());
     gate.configure_lock_policy(Policy::Never);
-    gate.session_ending(lease.id());
+    gate.session_ending(lease.id(), None);
     drop(lease);
     gate.expire_desktop_lock(false);
     assert_eq!(backend.locks.load(Ordering::Relaxed), 0);
     assert!(gate.lock_desktop(Some("nonexistent")).is_err());
+}
+
+#[test]
+fn a_session_can_choose_lock_or_keep_desktop_on_explicit_exit() {
+    for (policy, choice, locks) in [(Policy::Never, true, 1), (Policy::Always, false, 0)] {
+        let (gate, backend) = fixture(false, policy);
+        let desktop = &gate.desktop;
+        desktop.begin();
+        desktop.connected();
+        desktop.end(true, Some(choice), Instant::now());
+        desktop.expire(Instant::now(), false);
+        assert_eq!(backend.locks.load(Ordering::Relaxed), locks);
+    }
+    let (gate, backend) = fixture(false, Policy::Never);
+    let view_only = gate.claim("viewer").unwrap();
+    gate.connected(view_only.id());
+    gate.session_ending(view_only.id(), Some(true));
+    drop(view_only);
+    gate.expire_desktop_lock(false);
+    assert_eq!(backend.locks.load(Ordering::Relaxed), 0);
 }

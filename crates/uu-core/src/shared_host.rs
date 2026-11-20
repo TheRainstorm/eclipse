@@ -55,7 +55,7 @@ pub struct SessionContext {
     /// The authenticated session lease, independent of peer/device identity.
     pub session_id: Option<String>,
 }
-struct Active { peer: String, record: crate::connection_history::Record, stop: watch::Sender<bool>, status: crate::native::HostStatus, completed: Option<bool>, explicit_end: bool, control: Option<Arc<crate::native_control::HostControl>>, input: crate::device_trust::InputPermissions, guest: bool }
+struct Active { peer: String, record: crate::connection_history::Record, stop: watch::Sender<bool>, status: crate::native::HostStatus, completed: Option<bool>, explicit_end: bool, exit_lock: Option<bool>, control: Option<Arc<crate::native_control::HostControl>>, input: crate::device_trust::InputPermissions, guest: bool }
 #[derive(Default)]
 pub struct SessionGate {
     active: Mutex<HashMap<String, Active>>,
@@ -124,7 +124,7 @@ impl SessionGate {
         let record = self.history.begin(&session, peer, name);
         let guest=self.input.priority.policy().game_room;
         let input = if guest { crate::device_trust::InputPermissions::NONE } else { crate::device_trust::InputPermissions::ALL };
-        active.insert(session.clone(), Active { peer: peer.into(), record, stop, status: crate::native::HostStatus::Starting, completed: None, explicit_end: false, control: None, input, guest });
+        active.insert(session.clone(), Active { peer: peer.into(), record, stop, status: crate::native::HostStatus::Starting, completed: None, explicit_end: false, exit_lock: None, control: None, input, guest });
         Ok(SessionLease { gate: self.clone(), session, receiver,temporary:None })
     }
     pub fn disconnect(&self) {
@@ -205,8 +205,15 @@ impl SessionGate {
     }
     #[cfg(test)]
     pub(crate) fn explicit_session_end(&self,id:&str)->bool {self.active.lock().unwrap().get(id).is_some_and(|a|a.explicit_end)}
-    pub(crate) fn session_ending(&self, id: &str) {
-        if let Some(active) = self.active.lock().unwrap().get_mut(id) { active.explicit_end = true; }
+    pub(crate) fn session_ending(&self, id: &str, exit_lock: Option<bool>) {
+        if let Some(active) = self.active.lock().unwrap().get_mut(id) {
+            active.explicit_end = true;
+            if active.record.connected_at.is_some() && !*active.stop.borrow()
+                && active.control.as_ref().is_some_and(|control| control.keyboard_allowed())
+            {
+                active.exit_lock = exit_lock;
+            }
+        }
     }
     pub(crate) fn expire_desktop_lock(&self, shutdown: bool) {
         let active = self.active.lock().unwrap();
@@ -239,7 +246,7 @@ impl Drop for SessionLease { fn drop(&mut self) {
     if let Some(mut active) = sessions.remove(&self.session) {
         let successful = active.completed.unwrap_or(active.record.connected_at.is_some());
         self.gate.history.end(&mut active.record, successful);
-        if sessions.is_empty() { self.gate.desktop.end(active.explicit_end, std::time::Instant::now()); }
+        if sessions.is_empty() { self.gate.desktop.end(active.explicit_end, active.exit_lock, std::time::Instant::now()); }
     }
 } }
 #[derive(Clone)]
