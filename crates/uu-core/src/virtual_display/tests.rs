@@ -31,6 +31,7 @@ struct Fake {
     capacity: Mutex<Option<preparation::Observation>>,
     capacity_downloads: AtomicUsize,
     capacity_changes: AtomicUsize,
+    driver_reinstalls: AtomicUsize,
 }
 
 struct FakeClaim {
@@ -45,6 +46,13 @@ impl Drop for FakeClaim {
 }
 impl Backend for Arc<Fake> {
     fn on_demand(&self)->bool {self.on_demand.load(Ordering::Relaxed)}
+    fn check_driver_reinstall(&self) -> Result<()> { Ok(()) }
+    fn reinstall_driver(&self, _: &[(String, Vec<u8>)]) -> Result<()> {
+        assert!(self.identities.lock().unwrap().values().all(|key|
+            self.targets.lock().unwrap().iter().all(|target| &target.key != key)));
+        self.driver_reinstalls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
     fn allocate(&self,id:LeaseId)->Result<Option<(Target,Box<dyn Claim>)>> {
         if !self.on_demand() {return Ok(None);}
         let previous=self.identities.lock().unwrap().get(&id).cloned();
@@ -1452,6 +1460,33 @@ fn display_mode_edit_preserves_the_active_session_and_updates_durable_intent() {
     let saved=manager.saved_records().unwrap();assert_eq!(saved.len(),1);assert_eq!(saved[0].name,"Desk");assert_eq!(saved[0].spec,next);
     drop(active);
     manager.remove(display.id).unwrap();std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn driver_reinstall_clears_only_managed_definitions_after_sessions_finish() {
+    let (manager, backend) = fixture();
+    backend.on_demand.store(true, Ordering::SeqCst);
+    manager.preparation_owner.store(true, Ordering::SeqCst);
+    let path = saved_policy(&manager);
+    let definition = manager.add_display().unwrap();
+    manager.set_enabled(definition.id, true).unwrap();
+    manager.add_display().unwrap();
+    let gate = Arc::new(crate::shared_host::SessionGate::default());
+    manager.register_host(&gate);
+    let active = gate.claim("streaming-peer").unwrap();
+    assert!(manager.reinstall_driver().is_err());
+    assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst), 0);
+    assert_eq!(manager.list().unwrap().len(), 2);
+    let original = backend.targets.lock().unwrap()[0].clone();
+
+    drop(active);
+    manager.reinstall_driver().unwrap();
+    assert_eq!(backend.driver_reinstalls.load(Ordering::SeqCst), 1);
+    assert!(manager.list().unwrap().is_empty());
+    let targets = backend.targets.lock().unwrap();
+    assert_eq!(targets[0].key, original.key);
+    assert_eq!(targets[0].actual, original.actual);
+    std::fs::remove_dir_all(path).unwrap();
 }
 
 #[test]

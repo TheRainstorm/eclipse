@@ -116,9 +116,52 @@ pub(super) fn prepare(package: &[(String, Vec<u8>)]) -> Result<()> {
         return driver::stage_signed_driver(directory).map(|_| ());
     }
     // Stage, verify and retain the signed package; publish no PnP device.
-    let directory = driver::stage_demand_package(package)?;
-    state.directory = Some(directory);
-    save(&state)
+    driver::stage_demand_package(package, false, |directory| {
+        state.directory = Some(directory.to_path_buf());
+        save(&state)
+    })
+}
+
+pub(super) fn check_reinstall(scope: &str) -> Result<()> {
+    let state = load()?;
+    if state.records.iter().any(|record| record.scope != scope) {
+        return Err(fail(uu_i18n::text("其它 Eclipse 配置仍有虚拟显示器。请从所属配置移除后再重装驱动。")));
+    }
+    let mut owned = BTreeSet::new();
+    for record in &state.records {
+        let token = record.token.to_string();
+        let instance = match &record.instance {
+            Some(instance) => Some(instance.clone()),
+            None => driver::find_unbound_demand(&token)?,
+        };
+        if let Some(instance) = instance {
+            if driver::verify_demand_device(&instance, &token, record.ready)? {
+                owned.insert(instance.to_ascii_lowercase());
+            }
+        }
+    }
+    if driver::demand_instances()?.iter().any(|instance| !owned.contains(&instance.to_ascii_lowercase())) {
+        return Err(fail(uu_i18n::text("Windows 中还有其它程序安装的 Mtt 虚拟显示器。请先在原驱动管理器中移除，再重装 Eclipse 的驱动。")));
+    }
+    Ok(())
+}
+
+pub(super) fn reinstall(scope: &str, package: &[(String, Vec<u8>)]) -> Result<()> {
+    check_reinstall(scope)?;
+    reconcile_owner(scope, &BTreeSet::new())?;
+    recover_uninstalled_legacy()?;
+    let mut state = load()?;
+    let old = state.directory.clone();
+    driver::stage_demand_package(package, true, |directory| {
+        state.directory = Some(directory.to_path_buf());
+        save(&state)
+    })?;
+    if let Some(old) = old {
+        if let Err(error) = driver::remove_prepared_package(&old) {
+            tracing::warn!(%error, "old owned driver staging could not be completely removed");
+        }
+    }
+    Ok(())
 }
 pub(super) fn retire_idle_pool() -> Result<()> {
     let Some(directory) = driver::current_configuration()? else {

@@ -69,33 +69,33 @@ struct ProtectedDirectory {
     path: PathBuf,
     keep: bool,
 }
+fn program_data() -> Result<PathBuf> {
+    let mut output = null_mut();
+    let code = unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramData, 0, null_mut(), &mut output) };
+    if code < 0 || output.is_null() {
+        return Err(os_error("SHGetKnownFolderPath(ProgramData)", code as u32));
+    }
+    let mut length = 0;
+    unsafe {
+        while *output.add(length) != 0 {
+            length += 1;
+        }
+    }
+    let base = PathBuf::from(OsString::from_wide(unsafe {
+        std::slice::from_raw_parts(output, length)
+    }));
+    unsafe { CoTaskMemFree(output.cast()); }
+    let attributes = unsafe { GetFileAttributesW(path_wide(&base).as_ptr()) };
+    if attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(Error::Platform(
+            "ProgramData is unavailable or redirects through a reparse point".into(),
+        ));
+    }
+    Ok(base)
+}
 impl ProtectedDirectory {
     fn create(payload: &[(String, Vec<u8>)]) -> Result<Self> {
-        let mut output = null_mut();
-        let code =
-            unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramData, 0, null_mut(), &mut output) };
-        if code < 0 || output.is_null() {
-            return Err(os_error("SHGetKnownFolderPath(ProgramData)", code as u32));
-        }
-        let mut length = 0;
-        unsafe {
-            while *output.add(length) != 0 {
-                length += 1;
-            }
-        }
-        let base = PathBuf::from(OsString::from_wide(unsafe {
-            std::slice::from_raw_parts(output, length)
-        }));
-        unsafe {
-            CoTaskMemFree(output.cast());
-        }
-        let attributes = unsafe { GetFileAttributesW(path_wide(&base).as_ptr()) };
-        if attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(Error::Platform(
-                "ProgramData is unavailable or redirects through a reparse point".into(),
-            ));
-        }
-        let path = base.join(format!("Eclipse-VirtualDisplay-{}", Uuid::new_v4()));
+        let path = program_data()?.join(format!("Eclipse-VirtualDisplay-{}", Uuid::new_v4()));
         // The UMDF host may run as LocalService. Read/execute is sufficient;
         // only Administrators and System may change the pinned package/config.
         let sddl =
@@ -809,16 +809,84 @@ impl Drop for DeviceNode {
 
 /// Stage the original signed package without publishing a monitor. Every
 /// subsequently created isolated adapter reads exactly one monitor from it.
-pub(super) fn stage_demand_package(payload:&[(String,Vec<u8>)]) -> Result<PathBuf> {
+pub(super) fn stage_demand_package(
+    payload: &[(String, Vec<u8>)],
+    reinstall: bool,
+    record: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     let mut directory = ProtectedDirectory::create(payload)?;
     verify_catalog(&directory.path)?;
-    stage_signed_driver(&directory.path)?;
     let file = directory.path.join("vdd_settings.xml");
     let before = std::fs::read(&file).map_err(|e|Error::Platform(e.to_string()))?;
     let change = super::capacity_config::exact_count(&before,1)?;
     super::windows::provision::capacity::store::replace_exact(&file,&before,&change.after)?;
+    if reinstall {
+        no_existing_mtt_node()?;
+        if let Some(published) = published_driver()? {
+            let file = published.file_name().ok_or(Error::DriverMissing)?;
+            let file: Vec<_> = file.encode_wide().chain([0]).collect();
+            // With flags 0 Windows refuses removal if any device still uses
+            // this exact OEM package, including a disconnected device.
+            win_ok(unsafe { SetupUninstallOEMInfW(file.as_ptr(), 0, null_mut()) },
+                "uninstall pinned MttVDD from DriverStore")?;
+        }
+    }
+    stage_signed_driver(&directory.path)?;
+    if reinstall {
+        no_existing_mtt_node()?;
+        // Without an override the driver can fall back to an old installation
+        // in its default directory. Select the newly verified base instead.
+        let previous = current_configuration()?;
+        if let Some(previous) = &previous {
+            switch_demand_configuration(previous, &directory.path)?;
+        } else {
+            demand_configuration(&directory.path)?;
+        }
+        if let Err(error) = record(&directory.path) {
+            let rollback = match previous {
+                Some(previous) => switch_demand_configuration(&directory.path, &previous),
+                None => retire_uninstalled_configuration(&directory.path),
+            };
+            if let Err(rollback) = rollback {
+                directory.keep = true;
+                return Err(Error::Platform(format!("{error}; driver configuration rollback: {rollback}")));
+            }
+            return Err(error);
+        }
+    } else {
+        record(&directory.path)?;
+    }
     directory.keep = true;
-    Ok(directory.path.clone())
+    Ok(())
+}
+
+pub(super) fn remove_prepared_package(directory: &Path) -> Result<()> {
+    let name = directory.file_name().and_then(|name| name.to_str());
+    if directory.parent() != Some(program_data()?.as_path())
+        || !name.and_then(|name| name.strip_prefix("Eclipse-VirtualDisplay-"))
+            .is_some_and(|id| Uuid::parse_str(id).is_ok())
+    {
+        return Err(Error::WrongOwner);
+    }
+    let attrs = unsafe { GetFileAttributesW(path_wide(directory).as_ptr()) };
+    if attrs == INVALID_FILE_ATTRIBUTES {
+        let code = unsafe { GetLastError() };
+        return match code {
+            ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => Ok(()),
+            _ => Err(os_error("read previous signed driver staging", code)),
+        };
+    }
+    if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(Error::WrongOwner);
+    }
+    for file in &driver_package().files {
+        match std::fs::remove_file(directory.join(&file.name)) {
+            Ok(()) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(Error::Platform(error.to_string())),
+        }
+    }
+    std::fs::remove_dir(directory).map_err(|error| Error::Platform(error.to_string()))
 }
 pub(super) fn demand_configuration(directory:&Path) -> Result<()> {
     let mut current = [0u16;32768]; let mut length=std::mem::size_of_val(&current) as u32;

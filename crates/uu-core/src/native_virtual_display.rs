@@ -50,6 +50,7 @@ pub enum LocalRequest {
     /// Host-local administrator IPC only; remote Create has its own ManageServer check.
     Prepare,
     Recover,
+    ReinstallDriver,
     PrepareSlot { id: String },
     CreateManual { spec:Spec, persistent:bool },
     SetLimit { limit:u16 },
@@ -160,6 +161,10 @@ pub fn execute_local_owner(request: LocalRequest) -> Result<Response> {
         }
         LocalRequest::Recover => {
             manager.recover_preparation()?;
+            Request::Inspect
+        }
+        LocalRequest::ReinstallDriver => {
+            manager.reinstall_driver()?;
             Request::Inspect
         }
         LocalRequest::PrepareSlot { id } => {

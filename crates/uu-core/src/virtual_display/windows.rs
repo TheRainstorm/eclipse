@@ -189,6 +189,14 @@ impl Backend for Windows {
         };
         scoped_worker(|| demand::prepare(package))?
     }
+    fn check_driver_reinstall(&self) -> Result<()> {
+        let (scope, _) = self.demand_scope()?;
+        worker(move || demand::check_reinstall(&scope))?
+    }
+    fn reinstall_driver(&self, package: &[(String, Vec<u8>)]) -> Result<()> {
+        let (scope, _) = self.demand_scope()?;
+        scoped_worker(|| demand::reinstall(&scope, package))?
+    }
     fn allocation_configures_mode(&self)->bool {true}
     fn allocate_configured(&self,id:LeaseId,name:&str,spec:Spec,position:Option<Position>,existing:&[(TargetKey,Spec)])->Result<Option<(Target,Box<dyn Claim>)>> {
         if !scoped_worker(demand::prepared)?? {self.prepare_on_demand(None)?;}
