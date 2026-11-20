@@ -410,6 +410,7 @@ impl State {
     }
     fn check_driver(&mut self, ctx: &egui::Context) {
         self.driver_check_pending = true;
+        self.details.clear();
         self.message(Kind::Progress, uu_i18n::text("正在检测虚拟显示器驱动…").into());
         self.local(ctx, Request::Inspect.into());
     }
@@ -425,7 +426,7 @@ impl State {
             .open(&mut open).collapsible(false).resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label(uu_i18n::text("这会断开 Eclipse 虚拟显示器，并删除它们保存的名称、规格和布局。请先结束所有串流。"));
+                ui.label(uu_i18n::text("这会移除本配置的 Eclipse 虚拟显示器及其名称、规格和布局。正在串流这些显示器时，请先切换到其它显示器或断开对应会话。"));
                 ui.horizontal(|ui| {
                     confirm = ui.add(crate::theme::danger_button(uu_i18n::text("清理并重装"))).clicked();
                     cancel = ui.add(crate::theme::secondary_button(uu_i18n::text("取消"))).clicked();
@@ -437,6 +438,12 @@ impl State {
         if confirm {
             self.local(ctx, LocalRequest::ReinstallDriver);
         }
+    }
+    fn prompt_driver_install(&mut self, display: Option<uu_core::virtual_display::LeaseId>) {
+        self.driver_install_prompt = true;
+        self.enable_after_install = display;
+        self.details.clear();
+        self.message(Kind::Info, String::new());
     }
     fn show_driver_install(&mut self, ctx: &egui::Context) {
         if !self.driver_install_prompt { return; }
@@ -576,11 +583,15 @@ impl State {
                     .map(|_| Instant::now() + Duration::from_secs(1));
                 if self.limit_draft==Some(status.limit) {self.limit_draft=None;}
                 self.status = Some(status);
-                if !self.driver_install_prompt && self.status.as_ref().is_some_and(driver_ready) {
+                // The passive inspection ahead of a confirmed install must not consume
+                // the display to enable, even if it still sees the missing package.
+                let awaiting_install = self.driver_install_prompt
+                    || matches!(self.deferred_request, Some(LocalRequest::Prepare));
+                if !awaiting_install && self.status.as_ref().is_some_and(driver_ready) {
                     if let Some(id) = self.enable_after_install.take() {
                         self.deferred_request = Some(Request::SetEnabled { id, enabled: true }.into());
                     }
-                } else if !self.driver_install_prompt && self.preparation.as_ref().is_none_or(|s| !preparation_ui::active(s)) {
+                } else if !awaiting_install && self.preparation.as_ref().is_none_or(|s| !preparation_ui::active(s)) {
                     self.enable_after_install = None;
                 }
                 if !self.inspect_inflight {
@@ -863,11 +874,12 @@ impl State {
         let busy = (self.busy() && !self.inspect_inflight) || self.deferred_request.is_some();
         let remote_ready=client.is_none_or(|client|client.availability()==uu_core::native_virtual_display::Availability::Ready);
         let can_edit=!busy&&remote_ready;
-        let mutations_blocked = self.driver_install_prompt || self.reinstall_confirmation || if client.is_some() {
+        let inventory_uncertain = if client.is_some() {
             self.remote_inventory_uncertain
         } else {
             self.local_mutations_blocked()
         };
+        let mutations_blocked = inventory_uncertain || self.driver_install_prompt || self.reinstall_confirmation;
         let _background_unavailable = client.is_none()
             && self.local_owner == Some(LocalOwner::Background)
             && self.status.is_none()
@@ -907,7 +919,7 @@ impl State {
             if busy { ui.weak(uu_i18n::text("操作完成前，管理对象保持不变。")); }
             ui.separator();
         }
-        if mutations_blocked {ui.weak(uu_i18n::text("上一次操作结果未知，请刷新确认后再操作。"));}
+        if inventory_uncertain {ui.weak(uu_i18n::text("上一次操作结果未知，请刷新确认后再操作。"));}
         if self.status.as_ref().is_some_and(|s|!s.supports_catalog) {
             ui.weak(uu_i18n::text("请更新主机服务，以使用显示器配置列表和启用、禁用操作。"));
         }
@@ -948,7 +960,7 @@ impl State {
                             });
                             let dirty=draft!=original;
                             if ui.add_enabled(dirty&&supports_configuration&&can_edit&&!mutations_blocked,crate::theme::primary_button(uu_i18n::text("保存")))
-                                .on_hover_text(uu_i18n::text("名称可立即修改；规格变更需先结束此主机的串流。")).clicked() {
+                                .on_hover_text(uu_i18n::text("保存名称和规格。已连接的虚拟显示器会在 Windows 中应用新规格。")).clicked() {
                                 save_edit=Some(draft.clone());
                             }
                             if dirty && ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("还原修改"))).clicked() {cancel=true;}
@@ -991,7 +1003,12 @@ impl State {
         if client.is_none() {
             egui::CollapsingHeader::new(uu_i18n::text("驱动与诊断")).id_salt("vdd-driver-actions").show(ui,|ui| {
                 if let Some(status)=&self.preparation {ui.weak(uu_core::native_virtual_display::preparation_message(status));}
-                if ui.add_enabled(!busy&&!self.driver_install_prompt,crate::theme::secondary_button(uu_i18n::text("检测驱动"))).clicked() {self.check_driver(ctx);}
+                if ui.add_enabled(!busy&&!self.driver_install_prompt&&!self.reinstall_confirmation,crate::theme::secondary_button(uu_i18n::text("检测驱动"))).clicked() {self.check_driver(ctx);}
+                if self.status.as_ref().is_some_and(driver_missing)
+                    && ui.add_enabled(!busy && !mutations_blocked, crate::theme::primary_button(uu_i18n::text("安装驱动"))).clicked()
+                {
+                    self.prompt_driver_install(None);
+                }
                 if self.preparation.as_ref().is_some_and(|s|s.phase==uu_core::virtual_display::preparation::Phase::RecoveryPending) && ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("修复未完成的驱动操作"))).clicked() {preparation_action=Some(preparation_ui::Action::Recover);}
                 if cfg!(windows) && self.local_owner == Some(LocalOwner::Background)
                     && ui.add_enabled(!busy && !mutations_blocked, crate::theme::secondary_button(uu_i18n::text("清理并重装驱动"))).clicked()
@@ -1036,8 +1053,7 @@ impl State {
             } else {
                 if let Request::SetEnabled { id, enabled: true } = command {
                     if self.status.as_ref().is_some_and(driver_missing) {
-                        self.enable_after_install = Some(id);
-                        self.driver_install_prompt = true;
+                        self.prompt_driver_install(Some(id));
                         self.show_driver_install(ctx);
                         return;
                     }
@@ -1108,14 +1124,23 @@ mod tests {
         use uu_core::virtual_display::preparation::Phase;
         let mut state=State::generated_preview();
         let id=uu_core::virtual_display::LeaseId(uuid::Uuid::new_v4());
-        state.enable_after_install=Some(id);
-        state.driver_install_prompt=true;
+        state.details="old reset failure".into();
+        state.message(Kind::Error, "old reset failure".into());
+        state.prompt_driver_install(Some(id));
+        assert!(state.details.is_empty() && state.feedback.is_empty());
         let mut status=state.status.clone().unwrap();
         status.preparation=Some(preparation(Phase::Ready,false));
         let snapshot=|status|Response::Snapshot{status,displays:vec![],slots:vec![]};
         state.receive(snapshot(status.clone()),Some(LocalOwner::Background));
         assert!(state.deferred_request.is_none(), "external installation is not confirmation");
         state.driver_install_prompt=false;
+        state.deferred_request=Some(LocalRequest::Prepare);
+        status.driver_present=false;
+        status.preparation=None;
+        state.receive(snapshot(status.clone()),Some(LocalOwner::Background));
+        assert_eq!(state.enable_after_install,Some(id), "a pending inventory read is not an install result");
+        assert!(matches!(state.deferred_request.take(), Some(LocalRequest::Prepare)));
+        status.driver_present=true;
         status.preparation=Some(preparation(Phase::Preparing,true));
         state.receive(snapshot(status.clone()),Some(LocalOwner::Background));
         assert!(state.deferred_request.is_none());
