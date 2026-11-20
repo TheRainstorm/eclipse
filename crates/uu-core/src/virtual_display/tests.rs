@@ -1437,20 +1437,20 @@ fn saving_the_active_windows_mode_persists_intent_without_reconfiguring() {
 }
 
 #[test]
-fn display_mode_edit_requires_idle_host_then_reconfigures_and_updates_durable_intent() {
+fn display_mode_edit_preserves_the_active_session_and_updates_durable_intent() {
     let (manager,backend)=fixture();let path=saved_policy(&manager);
     let display=manager.create_manual(Spec::default(),true).unwrap();
     let target=manager.lock().unwrap()[&display.id].target.clone();
     let gate=Arc::new(crate::shared_host::SessionGate::default());manager.register_host(&gate);
     let active=gate.claim("streaming-peer").unwrap();
     let next=Spec{width:2560,height:1440,refresh_millihz:120_000,hdr:true};
-    assert!(matches!(manager.configure_display(display.id,"Desk".into(),next),Err(Error::Platform(message)) if message.contains("结束")));
-    assert!(backend.reconfigured.lock().unwrap().is_empty());
-    drop(active);
     let edited=manager.configure_display(display.id,"Desk".into(),next).unwrap();
     assert_eq!(edited.spec,next);assert_eq!(edited.actual,Some(next));
+    assert_eq!(edited.source,display.source);
+    assert!(!*active.stopped().borrow());
     assert_eq!(*backend.reconfigured.lock().unwrap(),vec![(target,next)]);
     let saved=manager.saved_records().unwrap();assert_eq!(saved.len(),1);assert_eq!(saved[0].name,"Desk");assert_eq!(saved[0].spec,next);
+    drop(active);
     manager.remove(display.id).unwrap();std::fs::remove_dir_all(path).unwrap();
 }
 

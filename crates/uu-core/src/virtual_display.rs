@@ -463,6 +463,12 @@ pub struct Manager {
     policy: Mutex<policy::State>,
     limit: std::sync::atomic::AtomicU16,
 }
+struct LayoutChange<'a>(&'a AtomicBool);
+impl Drop for LayoutChange<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 impl Manager {
     pub fn shared() -> Arc<Self> {
@@ -560,6 +566,12 @@ impl Manager {
     }
     pub(crate) fn preparation_in_flight(&self) -> bool {
         self.preparation.in_flight() || self.editing_mode.load(Ordering::Acquire)
+    }
+    fn begin_layout_change(&self) -> Result<LayoutChange<'_>> {
+        if self.editing_mode.swap(true, Ordering::AcqRel) {
+            return Err(Error::Platform("another virtual display edit is running".into()));
+        }
+        Ok(LayoutChange(&self.editing_mode))
     }
     /// Passive catalogs keep their last committed snapshot during display
     /// changes. Hold the same ownership lock through observation/publication;

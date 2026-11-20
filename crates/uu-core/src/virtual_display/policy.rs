@@ -334,12 +334,10 @@ impl Manager {
         let mode_requested = entry.display.spec != spec || restore_mode;
         let mode_changed = mode_requested && !(current.active && current.actual == Some(spec));
         let _edit=if mode_changed {
-            if self.editing_mode.swap(true,Ordering::AcqRel) {return Err(platform("another virtual display edit is running"));}
-            struct Edit<'a>(&'a AtomicBool);
-            impl Drop for Edit<'_> {fn drop(&mut self){self.0.store(false,Ordering::Release);}}
-            let guard=Edit(&self.editing_mode);
-            if self.preparation_streams(None)!=0 {return Err(platform(uu_i18n::text("修改虚拟显示器规格前，请先结束此主机上的串流")));}
-            Some(guard)
+            // Apply the mode in place, keeping the device and its leases.
+            // Native sessions on this output renew their capture when its
+            // pixel mode changes.
+            Some(self.begin_layout_change()?)
         }else{None};
         let observed=if mode_changed {
             let old=current.actual.ok_or_else(||platform("virtual display has no confirmed current mode"))?;
