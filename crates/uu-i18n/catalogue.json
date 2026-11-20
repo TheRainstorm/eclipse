@@ -1990,6 +1990,8 @@
   "后台运行版本：{} · PID {}": "Running service version: {} · PID {}",
   "后台运行版本：无法读取 · PID {}": "Running service version: unavailable · PID {}",
   "后台安装版本：{}": "Installed service version: {}",
+  "服务 {} → 当前程序 {next}": "Service {} → app {next}",
+  "已安装服务 {} → 当前程序 {next}": "Installed service {} → app {next}",
   "当前程序版本：{} · {}": "Current application version: {} · {}",
   "设备与屏幕": "Devices and displays",
   "输入状态显示": "Input status display",

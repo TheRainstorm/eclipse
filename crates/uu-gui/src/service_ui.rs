@@ -377,7 +377,9 @@ impl Entry {
                     if !manager.switch_ready() { ui.weak(uu_i18n::text("请先结束当前服务的串流，再切换配置。")); }
                 }
                 if let Some(build) = &manager.build {
-                    ui.small(crate::build_info::label())
+                    let label = version_transition(build, env!("UU_BUILD_COMMIT"))
+                        .unwrap_or_else(crate::build_info::label);
+                    ui.small(label)
                         .on_hover_ui(|ui| version_labels(ui, build));
                 }
                 ui.horizontal_wrapped(|ui| {
@@ -476,6 +478,18 @@ fn section_frame(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
     });
     ui.add_space(12.);
 }
+fn version_transition(build: &BuildStatus, current: &str) -> Option<String> {
+    if current.len() != 40 || !current.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let next = &current[..12];
+    if let Some(running) = build.running.as_ref().filter(|version| version.revision != current) {
+        return Some(uu_i18n::format!("服务 {} → 当前程序 {next}", running.label()));
+    }
+    build.installed.as_ref().filter(|version| version.revision != current)
+        .map(|installed| uu_i18n::format!("已安装服务 {} → 当前程序 {next}", installed.label()))
+}
+
 fn version_labels(ui: &mut egui::Ui, build: &BuildStatus) {
     if let Some(running) = &build.running {
         ui.label(uu_i18n::format!(
@@ -491,7 +505,7 @@ fn version_labels(ui: &mut egui::Ui, build: &BuildStatus) {
         ui.label(uu_i18n::format!("后台安装版本：{}", installed.label()))
             .on_hover_text(&installed.revision);
     }
-    ui.weak(crate::build_info::label());
+    ui.weak(crate::build_info::label()).on_hover_text(env!("UU_BUILD_COMMIT"));
 }
 #[derive(Clone)]
 enum Confirmation {
@@ -2346,6 +2360,22 @@ mod tests {
     fn update_package() -> uu_core::service_admin::deployment::Package {
         uu_core::service_admin::deployment::Package { revision:env!("UU_BUILD_COMMIT").into(), build:"f".repeat(64), built_at_utc:Some("2099-01-01T00:00:00Z".into()) }
     }
+    #[test]
+    fn version_transition_prioritizes_the_running_service_commit() {
+        let running = BuildVersion { revision: "a".repeat(40), built_at_utc: None };
+        let installed = BuildVersion { revision: "b".repeat(40), built_at_utc: None };
+        let mut build = BuildStatus { state: SERVICE_RUNNING, process_id: 42,
+            installed: Some(installed), running: Some(running), running_error: None, profile: None };
+        let next = "c".repeat(40);
+        assert_eq!(version_transition(&build, &next).as_deref(),
+            Some("服务 aaaaaaaaaaaa → 当前程序 cccccccccccc"));
+        build.running = None;
+        assert_eq!(version_transition(&build, &next).as_deref(),
+            Some("已安装服务 bbbbbbbbbbbb → 当前程序 cccccccccccc"));
+        assert!(version_transition(&build, &"b".repeat(40)).is_none());
+        assert!(version_transition(&build, "unknown").is_none());
+    }
+
     #[test]
     fn automatic_update_keeps_newer_services_and_stops_after_a_superseded_candidate() {
         let (mut manager, send, _jobs, _stop)=fixture();
