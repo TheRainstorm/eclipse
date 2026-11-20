@@ -55,10 +55,10 @@ impl Action {
             Self::CursorMode => uu_i18n::text("光标显示"),
             Self::ToggleNested => uu_i18n::text("嵌套快捷键透传"),
             Self::ToggleLocal => uu_i18n::text("返回本机 / 恢复串流"),
-            Self::PreviousDisplay => uu_i18n::text("上一个远端屏幕（全屏）"),
-            Self::NextDisplay => uu_i18n::text("下一个远端屏幕（全屏）"),
-            Self::PreviousComputer => uu_i18n::text("上一台串流电脑（全屏）"),
-            Self::NextComputer => uu_i18n::text("下一台串流电脑（全屏）"),
+            Self::PreviousDisplay => uu_i18n::text("上一个远端屏幕"),
+            Self::NextDisplay => uu_i18n::text("下一个远端屏幕"),
+            Self::PreviousComputer => uu_i18n::text("上一台串流电脑"),
+            Self::NextComputer => uu_i18n::text("下一台串流电脑"),
         }
     }
     fn defaults(self) -> &'static [Chord] {
@@ -81,9 +81,6 @@ impl Action {
             &[Chord::ctrl_alt(0x42)],
         ];
         DEFAULTS[self as usize]
-    }
-    pub fn fullscreen_only(self) -> bool {
-        matches!(self, Self::PreviousDisplay | Self::NextDisplay | Self::PreviousComputer | Self::NextComputer)
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -234,12 +231,6 @@ impl Bindings {
         streaming: bool,
         altgr: bool,
     ) -> Option<Action> {
-        self.find_in_view(key, modifiers, nested, streaming, false, altgr)
-    }
-    pub fn find_in_view(
-        &self, key: u32, modifiers: Modifiers, nested: bool, streaming: bool,
-        fullscreen: bool, altgr: bool,
-    ) -> Option<Action> {
         if altgr {
             return None;
         }
@@ -249,7 +240,6 @@ impl Bindings {
             // local even while an explicit nested-passthrough mode is active.
             (!nested || matches!(*a, Action::ToggleNested | Action::ToggleLocal | Action::BossKey))
                 && (streaming || matches!(*a, Action::Fullscreen | Action::BossKey))
-                && (fullscreen || !a.fullscreen_only())
                 && self.chords(*a).contains(&chord)
         })
     }
@@ -374,21 +364,20 @@ mod tests {
         assert_eq!(bindings.find(0x70,Chord::ctrl_alt_shift(0).modifiers,true,true,false),Some(Action::ToggleLocal));
     }
     #[test]
-    fn navigation_is_configurable_and_only_claimed_in_fullscreen() {
+    fn navigation_is_configurable_in_a_streaming_view() {
         let mut bindings:Bindings=serde_json::from_str("{}").unwrap();
         for (key,action) in [(0x25,Action::PreviousDisplay),(0x27,Action::NextDisplay),
             (0x26,Action::PreviousComputer),(0x28,Action::NextComputer)] {
             let modifiers=Chord::ctrl_alt(key).modifiers;
-            assert_eq!(bindings.find_in_view(key,modifiers,false,true,true,false),Some(action));
-            assert_eq!(bindings.find_in_view(key,modifiers,false,true,false,false),None);
-            assert_eq!(bindings.find_in_view(key,modifiers,false,false,true,false),None);
-            assert_eq!(bindings.find_in_view(key,modifiers,true,true,true,false),None);
-            assert_eq!(bindings.find_in_view(key,modifiers,false,true,true,true),None);
-            assert_eq!(bindings.find_in_view(key,Chord::ctrl_alt_shift(key).modifiers,false,true,true,false),None);
+            assert_eq!(bindings.find(key,modifiers,false,true,false),Some(action));
+            assert_eq!(bindings.find(key,modifiers,false,false,false),None);
+            assert_eq!(bindings.find(key,modifiers,true,true,false),None);
+            assert_eq!(bindings.find(key,modifiers,false,true,true),None);
+            assert_eq!(bindings.find(key,Chord::ctrl_alt_shift(key).modifiers,false,true,false),None);
         }
         bindings.set(Action::NextComputer,vec![Chord::ctrl_alt_shift(0x70)]);
         assert_eq!(bindings.label(Action::NextComputer),"Ctrl+Alt+Shift+F1");
-        assert_eq!(bindings.find_in_view(0x28,Chord::ctrl_alt(0).modifiers,false,true,true,false),None);
+        assert_eq!(bindings.find(0x28,Chord::ctrl_alt(0).modifiers,false,true,false),None);
         bindings.set(Action::PreviousDisplay,vec![]);
         let restored:Bindings=serde_json::from_slice(&serde_json::to_vec(&bindings).unwrap()).unwrap();
         assert!(restored.chords(Action::PreviousDisplay).is_empty());
@@ -400,8 +389,8 @@ mod tests {
         for (action,keys) in Action::ALL.into_iter().zip([&[0x53][..],&[0x48],&[0x4d],&[0x46,0x58],&[0x51],&[0x5a],&[0x50],&[0x43],&[0x7b],&[0x44],&[0x25],&[0x27],&[0x26],&[0x28],&[0x56],&[0x42]]) {
             assert_eq!(b.chords(action),keys.iter().map(|key|Chord::ctrl_alt(*key)).collect::<Vec<_>>());
             for key in keys {
-                assert_eq!(b.find_in_view(*key,Chord::ctrl_alt(0).modifiers,false,true,true,false),Some(action));
-                assert_eq!(b.find_in_view(*key,Chord::ctrl_alt_shift(0).modifiers,false,true,true,false),None);
+                assert_eq!(b.find(*key,Chord::ctrl_alt(0).modifiers,false,true,false),Some(action));
+                assert_eq!(b.find(*key,Chord::ctrl_alt_shift(0).modifiers,false,true,false),None);
             }
         }
         let mut custom=b;custom.set(Action::Stats,vec![Chord::ctrl_alt_shift(0x54)]);custom.set(Action::Menu,vec![]);

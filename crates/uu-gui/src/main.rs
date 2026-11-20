@@ -851,9 +851,7 @@ impl App {
             shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
             action @ (shortcuts::Action::PreviousDisplay | shortcuts::Action::NextDisplay
                 | shortcuts::Action::PreviousComputer | shortcuts::Action::NextComputer) => {
-                if self.fullscreen {
-                    if let Some(tabs)=&self.workspace_tabs {tabs.navigate(action);}
-                }
+                if let Some(tabs)=&self.workspace_tabs {tabs.navigate(action);}
             },
             shortcuts::Action::Exit=>{
                 if let Some(tabs)=&self.workspace_tabs {tabs.actions.borrow_mut().push(stream_workspace::Action::CloseGroup(tabs.active));}
@@ -919,8 +917,7 @@ impl App {
         // releasing remote input. They do not depend on a host control grant.
         let shortcuts=self.stream_target.is_some() && !self.controller.closing() && ctx.input(|i|i.focused) && !shortcuts_ui::recording(ctx) && !(self.hud && self.hud_cache.keyboard_owned());
         self.shortcuts.borrow_mut().configure(&self.preferences.hotkeys,ctx.input(|i|i.modifiers));
-        self.shortcuts.borrow_mut().fullscreen=self.fullscreen;
-        let window=self.platform.window_keyboard(remote,shortcuts,self.nested_passthrough,self.fullscreen,&self.preferences.hotkeys);
+        let window=self.platform.window_keyboard(remote,shortcuts,self.nested_passthrough,&self.preferences.hotkeys);
         let active=self.platform.capture_keyboard(self.input_capture.system(conditions,self.fullscreen,self.preferences.capture_keyboard));
         if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {
             if let Some(h)=self.controller.as_ref() {h.stats.diagnostics.record(serde_json::json!({
@@ -1184,7 +1181,7 @@ impl App {
         // Client-command key ownership belongs to the window and survives a
         // session switch until its physical key-up reaches the new active tab.
         self.focused=false;
-        self.platform.window_keyboard(false,false,false,false,&self.preferences.hotkeys);self.platform.capture_keyboard(false);
+        self.platform.window_keyboard(false,false,false,&self.preferences.hotkeys);self.platform.capture_keyboard(false);
         if let Some(handle)=self.controller.as_ref() {
             if let Some(input)=&handle.native_input{input.set_enabled(false);}
             use std::sync::atomic::Ordering::{AcqRel,Release};

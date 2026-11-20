@@ -155,7 +155,7 @@ impl Platform {
         #[cfg(windows)] self.route.select(session);
         #[cfg(not(windows))] let _=session;
     }
-    pub fn window_keyboard(&self,active:bool,shortcuts:bool,nested_passthrough:bool,fullscreen:bool,bindings:&uu_core::hotkeys::Bindings)->bool {
+    pub fn window_keyboard(&self,active:bool,shortcuts:bool,nested_passthrough:bool,bindings:&uu_core::hotkeys::Bindings)->bool {
         crate::boss_key::configure(bindings);
         #[cfg(windows)] {
             let active=active&&self.route.old_proc!=0;
@@ -164,10 +164,10 @@ impl Platform {
                 if let Some(hook)=&self.hook {hook.configure_global_hotkeys(bindings);}
                 *self.bindings.borrow_mut()=bindings.clone();
             }
-            self.route.set_policy(active,shortcuts,nested_passthrough,fullscreen);
+            self.route.set_policy(active,shortcuts,nested_passthrough);
             active
         }
-        #[cfg(not(windows))] {let _=(active,shortcuts,nested_passthrough,fullscreen,bindings);false}
+        #[cfg(not(windows))] {let _=(active,shortcuts,nested_passthrough,bindings);false}
     }
     pub fn capture_keyboard(&self, active: bool) -> bool {
         #[cfg(windows)] {
@@ -370,7 +370,6 @@ mod windows {
     const SHORTCUTS:u8=2;
     const NESTED:u8=4;
     const CAPTURE:u8=8;
-    const FULLSCREEN:u8=16;
     pub struct Route {
         pub old_proc:isize,
         context:eframe::egui::Context,
@@ -386,9 +385,9 @@ mod windows {
             let modifiers=crate::keyboard_capture::Modifiers::from_key_state(|vk|unsafe{GetAsyncKeyState(vk as i32)<0});
             self.keys.lock().unwrap().configure(bindings,&modifiers);
         }
-        pub fn set_policy(&self,input:bool,shortcuts:bool,nested:bool,fullscreen:bool) {
+        pub fn set_policy(&self,input:bool,shortcuts:bool,nested:bool) {
             self.policy.fetch_update(Relaxed,Relaxed,|old|Some((old&CAPTURE)
-                |if input{INPUT}else{0}|if shortcuts{SHORTCUTS}else{0}|if nested{NESTED}else{0}|if fullscreen{FULLSCREEN}else{0})).ok();
+                |if input{INPUT}else{0}|if shortcuts{SHORTCUTS}else{0}|if nested{NESTED}else{0})).ok();
         }
         pub fn set_capture(&self,enabled:bool) {
             if enabled {self.policy.fetch_or(CAPTURE,Relaxed);}else{self.policy.fetch_and(!CAPTURE,Relaxed);}
@@ -557,7 +556,6 @@ mod windows {
                     system_capture:policy&CAPTURE!=0,
                     shortcuts:policy&SHORTCUTS!=0,
                     nested_passthrough:policy&NESTED!=0,
-                    fullscreen:policy&FULLSCREEN!=0,
                 };
                 let remote=route.input && route.foreground && (route.system_capture || !crate::keyboard_capture::local_system_key(vk,modifiers.win()));
                 match keys.event(vk,down,crate::keyboard_capture::WindowRoute{input:remote,..route},&modifiers,lparam as usize&(1<<30)!=0) {
@@ -805,7 +803,7 @@ mod windows {
                     keys.select((if owned{foreground as isize}else{0},session),modifiers);
                     modifiers.observe(vk,down);
                     keys.event(vk,down,crate::keyboard_capture::WindowRoute {
-                        input:active,shortcuts,foreground:owned,system_capture:active,nested_passthrough:nested,fullscreen:policy&FULLSCREEN!=0,
+                        input:active,shortcuts,foreground:owned,system_capture:active,nested_passthrough:nested,
                     },modifiers,already_down)
                 });
                 match decision {
@@ -862,8 +860,8 @@ mod windows {
         };
         let a=create();let b=create();
         a.1.select(11);b.1.select(22);
-        a.1.set_policy(true,true,false,false);a.1.set_capture(true);
-        b.1.set_policy(false,true,true,false);
+        a.1.set_policy(true,true,false);a.1.set_capture(true);
+        b.1.set_policy(false,true,true);
         assert_eq!(a.1.policy.load(Relaxed),INPUT|SHORTCUTS|CAPTURE);
         assert_eq!(b.1.policy.load(Relaxed),SHORTCUTS|NESTED);
         for window in [&a,&b] {
