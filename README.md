@@ -155,7 +155,7 @@ python3 uninstall.py
 
 壁纸合集和 UU 插件均默认关闭，用户自行启用。升级时保留 `eclipse-data`、自选目录的 `eclipse-profile.json` 及外部数据，并使用匹配主程序 SDK 的插件。[插件说明](docs/guides/plugins.md)
 
-正式包使用版本标签命名，例如 `eclipse-windows-x64-v0.24.8.zip`；开发包使用 `eclipse-windows-x64-dev-<主程序提交号>.zip`。UU 插件源码版本记录在包内清单中，文件名无需再带一段插件提交号。
+正式包使用版本标签命名，例如 `eclipse-windows-x64-v0.24.9.zip`。开发包使用 `eclipse-windows-x64-dev-<主程序提交号>.zip`。UU 插件源码版本记录在包内清单中。
 
 本项目由个人维护，目前无盈利，与网易及其 UU 远程产品无隶属、合作或官方授权关系。第三方名称仅说明兼容对象，商标及权利归原权利人所有。如相关权利人要求下架，维护者将配合停止公开分发并处理相关内容。[许可与兼容接入说明](docs/legal/licensing-and-compatibility.md)
 
