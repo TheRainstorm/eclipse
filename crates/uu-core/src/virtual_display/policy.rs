@@ -353,17 +353,18 @@ impl Manager {
                 }
             }
         }else{None};
-        let next_name=if name.is_empty(){current.name}else{name};
-        self.backend.rename(&entry.target,&next_name)?;
+        if entry.display.name != name {
+            self.backend.rename(&entry.target, &name)?;
+        }
         if let Some(mut record)=saved_record {
-            record.spec=spec;record.name=next_name.clone();
+            record.spec=spec;record.name=name.clone();
             if let Some(position)=self.backend.position(&entry.target)? {record.position=Some(position);}
             if let Err(error)=self.saved_file()?.save(record) {
                 if mode_changed {let _=self.backend.reconfigure(&entry.target,current.actual.unwrap());}
                 return Err(error);
             }
         }
-        entry.display.name=next_name;
+        entry.display.name=name;
         entry.display.spec=spec;
         entry.display.last_error=None;
         if let Some(target)=observed {

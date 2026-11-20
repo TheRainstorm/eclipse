@@ -1008,10 +1008,12 @@ fn configure_owned_mode(key:&TargetKey,spec:Spec,creation:bool)->std::result::Re
     // when Windows applies its saved connected-display configuration. The
     // exact owned claim permits both states; observe it afresh under the lock.
     let observed=(||->Result<_>{let owned=demand::owned_keys(key,None)?;let active=scene()?.active.paths.iter().any(|p|target_key(p).is_ok_and(|(candidate,_)|&candidate==key));Ok((owned,active))})();
-    let (owned,active)=observed.map_err(|error|ActivationFailure{message:error.to_string(),activated:true})?;
+    let (owned,active)=observed.map_err(|error|ActivationFailure{message:error.to_string(),activated:false})?;
     let target=configure_mode(key,spec,active,creation)?;
-    let result=provision::capacity::persist_owned_live(&owned);
-    result.map(|()|target).map_err(|error|ActivationFailure{message:error.to_string(),activated:true})
+    if let Err(error) = provision::capacity::persist_owned_live(&owned) {
+        tracing::warn!(%error, "Windows connected-display preference was not saved");
+    }
+    Ok(target)
 }
 fn configure_mode(key: &TargetKey, spec: Spec, existing:bool, extend_right:bool) -> std::result::Result<Target, ActivationFailure> {
     let mut apply_submitted = false;
