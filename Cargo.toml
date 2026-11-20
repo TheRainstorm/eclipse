@@ -29,7 +29,7 @@ webrtc-dtls = { path = "vendor/webrtc-dtls" }
 winit = { path = "vendor/winit" }
 
 [workspace.package]
-version = "0.24.9"
+version = "0.24.10-rc3"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/TheRainstorm/eclipse"
