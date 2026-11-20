@@ -271,6 +271,7 @@ pub(crate) struct NativePeer {
     pub states: watch::Receiver<RTCPeerConnectionState>,
     closed: AtomicBool,
     development_relay: bool,
+    public_ipv4_direct: bool,
     pending_decoder: Arc<Mutex<Option<crate::media::PreparedVideoDecoder>>>,
     wlan: Mutex<Option<crate::wlan_streaming::Guard>>,
     #[cfg(windows)]
@@ -404,11 +405,13 @@ impl NativePeer {
         let mut settings = SettingEngine::default();
         crate::srtp_policy::configure(&mut settings);
         settings.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
-        settings.set_network_types(vec![NetworkType::Udp4, NetworkType::Udp6]);
+        let public_ipv4_direct=ice.path()==crate::direct_ice::PathPolicy::PublicIpv4Direct;
+        settings.set_network_types(if public_ipv4_direct {vec![NetworkType::Udp4]} else {vec![NetworkType::Udp4, NetworkType::Udp6]});
         settings.set_udp_network(UDPNetwork::Ephemeral(webrtc::ice::udp_network::EphemeralUDP::new(crate::stream_ports::FIRST, crate::stream_ports::LAST)?));
         let diagnostics=crate::native_diagnostics::Diagnostics::new(stats.as_ref(),sender);
         let mut peer=Self::build(settings, None, ice.configuration(), stats, sender,diagnostics).await?;
         peer.development_relay=ice.development_relay();
+        peer.public_ipv4_direct=public_ipv4_direct;
         // Discovery uses network resources only. Start it before waiting for
         // the remote offer or opening capture/encoding; description() still
         // sends a complete candidate set after media preparation succeeds.
@@ -524,6 +527,7 @@ impl NativePeer {
             states,
             closed: AtomicBool::new(false),
             development_relay:false,
+            public_ipv4_direct:false,
             pending_decoder: Arc::new(Mutex::new(None)),
             wlan: Mutex::new(wlan),
             #[cfg(windows)]
@@ -685,6 +689,9 @@ impl NativePeer {
             .await
             .context("native local SDP unavailable")?;
         self.fec.description(&mut description);
+        if self.public_ipv4_direct {
+            description.sdp=crate::direct_ice::advertise_public_ipv4(&description.sdp)?;
+        }
         if offer {self.diagnostics.offer(&description);}
         Ok(description)
     }
@@ -698,7 +705,10 @@ impl NativePeer {
         {*self.authenticated_ip.lock().unwrap()=Some(peer_ip);}
         Ok(())
     }
-    pub async fn remote_direct(&self, description: RTCSessionDescription) -> Result<()> {
+    pub async fn remote_direct(&self, mut description: RTCSessionDescription) -> Result<()> {
+        if self.public_ipv4_direct {
+            description.sdp=crate::direct_ice::accept_public_ipv4(&description.sdp)?;
+        }
         crate::direct_ice::validate_sdp(&description.sdp,self.development_relay)?;
         if description.sdp_type==webrtc::peer_connection::sdp::sdp_type::RTCSdpType::Offer {self.diagnostics.offer(&description);}
         self.repairs.configure(&description.sdp);
@@ -761,12 +771,17 @@ impl NativePeer {
         }
     }
     pub async fn direct_path(&self) -> Result<serde_json::Value> {
-        let pair=self.pc.sctp().transport().ice_transport().get_selected_candidate_pair().await
+        let path=crate::connection_info::selected_path(&self.pc).await
             .context("cannot confirm selected native ICE path")?;
-        let local_type=pair.local().typ.to_string();let remote_type=pair.remote().typ.to_string();
-        ensure!(self.development_relay || (pair.local().typ!=RTCIceCandidateType::Relay && pair.remote().typ!=RTCIceCandidateType::Relay),"direct-only session selected a forbidden relay");
+        let local_type=path.local.kind.ice_name();
+        let remote_type=path.remote.kind.ice_name();
+        ensure!(self.development_relay || !path.relayed(),"direct-only session selected a forbidden relay");
+        if self.public_ipv4_direct {
+            ensure!(matches!(path.remote.address.ip(), IpAddr::V4(ip) if crate::direct_ice::is_public_ipv4(ip)),
+                "selected ICE peer is outside the public IPv4 path");
+        }
         tracing::info!(local_type,remote_type,"native UDP path selected");
-        Ok(serde_json::json!({"event":"native_path","direct":pair.local().typ!=RTCIceCandidateType::Relay&&pair.remote().typ!=RTCIceCandidateType::Relay,
+        Ok(serde_json::json!({"event":"native_path","direct":!path.relayed(),
             "development_relay":self.development_relay,"local_type":local_type,"remote_type":remote_type,"transport":"udp"}))
     }
     pub async fn close(&self) {

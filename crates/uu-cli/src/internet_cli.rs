@@ -62,6 +62,9 @@ pub enum Command {
         encoder: super::NativeEncoder,
         #[arg(long)]
         max_seconds: Option<u64>,
+        /// Advertise only public IPv4 UDP candidates and disable TURN for this run.
+        #[arg(long)]
+        public_ipv4_direct: bool,
     },
     /// Receive native video and write metadata only, without desktop input.
     Probe {
@@ -76,6 +79,12 @@ pub enum Command {
         /// Include the selected UDP endpoints and candidate types in the report.
         #[arg(long)]
         connection_details: bool,
+        /// Accept only a direct public IPv4 UDP media path.
+        #[arg(long)]
+        public_ipv4_direct: bool,
+        /// Print connection progress to stderr at this interval.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=30))]
+        progress_seconds: Option<u64>,
     },
 }
 fn settings(path: &std::path::Path) -> Result<internet::Settings> {
@@ -134,8 +143,12 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             bitrate_kbps,
             encoder,
             max_seconds,
+            public_ipv4_direct,
         } => {
-            let settings = settings(&path)?;
+            let mut settings = settings(&path)?;
+            if public_ipv4_direct {
+                settings.path_policy = internet::PathPolicy::PublicIpv4Direct;
+            }
             let (codec,rate_control)=video.policy(bitrate_kbps)?;
             let source = if synthetic {
                 uu_core::native::CaptureSource::Synthetic { width, height, fps }
@@ -173,12 +186,17 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             timeout_seconds,
             report,
             connection_details,
+            public_ipv4_direct,
+            progress_seconds,
         } => {
             ensure!(
                 frames > 0 && timeout_seconds > 0,
                 "probe limits must be positive"
             );
-            let settings = settings(&path)?;
+            let mut settings = settings(&path)?;
+            if public_ipv4_direct {
+                settings.path_policy = internet::PathPolicy::PublicIpv4Direct;
+            }
             let mut report = report
                 .map(|path| {
                     std::fs::OpenOptions::new()
@@ -202,17 +220,29 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
                 None,
             ));
             let started = std::time::Instant::now();
+            let progress_interval = progress_seconds.map(Duration::from_secs);
+            let mut next_progress = started;
             let mut observed = 0u64;
             let mut selected = None;
             if connection_details {
                 stats.connection.request();
             }
-            let result = tokio::time::timeout(Duration::from_secs(timeout_seconds), async {
+            let collection = tokio::time::timeout(Duration::from_secs(timeout_seconds), async {
                 loop {
                     while rx.try_recv().is_ok() {
                         observed += 1;
                     }
-                    if stats.decoded_total.load(Ordering::Relaxed) >= frames && observed > 0 {
+                    let decoded = stats.decoded_total.load(Ordering::Relaxed);
+                    if let Some(interval) = progress_interval {
+                        let now = std::time::Instant::now();
+                        if now >= next_progress {
+                            let connection = stats.connection.request();
+                            let phase = if connection.ice_state.is_empty() { "preparing" } else { &connection.ice_state };
+                            eprintln!("{:.1}s ICE {phase}, decoded {decoded}/{frames}", started.elapsed().as_secs_f64());
+                            next_progress = now + interval;
+                        }
+                    }
+                    if decoded >= frames && observed > 0 {
                         if connection_details {
                             selected = stats.connection.request().selected;
                             if selected.is_none() {
@@ -229,13 +259,20 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
                     );
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-            })
-            .await
-            .context("internet video probe timed out");
+            });
+            let mut cancelled = false;
+            let result = tokio::select! {
+                result = collection => result.context("internet video probe timed out"),
+                interrupt = tokio::signal::ctrl_c() => {
+                    cancelled = interrupt.is_ok();
+                    interrupt.context("failed to handle Ctrl+C").map(|()| Ok(()))
+                }
+            };
             stop.send_replace(true);
             let closed = task.await?;
             let (width, height) = stats.res();
-            let mut metrics = serde_json::json!({"completed":matches!(&result,Ok(Ok(())))&&closed.is_ok(),
+            let mut metrics = serde_json::json!({"completed":!cancelled&&matches!(&result,Ok(Ok(())))&&closed.is_ok(),
+                "cancelled":cancelled,
                 "decoded":stats.decoded_total.load(Ordering::Relaxed),"observed":observed,"errors":stats.errors.load(Ordering::Relaxed),
                 "width":width,"height":height,"elapsed_ms":started.elapsed().as_millis() as u64,"backend":stats.backend(),
                 "audio_packets":stats.audio.packets.load(Ordering::Relaxed)});
@@ -253,6 +290,7 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
                 file.sync_all()?;
             }
             println!("{metrics}");
+            if cancelled { return Ok(()); }
             closed?;
             result??;
             ensure!(

@@ -27,6 +27,29 @@ pub enum Behavior {
     Unstable,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NatType {
+    NoTranslationObserved,
+    FullCone,
+    AddressRestrictedCone,
+    PortRestrictedCone,
+    Symmetric,
+    Unknown,
+}
+
+fn nat_type(translated: Option<bool>, mapping: Behavior, filtering: Behavior) -> NatType {
+    use Behavior::{AddressAndPortDependent, AddressDependent, EndpointIndependent};
+    match (translated, mapping, filtering) {
+        (Some(false), _, _) => NatType::NoTranslationObserved,
+        (Some(true), EndpointIndependent, EndpointIndependent) => NatType::FullCone,
+        (Some(true), EndpointIndependent, AddressDependent) => NatType::AddressRestrictedCone,
+        (Some(true), EndpointIndependent, AddressAndPortDependent) => NatType::PortRestrictedCone,
+        (Some(true), AddressAndPortDependent, AddressAndPortDependent) => NatType::Symmetric,
+        _ => NatType::Unknown,
+    }
+}
+
 #[derive(Serialize)]
 pub struct Observation {
     pub destination: SocketAddr,
@@ -41,6 +64,7 @@ pub struct Report {
     pub address_translation_observed: Option<bool>,
     pub mapping: Behavior,
     pub filtering: Behavior,
+    pub nat_type: NatType,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -333,6 +357,7 @@ pub async fn probe(stun: Vec<String>, mut bind: SocketAddr) -> Result<Report> {
         address_translation_observed,
         mapping,
         filtering,
+        nat_type: nat_type(address_translation_observed, mapping, filtering),
     })
 }
 
@@ -408,6 +433,27 @@ mod tests {
             mapped: Some("203.0.113.1:1234".parse().unwrap()),
         };
         assert_eq!(sampled_mapping(&[primary]), Behavior::Unknown);
+    }
+
+    #[test]
+    fn traditional_nat_type_requires_evidence_for_both_axes() {
+        use Behavior::*;
+        assert_eq!(
+            nat_type(Some(true), EndpointIndependent, Unknown),
+            NatType::Unknown
+        );
+        assert_eq!(
+            nat_type(Some(true), EndpointIndependent, EndpointIndependent),
+            NatType::FullCone
+        );
+        assert_eq!(
+            nat_type(Some(true), EndpointDependent, AddressAndPortDependent),
+            NatType::Unknown
+        );
+        assert_eq!(
+            nat_type(Some(true), AddressAndPortDependent, AddressAndPortDependent),
+            NatType::Symmetric
+        );
     }
 
     #[test]

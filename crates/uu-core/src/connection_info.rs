@@ -21,6 +21,16 @@ pub enum Kind {
     PeerMapping,
     Relay,
 }
+impl Kind {
+    pub(crate) fn ice_name(&self) -> &'static str {
+        match self {
+            Self::Interface => "host",
+            Self::StunMapping => "srflx",
+            Self::PeerMapping => "prflx",
+            Self::Relay => "relay",
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Endpoint {
     pub address: SocketAddr,
@@ -151,6 +161,40 @@ fn from_sdp(sdp: &str) -> Vec<Endpoint> {
     }
     result
 }
+
+fn classify_relay(mut selected: Endpoint, advertised: &[Endpoint]) -> Endpoint {
+    if selected.kind == Kind::PeerMapping {
+        if let Some(relay) = advertised.iter().find(|candidate| {
+            candidate.kind == Kind::Relay
+                && candidate.address == selected.address
+                && candidate.protocol == selected.protocol
+        }) {
+            selected.kind = Kind::Relay;
+            selected.base = relay.base;
+        }
+    }
+    selected
+}
+
+async fn selected_pair(pc: &RTCPeerConnection) -> Option<SelectedPath> {
+    let pair = pc.sctp().transport().ice_transport().get_selected_candidate_pair().await?;
+    Some(SelectedPath { local: endpoint(pair.local())?, remote: endpoint(pair.remote())? })
+}
+
+pub(crate) async fn selected_path(pc: &RTCPeerConnection) -> Option<SelectedPath> {
+    let mut path = selected_pair(pc).await?;
+    if path.local.kind == Kind::PeerMapping {
+        if let Some(sdp) = pc.local_description().await {
+            path.local = classify_relay(path.local, &from_sdp(&sdp.sdp));
+        }
+    }
+    if path.remote.kind == Kind::PeerMapping {
+        if let Some(sdp) = pc.remote_description().await {
+            path.remote = classify_relay(path.remote, &from_sdp(&sdp.sdp));
+        }
+    }
+    Some(path)
+}
 pub(crate) async fn refresh(pc: &RTCPeerConnection, details: &Details) {
     let mut local = pc
         .local_description()
@@ -195,17 +239,10 @@ pub(crate) async fn refresh(pc: &RTCPeerConnection, details: &Details) {
             },
         );
     }
-    let selected = pc
-        .sctp()
-        .transport()
-        .ice_transport()
-        .get_selected_candidate_pair()
-        .await
-        .and_then(|pair| {
-            let local = endpoint(pair.local())?;
-            let remote = endpoint(pair.remote())?;
-            Some(SelectedPath { local, remote })
-        });
+    let selected = selected_pair(pc).await.map(|pair| SelectedPath {
+        local: classify_relay(pair.local, &local),
+        remote: classify_relay(pair.remote, &remote),
+    });
     if let Some(path) = &selected {
         merge(&mut local, path.local.clone());
         merge(&mut remote, path.remote.clone());
@@ -252,9 +289,7 @@ impl Monitor {
                 }
                 if closed { break; }
                 if state == RTCPeerConnectionState::Connected && stats.connection.link.wanted() {
-                    let path=pc.sctp().transport().ice_transport().get_selected_candidate_pair().await.and_then(|pair| {
-                        Some(SelectedPath{local:endpoint(pair.local())?,remote:endpoint(pair.remote())?})
-                    });
+                    let path = selected_path(&pc).await;
                     // A bounded blocking OS probe never holds the stats slot, UI,
                     // packet reader or connection alive after monitor cancellation.
                     let Ok((next,sample))=tokio::task::spawn_blocking(move || {
@@ -290,6 +325,16 @@ mod tests {
             base: None,
         };
         assert_eq!(ipv6.address.to_string(), "[2001:db8::1]:1234");
+    }
+
+    #[test]
+    fn peer_reflexive_endpoint_at_advertised_turn_address_is_reported_as_relay() {
+        let relay = from_sdp("a=candidate:1 1 udp 99 203.0.113.3 6666 typ relay raddr 192.0.2.2 rport 49008\r\n");
+        let selected = Endpoint { address: "203.0.113.3:6666".parse().unwrap(), protocol: "udp".into(), kind: Kind::PeerMapping, base: None };
+        let classified = classify_relay(selected.clone(), &relay);
+        assert_eq!(classified, relay[0]);
+        let another_port = Endpoint { address: "203.0.113.3:6667".parse().unwrap(), ..selected };
+        assert_eq!(classify_relay(another_port.clone(), &relay), another_port);
     }
 }
 

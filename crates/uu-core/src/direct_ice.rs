@@ -1,6 +1,7 @@
 //! Native internet ICE: direct candidates have priority; authorized connection
 //! services may supply per-session TURN credentials for automatic fallback.
 use anyhow::{ensure, Context, Result};
+use std::net::{IpAddr, Ipv4Addr};
 use webrtc::{
     ice::url::{ProtoType, SchemeType, Url},
     ice_transport::ice_server::RTCIceServer,
@@ -16,18 +17,42 @@ pub struct InternetIce {
     turn: Vec<RTCIceServer>,
     development_relay: bool,
     force_relay: bool,
+    path: PathPolicy,
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PathPolicy {
+    #[default]
+    Automatic,
+    PublicIpv4Direct,
+}
+
 impl std::fmt::Debug for InternetIce {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InternetIce")
             .field("stun_count", &self.urls.len())
             .field("turn_count", &self.turn.len())
             .field("development_relay", &self.development_relay)
+            .field("path", &self.path)
             .finish()
     }
 }
 
 impl InternetIce {
+    pub(crate) fn with_path(mut self, path: PathPolicy) -> Result<Self> {
+        if path == PathPolicy::PublicIpv4Direct {
+            ensure!(!self.force_relay, "connection service requires TURN relay");
+            self.turn.clear();
+            self.development_relay = false;
+        }
+        self.path = path;
+        Ok(self)
+    }
+
+    pub(crate) fn path(&self) -> PathPolicy {
+        self.path
+    }
+
     pub(crate) fn automatic(stun: Vec<String>, turn: Vec<RTCIceServer>) -> Result<Self> {
         if turn.is_empty() { return Self::new(stun); }
         let mut entries: Vec<_> = stun.into_iter().map(|url| RTCIceServer { urls: vec![url], ..Default::default() }).collect();
@@ -132,6 +157,51 @@ impl InternetIce {
     }
 }
 
+pub(crate) fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    !(a == 0 || a >= 224
+        || (a == 100 && (64..128).contains(&b))
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 198 && (18..=19).contains(&b))
+        || ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_documentation())
+}
+
+pub(crate) fn public_ipv4_sdp(sdp: &str) -> Result<String> {
+    ensure!(sdp.len() <= 256 * 1024, "direct SDP exceeds size limit");
+    let mut filtered = String::with_capacity(sdp.len());
+    let mut candidates = 0;
+    for line in sdp.split_inclusive('\n') {
+        if line.starts_with("a=candidate:") {
+            let fields: Vec<_> = line.split_whitespace().take(8).collect();
+            let allowed = fields.len() == 8 && fields[2].eq_ignore_ascii_case("udp")
+                && fields[6] == "typ" && matches!(fields[7], "host" | "srflx" | "prflx")
+                && fields[4].parse::<Ipv4Addr>().is_ok_and(is_public_ipv4)
+                && fields[5].parse::<u16>().is_ok_and(|port| port != 0);
+            if !allowed { continue; }
+            candidates += 1;
+        }
+        filtered.push_str(line);
+    }
+    ensure!(candidates != 0, "no public IPv4 UDP candidate; check STUN reachability");
+    Ok(filtered)
+}
+
+const PUBLIC_IPV4_ATTRIBUTE: &str = "a=x-eclipse-ice-path:public-ipv4-direct-v1";
+
+pub(crate) fn advertise_public_ipv4(sdp: &str) -> Result<String> {
+    let mut filtered = public_ipv4_sdp(sdp)?;
+    let at = filtered.find("m=").unwrap_or(filtered.len());
+    filtered.insert_str(at, &format!("{PUBLIC_IPV4_ATTRIBUTE}\r\n"));
+    Ok(filtered)
+}
+
+pub(crate) fn accept_public_ipv4(sdp: &str) -> Result<String> {
+    ensure!(sdp.lines().filter(|line| *line == PUBLIC_IPV4_ATTRIBUTE).count() == 1,
+        "both peers must enable public IPv4 direct mode");
+    validate_sdp(sdp, false)?;
+    public_ipv4_sdp(sdp)
+}
+
 pub(crate) fn validate_sdp(sdp: &str, development_relay: bool) -> Result<()> {
     ensure!(sdp.len() <= 256 * 1024, "direct SDP exceeds size limit");
     let mut candidates = 0;
@@ -145,7 +215,7 @@ pub(crate) fn validate_sdp(sdp: &str, development_relay: bool) -> Result<()> {
                     || (development_relay && fields[7] == "relay")),
             "direct session rejects relay and non-UDP candidates"
         );
-        let ip: std::net::IpAddr = fields[4]
+        let ip: IpAddr = fields[4]
             .parse()
             .context("direct candidate needs a numeric IP")?;
         ensure!(
@@ -213,5 +283,41 @@ mod tests {
         assert!(!format!("{ice:?}").contains("fixture-secret"));
         assert!(validate_sdp("a=candidate:1 1 udp 1 192.0.2.1 1234 typ relay\r\n", true).is_ok());
         assert!(room(&header,false).is_err());
+    }
+
+    #[test]
+    fn public_ipv4_trial_keeps_stun_and_rejects_required_relay() {
+        let entries = serde_json::json!({"iceServers":[{
+            "urls":["turn:relay.example:3478", "stun:stun.example:3478"],
+            "username":"fixture-user","credential":"fixture-secret"}]});
+        let normal=room(&entries,true).unwrap();
+        let trial=normal.clone().with_path(PathPolicy::PublicIpv4Direct).unwrap();
+        assert_eq!(normal.configuration().ice_servers.len(),2);
+        assert_eq!(trial.configuration().ice_servers.len(),1);
+        assert!(!trial.development_relay());
+        assert_eq!(trial.urls(),["stun:stun.example:3478"]);
+        let mut forced = entries;
+        forced["force_relay"] = true.into();
+        assert!(room(&forced,true).unwrap().with_path(PathPolicy::PublicIpv4Direct).is_err());
+    }
+
+    #[test]
+    fn public_ipv4_trial_keeps_peer_mapping_and_removes_private_and_relay_paths() {
+        let public="a=candidate:1 1 udp 1 8.8.4.4 1234 typ srflx raddr 10.0.0.2 rport 49005\r\n";
+        let alternate="a=candidate:2 1 udp 1 1.1.1.1 1235 typ prflx\r\n";
+        let private="a=candidate:3 1 udp 2 10.0.0.2 49005 typ host\r\n";
+        let carrier="a=candidate:4 1 udp 2 100.72.0.2 49005 typ srflx\r\n";
+        let relay="a=candidate:5 1 udp 1 1.1.1.1 45766 typ relay\r\n";
+        let ipv6="a=candidate:6 1 udp 2 2001:db8::2 49005 typ host\r\n";
+        let credentials="a=ice-ufrag:fixture\r\na=ice-pwd:fixture\r\n";
+        let input=[credentials,public,private,carrier,ipv6,relay,alternate].concat();
+        let filtered=public_ipv4_sdp(&input).unwrap();
+        assert_eq!(filtered,[credentials,public,alternate].concat());
+        validate_sdp(&filtered,false).unwrap();
+        assert!(public_ipv4_sdp(&[private,carrier,relay,ipv6].concat()).is_err());
+        assert!(accept_public_ipv4(&filtered).is_err());
+        let offer=advertise_public_ipv4(&input).unwrap();
+        assert_eq!(accept_public_ipv4(&offer).unwrap(),offer);
+        assert!(accept_public_ipv4(&[offer.as_str(),relay].concat()).is_err());
     }
 }

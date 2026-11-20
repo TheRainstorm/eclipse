@@ -18,6 +18,7 @@ pub mod stun;
 pub mod nat;
 pub mod turn;
 pub mod enrollment;
+pub use crate::direct_ice::PathPolicy;
 
 pub const MAX_MESSAGE: usize = 256 * 1024;
 
@@ -55,6 +56,9 @@ pub struct Settings {
     pub device_auth: bool,
     pub expected_peer: Option<String>,
     pub profile: Option<String>,
+    /// Ephemeral diagnostics policy selected for this CLI invocation.
+    #[serde(skip)]
+    pub path_policy: PathPolicy,
 }
 impl Settings {
     pub fn self_hosted(&self) -> Result<self_hosted::Config> {
@@ -119,11 +123,12 @@ pub async fn host(
             }
         }
     };
-    let connection = match accepting.await {
+    let mut connection = match accepting.await {
         Ok(connection)=>connection,
         Err(_) if *stop.borrow()=>return Ok(crate::native::HostReport::default()),
         Err(error)=>return Err(error),
     };
+    connection.ice = connection.ice.with_path(settings.path_policy)?;
     let (mut signal, ice) = Authenticated::new(connection, key, Role::Host);
     let result = crate::native::serve_direct(&mut signal, &ice, sharing, stop, status).await;
     signal.close().await;
@@ -146,7 +151,8 @@ pub async fn view(
             }
         }
     };
-    let connection = tokio::select! {result=joining=>result?,_=cancelled(&mut stop)=>return Ok(())};
+    let mut connection = tokio::select! {result=joining=>result?,_=cancelled(&mut stop)=>return Ok(())};
+    connection.ice = connection.ice.with_path(settings.path_policy)?;
     if settings.device_auth {
         return crate::device_internet::view(connection,&settings,&config,frames,stats,stop,input).await;
     }

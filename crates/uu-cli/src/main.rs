@@ -283,7 +283,7 @@ async fn main() -> Result<()> {
                 let mapped = observation.mapped.map(|v| v.to_string());
                 println!("  {} -> {}", observation.destination, mapped.as_deref().unwrap_or("no usable STUN reply"));
             }
-            println!("Mapping: {:?}\nFiltering: {:?}", report.mapping, report.filtering);
+            println!("NAT type: {:?}\nMapping: {:?}\nFiltering: {:?}", report.nat_type, report.mapping, report.filtering);
         }
         anyhow::ensure!(report.address_translation_observed.is_some(), "no usable STUN replies");
         return Ok(());

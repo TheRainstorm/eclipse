@@ -226,9 +226,11 @@ sequenceDiagram
 eclipse-cli nat --stun stun:stun.example.com:3478 --json
 ```
 
-命令报告本地 UDP 端点和服务器看到的公网映射。可重复传入 `--stun` 比较多个目的地，用 `--bind 192.0.2.20:0` 指定本地网卡地址，或用 `--bind '[::]:0'` 检查 IPv6。同一轮探测使用同一个 UDP 套接字。若不同服务器观察到不同公网 IP，会报告 `multiple_external_addresses`，便于检查上游是否用了不同出口。单地址、单端口 STUN 只提供一份映射观察。要测入站过滤，需要具备两组地址和端口的 RFC 5780 STUN 服务。证据不足会显示 `unknown`。 [RFC 5780](https://www.rfc-editor.org/rfc/rfc5780.html)
+命令报告本地 UDP 端点和服务器看到的公网映射。可重复传入 `--stun` 比较多个目的地，用 `--bind 192.0.2.20:0` 指定本地网卡地址，或用 `--bind '[::]:0'` 检查 IPv6。同一轮探测使用同一个 UDP 套接字。若不同服务器观察到不同公网 IP，会报告 `multiple_external_addresses`，便于检查上游是否用了不同出口。单地址、单端口 STUN 只提供一份映射观察。要测入站过滤，需要具备两组地址和端口的 RFC 5780 STUN 服务。`nat_type` 根据两方面的证据给出 Full Cone、受限锥形或 Symmetric 等结论。证据不足会显示 `unknown`。 [RFC 5780](https://www.rfc-editor.org/rfc/rfc5780.html)
 
 使用 `eclipse-cli internet probe --settings settings.json --connection-details` 可以显式查看实际串流使用的 UDP 端点、ICE 候选类型及是否中转。用它核对公网打洞结果时，也应检查操作系统去该端点的路由。
+
+只验证公网 IPv4 直连时，在测试主机的 `internet host` 和客户端的 `internet probe` 都加上 `--public-ipv4-direct`。两端在信令中确认使用该模式，媒体只使用公网 IPv4 UDP 和 STUN 候选。客户端可加 `--progress-seconds 1` 查看 ICE 状态和已解码帧数，按 Ctrl+C 结束本次测试。普通连接仍会自动尝试可用路径。
 
 ### 连接耗时
 
