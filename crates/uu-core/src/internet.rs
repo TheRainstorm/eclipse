@@ -15,6 +15,7 @@ use zeroize::Zeroize;
 pub mod self_hosted;
 pub mod server;
 pub mod stun;
+pub mod nat;
 pub mod turn;
 pub mod enrollment;
 

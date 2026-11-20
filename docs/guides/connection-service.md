@@ -218,6 +218,18 @@ sequenceDiagram
 
 验证应依次检查：TCP/TLS → 设备上线和组隔离 → 配对 → 直连或中转的视频增长。编译、服务器本机 STUN 应答和同机生成画面，均不能代替两台真实电脑的桌面验收。
 
+### 命令行检查 NAT
+
+在需要检查的设备上运行以下命令，把示例地址换成连接服务使用的 UDP STUN 地址。
+
+```sh
+eclipse-cli nat --stun stun:stun.example.com:3478 --json
+```
+
+命令报告本地 UDP 端点和服务器看到的公网映射。可重复传入 `--stun` 比较多个目的地，用 `--bind 192.0.2.20:0` 指定本地网卡地址，或用 `--bind '[::]:0'` 检查 IPv6。同一轮探测使用同一个 UDP 套接字。若不同服务器观察到不同公网 IP，会报告 `multiple_external_addresses`，便于检查上游是否用了不同出口。单地址、单端口 STUN 只提供一份映射观察。要测入站过滤，需要具备两组地址和端口的 RFC 5780 STUN 服务。证据不足会显示 `unknown`。 [RFC 5780](https://www.rfc-editor.org/rfc/rfc5780.html)
+
+使用 `eclipse-cli internet probe --settings settings.json --connection-details` 可以显式查看实际串流使用的 UDP 端点、ICE 候选类型及是否中转。用它核对公网打洞结果时，也应检查操作系统去该端点的路由。
+
 ### 连接耗时
 
 建立连接包含设备认证和媒体准备两个阶段。网络候选发现会提前启动，与等待媒体请求、采集及编码准备并行；发送媒体应答前仍需完整候选和编码验证。STUN 请求丢包时按 [RFC 8489](https://www.rfc-editor.org/rfc/rfc8489.html#section-6.2.1) 重传，所有重试共用原有总期限。WSS 小消息使用低延迟 TCP。

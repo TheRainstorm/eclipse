@@ -152,6 +152,17 @@ enum Command {
         #[command(subcommand)]
         command:internet_cli::Command,
     },
+    /// Measure UDP NAT mapping and, with RFC 5780 STUN, filtering.
+    Nat {
+        /// UDP STUN URL. Repeat for up to four destinations.
+        #[arg(long, required = true, value_name = "STUN_URL")]
+        stun: Vec<String>,
+        /// Local IP and port. Use [::]:0 for IPv6.
+        #[arg(long, default_value = "0.0.0.0:0")]
+        bind: std::net::SocketAddr,
+        #[arg(long)]
+        json: bool,
+    },
     /// Eclipse LAN discovery, persistent pairing and foreground sharing.
     Lan {
         #[command(subcommand)]
@@ -262,6 +273,21 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Command::Nat { stun, bind, json } = cli.command {
+        let report = uu_core::internet::nat::probe(stun, bind).await?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("UDP socket: {}", report.local);
+            for observation in &report.observations {
+                let mapped = observation.mapped.map(|v| v.to_string());
+                println!("  {} -> {}", observation.destination, mapped.as_deref().unwrap_or("no usable STUN reply"));
+            }
+            println!("Mapping: {:?}\nFiltering: {:?}", report.mapping, report.filtering);
+        }
+        anyhow::ensure!(report.address_translation_observed.is_some(), "no usable STUN replies");
+        return Ok(());
+    }
     #[cfg(windows)]
     let background=matches!(&cli.command,Command::Service{command:service_cli::Command::Daemon{..}|service_cli::Command::SessionHost{..}});
     #[cfg(not(windows))]
@@ -298,6 +324,7 @@ async fn main() -> Result<()> {
         #[cfg(windows)]
         Command::Service{command}=>service_cli::run(command,config).await,
         Command::Internet{command}=>internet_cli::run(command,config).await,
+        Command::Nat { .. } => unreachable!("NAT probe is handled before profile initialization"),
         Command::Lan {command} => lan_cli::run(command,config.at("native-lan")).await,
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
         Command::NativeSources {json} => native_cli::sources(json),

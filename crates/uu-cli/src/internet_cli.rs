@@ -73,6 +73,9 @@ pub enum Command {
         timeout_seconds: u64,
         #[arg(long)]
         report: Option<PathBuf>,
+        /// Include the selected UDP endpoints and candidate types in the report.
+        #[arg(long)]
+        connection_details: bool,
     },
 }
 fn settings(path: &std::path::Path) -> Result<internet::Settings> {
@@ -169,6 +172,7 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             frames,
             timeout_seconds,
             report,
+            connection_details,
         } => {
             ensure!(
                 frames > 0 && timeout_seconds > 0,
@@ -199,12 +203,24 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             ));
             let started = std::time::Instant::now();
             let mut observed = 0u64;
+            let mut selected = None;
+            if connection_details {
+                stats.connection.request();
+            }
             let result = tokio::time::timeout(Duration::from_secs(timeout_seconds), async {
                 loop {
                     while rx.try_recv().is_ok() {
                         observed += 1;
                     }
                     if stats.decoded_total.load(Ordering::Relaxed) >= frames && observed > 0 {
+                        if connection_details {
+                            selected = stats.connection.request().selected;
+                            if selected.is_none() {
+                                ensure!(!task.is_finished(), "cannot confirm the selected UDP path");
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                                continue;
+                            }
+                        }
                         return Ok::<_, anyhow::Error>(());
                     }
                     ensure!(
@@ -219,10 +235,19 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             stop.send_replace(true);
             let closed = task.await?;
             let (width, height) = stats.res();
-            let metrics = serde_json::json!({"completed":matches!(&result,Ok(Ok(())))&&closed.is_ok(),
+            let mut metrics = serde_json::json!({"completed":matches!(&result,Ok(Ok(())))&&closed.is_ok(),
                 "decoded":stats.decoded_total.load(Ordering::Relaxed),"observed":observed,"errors":stats.errors.load(Ordering::Relaxed),
                 "width":width,"height":height,"elapsed_ms":started.elapsed().as_millis() as u64,"backend":stats.backend(),
                 "audio_packets":stats.audio.packets.load(Ordering::Relaxed)});
+            if connection_details {
+                metrics["selected_path"] = selected.map_or(serde_json::Value::Null, |path| {
+                    let endpoint = |value: &uu_core::connection_info::Endpoint| {
+                        serde_json::json!({"address":value.address,"protocol":value.protocol,
+                            "kind":format!("{:?}", value.kind),"base":value.base})
+                    };
+                    serde_json::json!({"relayed":path.relayed(),"local":endpoint(&path.local),"remote":endpoint(&path.remote)})
+                });
+            }
             if let Some(file) = &mut report {
                 serde_json::to_writer_pretty(&mut *file, &metrics)?;
                 file.sync_all()?;
