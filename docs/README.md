@@ -7,7 +7,7 @@ Eclipse 的使用指南、实现说明与性能研究按主题分组。开始使
 | 你要做的事 | 从这里开始 |
 |---|---|
 | 安装或从源码构建 | [Windows](development/windows-build.md) · [Linux](development/linux-client.md) |
-| 连接电脑、配对和授权 | [设备连接与共享](guides/device-connection-and-trust.md) · [自建连接服务](guides/connection-service.md) |
+| 连接电脑、配对和授权 | [设备连接与共享](guides/device-connection-and-trust.md) · [TURN服务器](guides/connection-service.md) |
 | 找回配置、备份或使用便携目录 | [配置存储与迁移](guides/configuration-storage.md) |
 | 管理显示器和共享权限 | [多屏与窗口](guides/multiple-displays.md) · [虚拟显示器](guides/virtual-displays.md) · [会话中心](guides/host-session-control.md) |
 | 调整画质或理解延迟 | [客户端与服务端设置](guides/client-and-server-settings.md) · [HUD](guides/hud.md) · [延迟统计口径](performance/native-latency.md) |

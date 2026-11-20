@@ -163,7 +163,7 @@ impl Servers {
         let mut action = None;
         crate::theme::card(ui.visuals()).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong(uu_i18n::text("自建服务器"));
+                ui.strong(uu_i18n::text("TURN服务器"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add_enabled(

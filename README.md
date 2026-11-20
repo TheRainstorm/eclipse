@@ -19,7 +19,7 @@ Eclipse 将多屏远程办公、游戏串流和主机共享管理放在同一个
 
 - **免账号直连**：局域网发现、IPv4 / IPv6 地址连接，配对后保存设备公钥身份；支持配对密码、临时授权与逐设备撤销。
 - **自己的公网连接服务**：WSS 设备目录、ICE / STUN 打洞、直连优先与 TURN/UDP 中转。面向 NAT / CGNAT 网络协商可用路径，无需两台电脑都暴露公网地址；UDP 完全受限的网络仍有边界。
-- **一份接入码加入私人设备组**：导入服务器地址、组凭据及必要证书；不同组隔离设备目录，组内发现仍需独立设备配对。可管理多个自建服务器。
+- **一份接入码加入私人设备组**：导入服务器地址、组凭据及必要证书；不同组隔离设备目录，组内发现仍需独立设备配对。可管理多个TURN服务器。
 
 [设备连接与授权](docs/guides/device-connection-and-trust.md) · [连接服务部署](docs/guides/connection-service.md)
 
@@ -144,9 +144,9 @@ python3 uninstall.py
 
 ### 连接设备
 
-在被控端打开“服务管理”启动共享；控制端添加 IP 地址，或导入同一自建服务器接入码并选择在线设备。首次连接按提示完成配对，以后从设备列表直接连接。
+在被控端打开“服务管理”启动共享；控制端添加 IP 地址，或导入同一TURN服务器接入码并选择在线设备。首次连接按提示完成配对，以后从设备列表直接连接。
 
-[连接与配对](docs/guides/device-connection-and-trust.md) · [自建连接服务](docs/guides/connection-service.md)
+[连接与配对](docs/guides/device-connection-and-trust.md) · [TURN服务器](docs/guides/connection-service.md)
 
 ### 壁纸与可选 UU 插件
 

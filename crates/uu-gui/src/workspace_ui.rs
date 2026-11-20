@@ -291,8 +291,8 @@ mod tests {
         assert!(y("IP 直连")<y("Generated provider"));
         assert!(y("Generated provider")<y("Generated account controls"));
         assert!(y("Generated account controls")<y("Generated independent protocol"));
-        assert!(y("IP 直连")<y("自建服务器"));
-        assert!(y("自建服务器")<y("Generated provider"));
+        assert!(y("IP 直连")<y("TURN服务器"));
+        assert!(y("TURN服务器")<y("Generated provider"));
     }
     struct Harness {
         workspace: Workspace,
@@ -661,10 +661,10 @@ mod tests {
         assert!(h.texts.iter().any(|(s,_)|s=="IP 直连"));
         h.click("服务管理");
         assert!(h.texts.iter().any(|(s,_)|s=="本机服务已停止"));
-        assert!(!h.texts.iter().any(|(s,_)|s=="自建服务器"));
+        assert!(!h.texts.iter().any(|(s,_)|s=="TURN服务器"));
         h.click("连接服务");
         assert!(!h.texts.iter().any(|(s,_)|s=="本机服务已停止"));
-        assert!(h.texts.iter().any(|(s,_)|s=="自建服务器"));
+        assert!(h.texts.iter().any(|(s,_)|s=="TURN服务器"));
     }
 
     #[test]
@@ -795,9 +795,9 @@ mod tests {
         h.workspace.providers = vec![uu_core::plugins::Descriptor { id: "generated-plugin", name: "Generated account service", version: "1" }];
         let target = "opaque-generated-device-id-never-a-visible-name";
         let route = |destination| Route::new(destination);
-        assert_eq!(h.workspace.route_label(&route(Destination::Vps { service: rows[0].id.clone(), device: target.into() })), "自建服务器 · 家里的服务器 (wss://203.0.113.10:9443 | 我的设备)");
+        assert_eq!(h.workspace.route_label(&route(Destination::Vps { service: rows[0].id.clone(), device: target.into() })), "TURN服务器 · 家里的服务器 (wss://203.0.113.10:9443 | 我的设备)");
         let fallback = h.workspace.route_label(&route(Destination::Vps { service: rows[1].id.clone(), device: target.into() }));
-        assert_eq!(fallback, "自建服务器 · wss://203.0.113.10:9443 (工作设备)");
+        assert_eq!(fallback, "TURN服务器 · wss://203.0.113.10:9443 (工作设备)");
         assert!(!fallback.contains(target));
         assert_eq!(h.workspace.route_label(&route(Destination::Plugin { plugin: "generated-plugin".into(), device: target.into() })), "Generated account service");
         assert!(!h.workspace.route_visible(&route(Destination::Plugin { plugin: "missing-plugin".into(), device: target.into() })));
@@ -815,7 +815,7 @@ mod tests {
         let book=h.workspace.store.as_ref().unwrap().read().unwrap();
         assert!(!book.sharing.ipv6_enabled && !book.sharing.audio && book.sharing.ip_enabled);
         let y=|label:&str|h.texts.iter().find(|(s,_)|s==label).unwrap().1.y;
-        assert!(y("保存设置")>y("自建服务器"));
+        assert!(y("保存设置")>y("TURN服务器"));
         h.click("启用 IPv6");h.click("还原修改");
         assert!(!h.workspace.store.as_ref().unwrap().read().unwrap().sharing.ipv6_enabled);
     }
@@ -2052,7 +2052,7 @@ impl Workspace {
         };
         card(ui, |ui| {
             ui.strong(uu_i18n::text("已授权的控制端"));
-            muted(ui,uu_i18n::text("这些设备通过 IP、UU 或 VPS 连接时，都使用相同的身份和权限。"));
+            muted(ui,uu_i18n::text("这些设备通过 IP、UU 或 TURN服务器连接时，都使用相同的身份和权限。"));
             ui.add_space(10.);
             let active: Vec<_> = peers.iter().filter(|p| p.inbound.is_some()).collect();
             if active.is_empty() {
@@ -2247,7 +2247,7 @@ impl Workspace {
                 ui.horizontal(|ui| {
                     crate::theme::tab_value(ui,&mut editor.kind, 0, uu_i18n::text("IP 直连"));
                     for provider in &info.providers {if crate::theme::selectable_tab(ui,editor.kind==1&&editor.provider==provider.id,provider.name).clicked(){editor.kind=1;editor.provider=provider.id.into();}}
-                    crate::theme::tab_value(ui,&mut editor.kind, 2, uu_i18n::text("自建服务器"));
+                    crate::theme::tab_value(ui,&mut editor.kind, 2, uu_i18n::text("TURN服务器"));
                 });
                 if previous != (editor.kind, editor.provider.clone()) { editor.device.clear(); self.device_picker.reset(); }
                 ui.add_space(12.);

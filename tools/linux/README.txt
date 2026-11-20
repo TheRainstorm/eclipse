@@ -19,7 +19,7 @@ python3 tools/linux/set_pairing_password.py
 
 首次使用：默认 Eclipse 局域网，无需第三方账号。目标电脑启动服务后默认接收配对申请，将控制端八位码输入主机确认，不自动批准。
 使用官方被控端时，在插件管理启用随包提供的 UU 插件，再从“UU 兼容客户端”登录；升级保留已有启用偏好、账号与设置。
-原生连接提供 IP 直连、UU 寻址与自建连接服务，统一使用设备授权和共享设置。
+原生连接提供 IP 直连、UU 寻址与TURN服务器，统一使用设备授权和共享设置。
 
 共享支持 X11 与 Wayland。Wayland 通过系统门户选择画面及许可键鼠，需要 PipeWire、xdg-desktop-portal 和对应桌面后端；Sway等wlroots桌面在屏幕授权后可使用同合成器提供的虚拟键鼠，按所选输出与缩放定位；明确拒绝输入授权时保持只观看。不支持绕过系统授权的无人值守采集。
 视频支持 H.264 / HEVC / AV1，按实际驱动和控制端能力协商。H.264 CBR 优先 VA-API，不可用时自动模式可回退 OpenH264；HEVC / AV1 / VBR 需要 Intel VPL dispatcher（libvpl.so.2）及 GPU runtime，不会静默换成 H.264。客户端可请求5–240帧并动态调整帧率和码率，4K60等组合的实际吞吐受格式预算、GPU和驱动限制。

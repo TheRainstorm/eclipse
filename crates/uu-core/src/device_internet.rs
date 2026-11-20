@@ -64,7 +64,7 @@ pub(crate) async fn view(
     let ice = connection.ice.clone();
     stats.connection.set_service(match &settings.provider {
         Provider::Plugin(id) => crate::plugins::registry().get(id)?.descriptor().name,
-        Provider::SelfHosted => uu_i18n::text("自建连接服务"),
+        Provider::SelfHosted => uu_i18n::text("TURN服务器"),
     });
     let mut bootstrap = tokio::select! {
         result=Bootstrap::viewer(connection)=>result?,

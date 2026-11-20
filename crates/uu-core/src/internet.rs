@@ -157,7 +157,7 @@ pub async fn view(
         return crate::device_internet::view(connection,&settings,&config,frames,stats,stop,input).await;
     }
     let (mut signal, ice) = Authenticated::new(connection, key.unwrap(), Role::Viewer);
-    stats.connection.set_service(match &settings.provider {Provider::Plugin(id)=>crate::plugins::registry().get(id)?.descriptor().name,Provider::SelfHosted=>uu_i18n::text("自建连接服务")});
+    stats.connection.set_service(match &settings.provider {Provider::Plugin(id)=>crate::plugins::registry().get(id)?.descriptor().name,Provider::SelfHosted=>uu_i18n::text("TURN服务器")});
     stats.diagnostics.record(
         json!({"event":"native_provider","provider":settings.provider,
         "stun_services":ice.urls().len(),"development_relay":settings.development_relay}),

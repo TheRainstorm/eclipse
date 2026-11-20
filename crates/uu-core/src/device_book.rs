@@ -211,7 +211,7 @@ impl Destination {
             Self::Ip { .. } => uu_i18n::text("IP 直连"),
             Self::Plugin { plugin,.. } => crate::plugins::registry().get(plugin).map(|p|p.descriptor().name).unwrap_or(uu_i18n::text("插件连接服务")),
             Self::Unavailable(_)=>uu_i18n::text("未安装的连接插件"),
-            Self::Vps { .. } => "VPS",
+            Self::Vps { .. } => uu_i18n::text("TURN服务器"),
             Self::LegacyInternet { .. } => uu_i18n::text("旧版连接服务"),
         }
     }

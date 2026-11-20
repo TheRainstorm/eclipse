@@ -54,7 +54,7 @@ pub(crate) fn route_name(names: &Names, address: &str, group_name: &str) -> Stri
             uu_core::internet::server::groups::query_group(url.query().unwrap_or("")).ok()
         }).map(|group| group.to_string()[..8].to_owned()).unwrap_or_default()
     } else { group_name.trim().to_owned() };
-    let prefix = uu_i18n::text("自建服务器");
+    let prefix = uu_i18n::text("TURN服务器");
     match names.get(&address_key(address)).filter(|alias| !alias.trim().is_empty()) {
         Some(alias) if !group.is_empty() => format!("{prefix} · {alias} ({location} | {group})"),
         Some(alias) => format!("{prefix} · {alias} ({location})"),
@@ -223,12 +223,12 @@ mod tests {
         ).unwrap();
         let mut names = Names::new();
         names.insert(address_key(&address), "家庭服务器".into());
-        assert_eq!(route_name(&names, &address, "我的设备"), "自建服务器 · 家庭服务器 (wss://signal.example:9443 | 我的设备)");
-        assert_eq!(route_name(&Names::new(), &address, "我的设备"), "自建服务器 · wss://signal.example:9443 (我的设备)");
+        assert_eq!(route_name(&names, &address, "我的设备"), "TURN服务器 · 家庭服务器 (wss://signal.example:9443 | 我的设备)");
+        assert_eq!(route_name(&Names::new(), &address, "我的设备"), "TURN服务器 · wss://signal.example:9443 (我的设备)");
         let other = uu_core::internet::enrollment::group_url("wss://signal.example:9443/v1/signal", &uuid::Uuid::new_v4()).unwrap();
         assert!(!route_name(&names, &other, "其他设备").contains("家庭服务器"));
         let ipv6 = route_name(&Names::new(), "wss://user:secret@[2001:db8::1]:9443/v1/signal?extra=hidden", "工作设备");
-        assert_eq!(ipv6, "自建服务器 · wss://[2001:db8::1]:9443 (工作设备)");
+        assert_eq!(ipv6, "TURN服务器 · wss://[2001:db8::1]:9443 (工作设备)");
     }
     fn settled(labels: &mut Labels, config: &Config, ctx: &egui::Context) {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);

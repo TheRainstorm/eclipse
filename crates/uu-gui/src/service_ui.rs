@@ -2104,7 +2104,7 @@ mod tests {
         assert!(!h.has("IP 直连"));
         h.click("连接服务");
         assert!(h.has("IP 直连"));
-        assert!(h.has("自建服务器"));
+        assert!(h.has("TURN服务器"));
         assert!(h.has("＋"));
         h.click("配对设置");
         assert!(h.has("设备名称"));
@@ -2125,7 +2125,7 @@ mod tests {
         assert!(!h.has("设备名称"));
         h.click("输入");
         assert!(!h.has("密码配对"));
-        assert!(!h.has("自建服务器"));
+        assert!(!h.has("TURN服务器"));
         h.click("虚拟显示器");
         assert!(!h.has("虚拟显示器上限"));
         assert!(h.has("＋"));

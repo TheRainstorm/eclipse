@@ -193,7 +193,7 @@ mod tests {
         };
         let names = Names::from([(super::super::address_key(&address), "Local alias".into())]);
         let label = name(&snapshot, &names);
-        assert!(label.contains("自建服务器 · Local alias"));
+        assert!(label.contains("TURN服务器 · Local alias"));
         assert!(label.contains("wss://signal.example:9443") && label.contains("Runtime group"));
         assert_eq!(snapshot.identity, identity);
     }
