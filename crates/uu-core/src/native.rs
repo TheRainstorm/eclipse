@@ -544,6 +544,7 @@ async fn send_video(
         None
     };
     let initial_supported=displays.is_some() && !uses_desktop_portal();
+    let mode_renewal = initial_supported && crate::native_displays::mode_renewal_offered(&offer.sdp)?;
     let display_lifetime=virtuals.clone();
     let virtuals=virtuals.filter(|_|crate::native_virtual_display::offered(&offer.sdp));
     let cursor_requested=crate::native_cursor::offered(&offer.sdp)?;
@@ -698,6 +699,7 @@ async fn send_video(
     let mut description=peer.description(false).await?;
     if let Some(displays)=&displays {displays.add_names(&mut description)?;}
     if initial_supported {crate::native_displays::advertise_initial(&mut description)?;}
+    if mode_renewal {crate::native_displays::advertise_mode_renewal(&mut description)?;}
     if let Some(reply)=&initial_reply {reply.add(&mut description)?;}
     if cursor_available {crate::native_cursor::advertise(&mut description)?;}
     if frame_trace && controls.timing().trace.enabled() {crate::frame_trace::advertise(&mut description);}
@@ -821,6 +823,29 @@ async fn send_video(
                     }
                 },
                 encoded = producer.frames.recv() => {
+                    if let (Some(displays), Some(Err(error))) =
+                        (displays.as_ref().filter(|_| mode_renewal), &encoded)
+                    {
+                        if matches!(error.downcast_ref::<uu_capture::CaptureError>(), Some(uu_capture::CaptureError::DisplayModeChanged)) {
+                            let confirmation = async {
+                                controls.request_mode_renewal(displays).await?;
+                                if !displays.switching() {
+                                    displays.changed.notified().await;
+                                }
+                                Ok::<_, anyhow::Error>(())
+                            };
+                            tokio::select! {
+                                _ = cancelled(&mut stop) => {peer.diagnostics.exit("stop_requested");break;},
+                                _ = &mut deadline => {peer.diagnostics.exit("session_limit");break;},
+                                _ = controls.closed.notified() => {peer.diagnostics.exit("control_closed");break;},
+                                result = timeout(Duration::from_secs(5), confirmation) => {
+                                    result.context(uu_i18n::text("等待客户端确认显示模式变更超时"))??;
+                                }
+                            }
+                            peer.diagnostics.exit("display_mode_changed");
+                            break;
+                        }
+                    }
                     let encoded = encoded.context("native capture stopped unexpectedly").and_then(|frame|frame)
                         .inspect_err(|error|peer.diagnostics.producer_failed(error))?;
                     // A retired desktop/reference generation cannot leave the
@@ -928,6 +953,7 @@ async fn receive_session(
     let ice_started=Instant::now();
     let mut description=peer.description(true).await?;
     stats.native_displays.write_initial_offer(&mut description)?;
+    crate::native_displays::advertise_mode_renewal(&mut description)?;
     stats.native_frame_trace_supported.store(false,Ordering::Release);
     {let mut trace=stats.native_frame_trace.lock().unwrap();*stats.native_frame_trace_received.lock().unwrap()=None;*trace=None;}
     crate::frame_trace::advertise(&mut description);
@@ -988,6 +1014,7 @@ async fn receive_session(
     }
     let quality=crate::native_quality::Response::read(&answer.sdp)?;
     stats.native_displays.read_initial_answer(&answer.sdp)?;
+    stats.native_displays.allow_mode_renewal(crate::native_displays::mode_renewal_offered(&answer.sdp)?);
     if stats.native_displays.read_names(&answer.sdp).is_err() {
         stats.diagnostics.record(serde_json::json!({"event":"native_display_names_invalid"}));
     }
@@ -1095,7 +1122,15 @@ async fn receive_session(
     }
     };
     if let Some(channel)=virtual_display_channel {channel.close().await;}
-    if let Some(request)=switching {controls.apply_display(request).await?;Ok(ViewOutcome::Switch(controls.take_input()))}else{Ok(ViewOutcome::Ended)}
+    if let Some(request) = switching {
+        if request == crate::native_displays::MODE_RENEWAL_REQUEST {
+            stats.diagnostics.record(serde_json::json!({"event":"native_display_mode_renewal"}));
+        }
+        controls.apply_display(request).await?;
+        Ok(ViewOutcome::Switch(controls.take_input()))
+    } else {
+        Ok(ViewOutcome::Ended)
+    }
 }
 
 /// Once transport is established a decoder failure must not leave an endless

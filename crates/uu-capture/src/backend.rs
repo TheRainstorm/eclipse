@@ -20,7 +20,7 @@ pub enum CaptureTarget {
     Window(u64),
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum CaptureError {
     #[error("no capture backend is available in this environment")]
     NoBackend,
@@ -32,6 +32,8 @@ pub enum CaptureError {
     /// may be emitted until capture resumes; callers may retry with cancellation.
     #[error("采集暂停：{0}")]
     Suspended(String),
+    #[error("显示器的像素模式已改变，需要重新准备串流")]
+    DisplayModeChanged,
     #[error("系统未授权屏幕共享，连接已取消")]
     Denied,
 }

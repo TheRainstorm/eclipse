@@ -49,6 +49,7 @@ enum Packet {
     SelectDisplay { request:u64, id:i32 },
     ApplyDisplay { request:u64 },
     DisplaySelected { request:u64, accepted:bool, restart:bool },
+    DisplayModeChanged,
     Ping { sequence: u64 },
     Pong { sequence: u64 },
     RequestInput { enabled: bool },
@@ -475,6 +476,7 @@ pub(crate) struct HostControl {
     admin_busy:AtomicBool,
     displays:Mutex<Option<Arc<crate::native_displays::Host>>>,
     pending_display:Mutex<Option<u64>>,
+    control_channel: Mutex<std::sync::Weak<RTCDataChannel>>,
     stopped:AtomicBool,
     pub closed:Notify,
     timing:Arc<crate::native_timing::HostTiming>,
@@ -685,6 +687,7 @@ impl HostControl {
             session:Mutex::new(None),server_managed:AtomicBool::new(false),admin_busy:AtomicBool::new(false),
             displays:Mutex::new(None),
             pending_display:Mutex::new(None),
+            control_channel: Mutex::default(),
             stopped:AtomicBool::new(false),
             closed:Notify::new(),
             timing,
@@ -705,6 +708,21 @@ impl HostControl {
         if let Some(worker)=&self.worker {*worker.state.mapping.lock().unwrap()=mapping;}
     }
     pub fn set_displays(&self,displays:Option<Arc<crate::native_displays::Host>>){*self.displays.lock().unwrap()=displays;}
+    pub async fn request_mode_renewal(&self, displays: &crate::native_displays::Host) -> Result<()> {
+        let channel = {
+            let mut pending = self.pending_display.lock().unwrap();
+            // An accepted display selection uses the same confirmation. It
+            // already renews capture, so it takes precedence over this notice.
+            if pending.is_some() || displays.switching() {
+                return Ok(());
+            }
+            let channel = self.control_channel.lock().unwrap().upgrade()
+                .context("the viewer has no display control channel")?;
+            *pending = Some(crate::native_displays::MODE_RENEWAL_REQUEST);
+            channel
+        };
+        send(&channel, Packet::DisplayModeChanged).await
+    }
     pub fn timing(&self)->Arc<crate::native_timing::HostTiming>{self.timing.clone()}
     fn status(&self) -> Packet {
         Packet::InputStatus {
@@ -773,6 +791,7 @@ impl HostControl {
                     Box::pin(async {})
                 }));
                 let weak = Arc::downgrade(&channel);
+                *host.control_channel.lock().unwrap() = weak.clone();
                 let handler = host.clone();
                 channel.on_message(Box::new(move |message| {
                     let host = handler.clone();
@@ -829,14 +848,30 @@ impl HostControl {
                             }
                             Some(Packet::SelectDisplay{request,id})=>{
                                 let displays=host.displays.lock().unwrap().clone();
-                                let decision=if host.server_managed() {None}else if host.pending_display.lock().unwrap().is_some(){None}else{displays.as_ref().and_then(|d|d.select(id))};
+                                let decision = {
+                                    let mut pending = host.pending_display.lock().unwrap();
+                                    if host.server_managed() || request == crate::native_displays::MODE_RENEWAL_REQUEST || pending.is_some() {
+                                        None
+                                    } else {
+                                        let decision = displays.as_ref().and_then(|d| d.select(id));
+                                        if decision == Some(true) {
+                                            *pending = Some(request);
+                                        }
+                                        decision
+                                    }
+                                };
                                 let restart=decision==Some(true);
-                                if restart {*host.pending_display.lock().unwrap()=Some(request);}
                                 let _=send(&channel,Packet::DisplaySelected{request,accepted:decision.is_some(),restart}).await;
                             },
                             Some(Packet::ApplyDisplay{request})=>{
-                                let matched={let mut pending=host.pending_display.lock().unwrap();if *pending==Some(request){pending.take();true}else{false}};
-                                if matched {let displays=host.displays.lock().unwrap().clone();if let Some(displays)=displays{displays.commit();}}
+                                let displays = host.displays.lock().unwrap().clone();
+                                let mut pending = host.pending_display.lock().unwrap();
+                                if *pending == Some(request) {
+                                    if let Some(displays) = displays {
+                                        displays.commit();
+                                    }
+                                    pending.take();
+                                }
                             },
                             Some(Packet::RequestInput { enabled }) => {
                                 host.client_input_requested.store(enabled,Ordering::Release);
@@ -1028,6 +1063,7 @@ impl ViewerControl {
                     incoming.capabilities.enable(Capability::Displays,true);
                 },
                 Some(Packet::DisplaySelected{request,accepted,restart})=>incoming.native_displays.response(crate::native_displays::Response{request,accepted,restart}),
+                Some(Packet::DisplayModeChanged)=>incoming.native_displays.mode_changed(),
                 Some(Packet::Pong { sequence }) => {
                     let reading = {
                         let mut probe = probes.lock().unwrap();
@@ -1463,6 +1499,41 @@ mod tests {
     #[tokio::test(flavor="multi_thread",worker_threads=4)]
     async fn encrypted_gamepad_snapshots_share_control_focus_but_not_the_reliable_key_queue(){
         encrypted_gamepad_snapshots(false).await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn mode_renewal_uses_the_existing_control_confirmation() {
+        use crate::native_displays::{Host, MODE_RENEWAL_REQUEST};
+        use crate::native_media::NativePeer;
+
+        let host = HostControl::with_injector(false, None, None, None, Arc::default()).await;
+        let displays = Arc::new(Host::default());
+        host.set_displays(Some(displays.clone()));
+        let ip = "127.0.0.1".parse().unwrap();
+        let mut server = NativePeer::new(ip, None, true).await.unwrap();
+        let mut client = NativePeer::new(ip, None, false).await.unwrap();
+        host.attach(&server.pc, server.tasks.clone());
+        let channel = client.pc.create_data_channel("eclipse-control-v1", None).await.unwrap();
+        let stats = Arc::new(MediaStats::default());
+        stats.native_displays.allow_mode_renewal(true);
+        let controls = ViewerControl::new(channel, stats.clone(), None);
+        server.remote(client.description(true).await.unwrap(), ip).await.unwrap();
+        client.remote(server.description(false).await.unwrap(), ip).await.unwrap();
+        let (a, b) = tokio::join!(client.connected(), server.connected());
+        a.unwrap();
+        b.unwrap();
+        wait(|| host.control_channel.lock().unwrap().upgrade()
+            .is_some_and(|channel| channel.ready_state() == RTCDataChannelState::Open)).await;
+        host.request_mode_renewal(&displays).await.unwrap();
+        timeout(Duration::from_secs(3), stats.native_displays.changed.notified()).await.unwrap();
+        assert_eq!(stats.native_displays.take_switch(), Some(MODE_RENEWAL_REQUEST));
+        assert!(!displays.switching());
+        send(&controls.channel, Packet::ApplyDisplay { request: 7 }).await.unwrap();
+        assert!(timeout(Duration::from_millis(50), displays.changed.notified()).await.is_err());
+        send(&controls.channel, Packet::ApplyDisplay { request: MODE_RENEWAL_REQUEST }).await.unwrap();
+        timeout(Duration::from_secs(3), displays.changed.notified()).await.unwrap();
+        assert!(displays.switching());
+        client.close().await;
+        server.close().await;
     }
     #[tokio::test(flavor="multi_thread",worker_threads=4)]
     async fn typed_gamepad_snapshots_preserve_xbox_identity_and_control_generations(){

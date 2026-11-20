@@ -34,6 +34,10 @@ const INITIAL_REQUEST:&str="x-eclipse-initial-display-client";
 const INITIAL_REPLY:&str="x-eclipse-initial-display-host";
 const INITIAL_SUPPORTED:&str="x-eclipse-initial-display-supported";
 const PREFERRED_SOURCE: &str = "x-eclipse-preferred-display-source";
+const MODE_RENEWAL: &str = "x-eclipse-display-mode-renewal";
+/// DisplayApply already confirms that a viewer is ready to renew media.
+/// Zero is reserved for a host-initiated renewal of the current source.
+pub(crate) const MODE_RENEWAL_REQUEST: u64 = 0;
 
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(tag="kind",rename_all="snake_case",deny_unknown_fields)]
@@ -156,6 +160,12 @@ impl InitialReply {
     }
 }
 pub fn advertise_initial(sdp:&mut RTCSessionDescription)->Result<()> {add_initial(sdp,INITIAL_SUPPORTED,&true)}
+pub(crate) fn advertise_mode_renewal(sdp: &mut RTCSessionDescription) -> Result<()> {
+    add_initial(sdp, MODE_RENEWAL, &true)
+}
+pub(crate) fn mode_renewal_offered(sdp: &RTCSessionDescription) -> Result<bool> {
+    Ok(read_initial::<bool>(sdp, MODE_RENEWAL)? == Some(true))
+}
 pub fn initial_offered(sdp:&RTCSessionDescription)->Result<bool> {
     let value:Option<bool>=read_initial(sdp,INITIAL_SUPPORTED)?;
     ensure!(value!=Some(false),"invalid initial display capability");
@@ -463,6 +473,7 @@ struct Pending {
     request: Option<u64>,
     responses: VecDeque<Response>,
     switch: Option<u64>,
+    mode_renewal: bool,
     catalog_epoch: u64,
     catalog_updated: Option<std::time::Instant>,
     initial: InitialState,
@@ -550,7 +561,7 @@ impl Client {
     }
     pub fn request(&self, request: u64) -> bool {
         let mut state = self.state.lock().unwrap();
-        if state.request.is_some() {
+        if request == MODE_RENEWAL_REQUEST || state.request.is_some() || state.switch.is_some() {
             return false;
         }
         state.request = Some(request);
@@ -566,10 +577,22 @@ impl Client {
             state.switch = Some(response.request);
             self.changed.notify_one();
         }
-        if state.responses.len() == 16 {
-            state.responses.pop_front();
+        state.push_response(response);
+    }
+    pub(crate) fn allow_mode_renewal(&self, enabled: bool) {
+        self.state.lock().unwrap().mode_renewal = enabled;
+    }
+    pub(crate) fn mode_changed(&self) {
+        let mut state = self.state.lock().unwrap();
+        if !state.mode_renewal || state.switch.is_some() {
+            return;
         }
-        state.responses.push_back(response);
+        state.mode_renewal = false;
+        if let Some(request) = state.request.take() {
+            state.push_response(Response { request, accepted: false, restart: false });
+        }
+        state.switch = Some(MODE_RENEWAL_REQUEST);
+        self.changed.notify_one();
     }
     pub(crate) fn take_switch(&self) -> Option<u64> {
         std::mem::take(&mut self.state.lock().unwrap().switch)
@@ -585,6 +608,14 @@ impl Client {
     pub fn catalog_updated(&self)->Option<std::time::Instant> {self.state.lock().unwrap().catalog_updated}
     pub fn responses(&self) -> Vec<Response> {
         self.state.lock().unwrap().responses.drain(..).collect()
+    }
+}
+impl Pending {
+    fn push_response(&mut self, response: Response) {
+        if self.responses.len() == 16 {
+            self.responses.pop_front();
+        }
+        self.responses.push_back(response);
     }
 }
 #[cfg(test)]
@@ -857,5 +888,24 @@ mod tests {
         assert!(valid(&catalog));
         catalog.screens.push(catalog.screens[0].clone());
         assert!(!valid(&catalog));
+    }
+
+    #[test]
+    fn mode_renewal_requires_negotiation_and_does_not_keep_a_concurrent_selection() {
+        let client = Client::default();
+        client.mode_changed();
+        assert_eq!(client.take_switch(), None);
+        client.allow_mode_renewal(true);
+        assert!(!client.request(MODE_RENEWAL_REQUEST));
+        assert!(client.request(42));
+        client.mode_changed();
+        assert_eq!(client.take_switch(), Some(MODE_RENEWAL_REQUEST));
+        let rejected = client.responses();
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].request, 42);
+        assert!(!rejected[0].accepted);
+        client.mode_changed();
+        assert_eq!(client.take_switch(), None);
+        assert!(client.request(43));
     }
 }

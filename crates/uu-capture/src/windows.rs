@@ -411,7 +411,7 @@ impl DxgiCapture {
         // Position and primary status are desktop metadata, not an encoded
         // pixel-mode change. Update their physical input mapping after renewal.
         if selected.monitor.width!=self.source.width || selected.monitor.height!=self.source.height || selected.rotation!=self.rotation {
-            return Err(backend("display pixel mode changed; reconnect to renegotiate capture"));
+            return Err(CaptureError::DisplayModeChanged);
         }
         self.duplication = Some(unsafe {
             let now_hdr=output_hdr(&selected.output);

@@ -89,7 +89,7 @@ impl DeliveryCadence {
 }
 struct Slot {
     frame: Option<PublishedFrame>,
-    error: Option<String>,
+    error: Option<CaptureError>,
     closed: bool,
     cadence: DeliveryCadence,
 }
@@ -130,11 +130,11 @@ impl Subscriber {
         let mut slot = self.slot.lock().unwrap();
         if slot.closed { return; }
         slot.frame = None;
-        slot.error = Some(reason.into());
+        slot.error = Some(CaptureError::Suspended(reason.into()));
         slot.cadence = DeliveryCadence::default();
         self.changed.notify_all();
     }
-    fn close(&self, error: Option<String>) {
+    fn close(&self, error: Option<CaptureError>) {
         let mut slot = self.slot.lock().unwrap();
         if slot.closed { return; }
         slot.frame = None;
@@ -147,13 +147,14 @@ impl Subscriber {
         let mut slot = self.slot.lock().unwrap();
         loop {
             if slot.closed {
-                let message = slot.error.clone().unwrap_or_else(|| uu_i18n::text("共享采集源已经关闭").into());
-                return Err(CaptureError::Backend(message));
+                return Err(slot.error.clone().unwrap_or_else(|| {
+                    CaptureError::Backend(uu_i18n::text("共享采集源已经关闭").into())
+                }));
             }
             // A suspension is a source notification, not a ready image that
             // can be polled repeatedly. The owner retries and publishes another
             // notification or fresh image; cadence-driven readers wait for it.
-            if let Some(error) = slot.error.take() { return Err(CaptureError::Suspended(error)); }
+            if let Some(error) = slot.error.take() { return Err(error); }
             if let Some(frame) = slot.frame.take() { return Ok(Some(frame)); }
             slot = match deadline {
                 None => self.changed.wait(slot).unwrap(),
@@ -185,7 +186,7 @@ struct Owner {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReadyPhase { Opening, Running, Failed, Stopped }
-struct ReadyState { phase: ReadyPhase, error: Option<String> }
+struct ReadyState { phase: ReadyPhase, error: Option<CaptureError> }
 const GPU_UNSET: u8 = 0;
 const GPU_OFF: u8 = 1;
 const GPU_ON: u8 = 2;
@@ -261,7 +262,7 @@ impl Owner {
         let subscribers: Vec<_> = self.subscribers.lock().unwrap().values().cloned().collect();
         for subscriber in subscribers { subscriber.suspend(reason); }
     }
-    fn close(&self, error: Option<String>) {
+    fn close(&self, error: Option<CaptureError>) {
         let subscribers: Vec<_> = self.subscribers.lock().unwrap().values().cloned().collect();
         for subscriber in subscribers { subscriber.close(error.clone()); }
         let mut ready = self.ready.lock().unwrap();
@@ -276,7 +277,9 @@ impl Owner {
             match ready.phase {
                 ReadyPhase::Running => return Ok(()),
                 ReadyPhase::Failed | ReadyPhase::Stopped => {
-                    return Err(CaptureError::Backend(ready.error.clone().unwrap_or_else(|| uu_i18n::text("共享采集源启动失败").into())));
+                    return Err(ready.error.clone().unwrap_or_else(|| {
+                        CaptureError::Backend(uu_i18n::text("共享采集源启动失败").into())
+                    }));
                 }
                 ReadyPhase::Opening => {}
             }
@@ -326,7 +329,7 @@ fn run_owner(owner: Weak<Owner>) {
     let capture = match capture {
         Ok(capture) => capture,
         Err(error) => {
-            fail(&initial, error.to_string());
+            fail(&initial, error);
             drop(initial);
             return;
         }
@@ -381,7 +384,7 @@ fn source_phase_deadline(source: Option<uu_capture::frame_info::FrameInfo>, anch
 fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps: u32) {
     let Some(initial) = owner.upgrade() else { return; };
     if let Err(error) = capture.set_frame_rate(configured_fps) {
-        fail(&initial, error.to_string());
+        fail(&initial, error);
         drop(initial);
         return;
     }
@@ -417,7 +420,7 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
         if owner.stop.load(Ordering::Acquire) { break; }
         let fps = owner.target_fps();
         if fps != configured_fps {
-            if let Err(error) = capture.set_frame_rate(fps) { fail(&owner, error.to_string()); break; }
+            if let Err(error) = capture.set_frame_rate(fps) { fail(&owner, error); break; }
             configured_fps = fps;
             next = Instant::now();
             anchored_generation = None;
@@ -451,7 +454,14 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
                 previous_cycle_repeated = false;
                 continue;
             }
-            Err(error) => { fail(&owner, error.to_string()); break; }
+            Err(CaptureError::DisplayModeChanged) => {
+                // Release the OS duplication before subscribers can open a
+                // replacement, even while another old encoder is retiring.
+                drop(capture);
+                fail(&owner, CaptureError::DisplayModeChanged);
+                return;
+            }
+            Err(error) => { fail(&owner, error); break; }
         };
         previous_cycle_repeated = captured.source.is_some_and(|info| info.duplicate);
         let following = source_phase_deadline(captured.source, &mut anchored_generation, Instant::now(), period, deadline);
@@ -468,7 +478,11 @@ fn run_capture(owner: Weak<Owner>, mut capture: Box<dyn Capture>, configured_fps
     }
 }
 
-fn fail(owner: &Arc<Owner>, error: String) {
+fn fail(owner: &Arc<Owner>, error: CaptureError) {
+    let error = match error {
+        mode @ CaptureError::DisplayModeChanged => mode,
+        other => CaptureError::Backend(other.to_string()),
+    };
     {
         let mut ready = owner.ready.lock().unwrap();
         ready.phase = ReadyPhase::Failed;
@@ -489,7 +503,10 @@ impl SharedCapture {
         let key = Key::new(source);
         let (owner, subscriber) = {
             let mut pool = pool().lock().unwrap();
-            let owner = if let Some(owner) = pool.get(&key) {
+            let reusable = pool.get(&key).filter(|owner| {
+                !matches!(owner.ready.lock().unwrap().error.as_ref(), Some(CaptureError::DisplayModeChanged))
+            });
+            let owner = if let Some(owner) = reusable {
                 owner.clone()
             } else {
                 let owner = Owner::new(key.clone(), source.clone(), OpenOptions {
@@ -513,7 +530,9 @@ impl SharedCapture {
         if let Err(error) = owner.wait_ready() {
             let mut pool = pool().lock().unwrap();
             let empty = owner.remove(subscriber.id);
-            if empty { pool.remove(&key); }
+            if empty && pool.get(&key).is_some_and(|current| Arc::ptr_eq(current, &owner)) {
+                pool.remove(&key);
+            }
             drop(pool);
             if empty { owner.stop_and_join(); }
             return Err(error);
@@ -564,7 +583,9 @@ impl Drop for SharedCapture {
         let mut pool = pool().lock().unwrap_or_else(|error| error.into_inner());
         let empty = self.owner.remove(self.subscriber.id);
         if empty {
-            pool.remove(&self.owner.key);
+            if pool.get(&self.owner.key).is_some_and(|current| Arc::ptr_eq(current, &self.owner)) {
+                pool.remove(&self.owner.key);
+            }
             self.owner.stop_and_join();
         }
     }
@@ -602,6 +623,30 @@ mod tests {
         let first = SharedCapture { subscriber: owner.subscribe(60), owner: owner.clone(), last_frame_info: None, last_frame_timing: None };
         let second = SharedCapture { subscriber: owner.subscribe(60), owner: owner.clone(), last_frame_info: None, last_frame_timing: None };
         (owner, first, second)
+    }
+
+    #[test]
+    fn mode_renewal_replaces_the_shared_owner_before_old_subscribers_retire() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let source = CaptureSource::Synthetic { width: 238, height: 114, fps: 37 };
+        let key = Key::new(&source);
+        let old = Owner::new(key.clone(), source.clone(), options(37));
+        let mut previous = SharedCapture {
+            subscriber: old.subscribe(37),
+            owner: old.clone(),
+            last_frame_info: None,
+            last_frame_timing: None,
+        };
+        pool().lock().unwrap().insert(key.clone(), old.clone());
+        fail(&old, CaptureError::DisplayModeChanged);
+        assert!(matches!(previous.next_frame(), Err(CaptureError::DisplayModeChanged)));
+        let mut replacement = SharedCapture::acquire(&source, options(37)).unwrap();
+        let current = pool().lock().unwrap().get(&key).unwrap().clone();
+        assert!(!Arc::ptr_eq(&current, &old));
+        drop(previous);
+        assert!(pool().lock().unwrap().get(&key).is_some_and(|owner| Arc::ptr_eq(owner, &current)));
+        assert_eq!(replacement.resolution(), (238, 114));
+        assert!(replacement.next_frame().is_ok());
     }
 
     fn source_info(frame_id: u64, duplicate: bool) -> uu_capture::frame_info::FrameInfo {
@@ -888,7 +933,7 @@ mod tests {
         let waiting = owner.subscribe(30);
         let (send, receive) = std::sync::mpsc::channel();
         let thread = std::thread::spawn(move || { let _ = send.send(waiting.take(None)); });
-        owner.close(Some("owned source shutdown".into()));
+        owner.close(Some(CaptureError::Backend("owned source shutdown".into())));
         assert!(matches!(receive.recv_timeout(Duration::from_secs(1)).unwrap(), Err(CaptureError::Backend(_))));
         thread.join().unwrap();
         publish_tick(&owner, 1, 60);
@@ -967,7 +1012,7 @@ mod tests {
 
         owner.publish(&frame, Some(source_info(13, false)), timing, 60);
         first.next_frame().unwrap();
-        owner.close(Some("owned device removed".into()));
+        owner.close(Some(CaptureError::Backend("owned device removed".into())));
         assert!(matches!(first.next_frame(), Err(CaptureError::Backend(_))));
         assert_eq!(first.frame_info(), None);
         assert_eq!(first.frame_timing(), None);
