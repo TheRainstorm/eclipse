@@ -992,7 +992,7 @@ mod tests {
     #[test]
     #[ignore = "requires an elevated Windows token; exercises only a disposable directory"]
     fn protects_and_revalidates_service_paths_beyond_max_path() {
-        require_administrator().unwrap();
+        administrator_file_owner().unwrap();
         let root = std::env::temp_dir().join(format!("eclipse-long-acl-{}", uuid::Uuid::new_v4()));
         directory(&root).unwrap();
         struct Fixture(PathBuf);
@@ -1290,7 +1290,7 @@ mod tests {
             protected.at("device-trust/peers.json"),
             protected.at("device-trust/connections.json"),
         ] {
-            verify_acl(&path).unwrap();
+            verify_acl(&wide(path.as_os_str())).unwrap();
         }
         // The client verifies both the System token and exact installed binary.
         use std::os::windows::io::AsRawHandle;
