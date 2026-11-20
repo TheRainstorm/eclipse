@@ -191,6 +191,9 @@ impl Host {
         host.state.lock().unwrap().selected=initial_monitor.clone();
         Some(std::sync::Arc::new(host))
     }
+    pub(crate) fn first_offer(&self) -> bool {
+        self.state.lock().unwrap().names.is_empty()
+    }
     pub fn prepare(&self, preferred: Option<&str>) -> anyhow::Result<CaptureSource> {
         self.switching.store(false, Ordering::Release);
         if crate::native::uses_desktop_portal() {

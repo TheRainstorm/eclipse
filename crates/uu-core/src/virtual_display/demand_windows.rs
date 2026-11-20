@@ -708,7 +708,10 @@ mod live_tests {
             let active=manager.list()?.remove(0);
             if !active.active||active.actual!=Some(spec) {return Err(fail("public enable did not connect the configured mode"));}
             let a=Uuid::new_v4();let b=Uuid::new_v4();let guard_a=manager.session_guard(a);let guard_b=manager.session_guard(b);
-            manager.track_session_source(a,&active.source)?;manager.track_session_source(b,&active.source)?;
+            for viewer in [a, b] {
+                manager.select_session_source(viewer, false, |_| Ok(uu_capture::CaptureSource::Monitor(active.source.clone())))
+                    .map_err(|error| fail(error.to_string()))?;
+            }
             manager.release_session(a)?;drop(guard_a);
             if !manager.list()?[0].active {return Err(fail("temporary screen was disabled while another viewer used it"));}
             manager.release_session(b)?;drop(guard_b);

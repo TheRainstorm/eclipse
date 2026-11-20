@@ -371,6 +371,16 @@ trait Backend: Send + Sync {
     fn prepare_on_demand(&self, _package:Option<&[(String,Vec<u8>)]>) -> Result<()> { Err(Error::Unsupported) }
     fn allocate(&self, _id:LeaseId) -> Result<Option<(Target,Box<dyn Claim>)>> { Ok(None) }
     fn allocate_configured(&self,id:LeaseId,_name:&str,_spec:Spec,_position:Option<Position>,_existing:&[(TargetKey,Spec)]) -> Result<Option<(Target,Box<dyn Claim>)>> {self.allocate(id)}
+    /// May allocate one device only after observing a truly empty desktop.
+    /// This admission path must never install or download a driver.
+    fn allocate_headless(
+        &self,
+        _id: LeaseId,
+        _name: &str,
+        _spec: Spec,
+    ) -> Result<Option<(Target, Box<dyn Claim>)>> {
+        Ok(None)
+    }
     fn allocation_configures_mode(&self)->bool {false}
     fn reconnect(&self,key:&TargetKey,spec:Spec,_position:Option<Position>,_existing:&[(TargetKey,Spec)])->Result<Target> {self.reconfigure(key,spec).map_err(|e|Error::Platform(e.message))}
     fn position(&self,_key:&TargetKey)->Result<Option<Position>> {Ok(None)}
@@ -435,6 +445,7 @@ struct Entry {
     target: TargetKey,
     display: Display,
     explicit_temporary: bool,
+    automatic: bool,
 }
 
 /// One process-wide owner for manual and authenticated-session display leases.
@@ -742,17 +753,7 @@ impl Manager {
             return Err(Error::HostClosing);
         }
         if let Owner::Session(id) = owner {
-            let sessions = self
-                .sessions
-                .lock()
-                .map_err(|_| Error::Platform("session ownership state is poisoned".into()))?;
-            if !sessions
-                .get(&id)
-                .and_then(Weak::upgrade)
-                .is_some_and(|closed| !closed.load(Ordering::Acquire))
-            {
-                return Err(Error::SessionClosed);
-            }
+            self.require_open_session(id)?;
         }
         // A temporary connection enables an idle matching definition again.
         // Its normal disconnect preserves that definition, so repeated use of
@@ -863,7 +864,7 @@ impl Manager {
                             display.cleanup_pending=true;
                             let message=format!("{error}; rollback: {cleanup}");
                             display.last_error=Some(message.clone());
-                            entries.insert(id,Entry{_claim:claim,target:target.key,display,explicit_temporary:false});
+                            entries.insert(id,Entry{_claim:claim,target:target.key,display,explicit_temporary:false,automatic:false});
                             return Err(Error::CleanupPending{id,message});
                         }
                         return Err(error);
@@ -876,6 +877,7 @@ impl Manager {
                         target: target.key,
                         display: display.clone(),
                         explicit_temporary:retention==Some(false)||saved.is_some_and(|s|!s.persistent),
+                        automatic: false,
                     },
                 );
                 Ok(display)
@@ -898,6 +900,7 @@ impl Manager {
                                 target: target.key,
                                 display,
                                 explicit_temporary:false,
+                                automatic: false,
                             },
                         );
                         Err(Error::CleanupPending { id, message })
@@ -947,6 +950,16 @@ impl Manager {
 
     fn remove_owned(&self, id: LeaseId, owner: Option<Owner>, delete:bool) -> Result<()> {
         let mut entries = self.lock()?;
+        self.remove_locked(&mut entries, id, owner, delete)
+    }
+
+    fn remove_locked(
+        &self,
+        entries: &mut BTreeMap<LeaseId, Entry>,
+        id: LeaseId,
+        owner: Option<Owner>,
+        delete: bool,
+    ) -> Result<()> {
         let Some(entry) = entries.get_mut(&id) else {
             if owner.is_none() && self.saved_records()?.iter().any(|saved|saved.id==id.0) {if delete {self.forget_saved(id)?;}else{self.mark_disabled(id,None)?;}}
             return Ok(());
@@ -954,12 +967,14 @@ impl Manager {
         if owner.is_some_and(|owner| owner != entry.display.owner) {
             return Err(Error::WrongOwner);
         }
-        let position=self.backend.position(&entry.target)?;
-        // Commit intent before unplugging. An IO failure leaves working
-        // hardware intact; retries never depend on a second metadata write.
-        if delete {self.forget_saved(id)?;}
-        else if self.manual_closing.load(Ordering::Acquire)&&entry.display.persistent {}
-        else {self.mark_disabled(id,position)?;}
+        if !entry.automatic {
+            let position=self.backend.position(&entry.target)?;
+            // Commit intent before unplugging. An IO failure leaves working
+            // hardware intact; retries never depend on a second metadata write.
+            if delete {self.forget_saved(id)?;}
+            else if self.manual_closing.load(Ordering::Acquire)&&entry.display.persistent {}
+            else {self.mark_disabled(id,position)?;}
+        }
         match self.backend.deactivate(&entry.target) {
             Ok(()) => {
                 entries.remove(&id);
@@ -974,8 +989,86 @@ impl Manager {
         }
     }
 
-    pub(crate) fn track_session_source(&self,session:Uuid,source:&str)->Result<()> {
-        let entries=self.lock()?;
+    fn require_open_session(&self, session: Uuid) -> Result<()> {
+        let sessions = self.sessions.lock()
+            .map_err(|_| Error::Platform("session ownership state is poisoned".into()))?;
+        if sessions.get(&session).and_then(Weak::upgrade)
+            .is_some_and(|closed| !closed.load(Ordering::Acquire))
+        {
+            Ok(())
+        } else {
+            Err(Error::SessionClosed)
+        }
+    }
+
+    fn automatic_source(
+        &self,
+        entries: &mut BTreeMap<LeaseId, Entry>,
+        session: Uuid,
+    ) -> Result<Option<String>> {
+        if let Some(entry) = entries.values().find(|entry| entry.automatic) {
+            return Ok((!entry.display.cleanup_pending).then(|| entry.display.source.clone()));
+        }
+        let id = LeaseId(Uuid::new_v4());
+        let spec = Spec::default();
+        let name = "Eclipse Headless";
+        let Some((target, claim)) = self.backend.allocate_headless(id, name, spec)? else {
+            return Ok(None);
+        };
+        let source = target.source.clone();
+        let display = Display {
+            id,
+            owner: Owner::Session(session),
+            spec,
+            actual: target.actual,
+            name: name.into(),
+            source: source.clone(),
+            active: target.active,
+            persistent: false,
+            enabled: true,
+            restore_layout: false,
+            cleanup_pending: false,
+            last_error: None,
+        };
+        // Only the existing Windows device journal retains this lease for
+        // crash recovery. It never becomes a saved monitor definition.
+        entries.insert(id, Entry {
+            _claim: claim,
+            target: target.key,
+            display,
+            explicit_temporary: true,
+            automatic: true,
+        });
+        tracing::info!(%source, "temporary display created for headless desktop");
+        Ok(Some(source))
+    }
+
+    pub(crate) fn select_session_source(
+        &self,
+        session: Uuid,
+        allow_headless: bool,
+        select: impl FnOnce(Option<&str>) -> anyhow::Result<uu_capture::CaptureSource>,
+    ) -> anyhow::Result<uu_capture::CaptureSource> {
+        let mut entries = self.lock()?;
+        self.require_open_session(session)?;
+        let automatic = if allow_headless && !self.manual_closing.load(Ordering::Acquire) {
+            self.automatic_source(&mut entries, session)?
+        } else {
+            None
+        };
+        let source = select(automatic.as_deref())?;
+        if let uu_capture::CaptureSource::Monitor(name) = &source {
+            self.track_source_locked(&entries, session, name)?;
+        }
+        Ok(source)
+    }
+
+    fn track_source_locked(
+        &self,
+        entries: &BTreeMap<LeaseId, Entry>,
+        session: Uuid,
+        source: &str,
+    ) -> Result<()> {
         if let Some(entry)=entries.values().find(|e|e.display.source==source) {
             self.viewers.lock().map_err(|_|Error::Platform("display viewers are poisoned".into()))?.entry(session).or_default().insert(entry.display.id);
         }
@@ -983,8 +1076,8 @@ impl Manager {
     }
     pub fn release_session(&self, session_id: Uuid) -> Result<()> {
         let mut persistence_error=None;
+        let mut entries = self.lock()?;
         let ids: Vec<_> = {
-            let mut entries = self.lock()?;
             // Closing and activation share the ownership lock. An in-flight
             // create either completes before this snapshot or sees closed;
             // it cannot publish a new lease after disconnect cleanup.
@@ -1000,8 +1093,9 @@ impl Manager {
             let mut viewers=self.viewers.lock().map_err(|_|Error::Platform("display viewers are poisoned".into()))?;
             let departing=viewers.remove(&session_id).unwrap_or_default();
             let still_viewed:std::collections::BTreeSet<_>=viewers.values().flat_map(|ids|ids.iter().copied()).collect();
+            drop(viewers);
             let keep=self.keep_after_stream()?&&!self.manual_closing.load(Ordering::Acquire);
-            let saved=if keep&&entries.values().any(|entry|entry.display.owner==Owner::Session(session_id)&&!entry.display.cleanup_pending) {match self.save_disconnected(&entries,session_id){Ok(())=>true,Err(error)=>{persistence_error=Some(error);false}}}else{false};
+            let saved=if keep&&entries.values().any(|entry|entry.display.owner==Owner::Session(session_id)&&!entry.display.cleanup_pending&&!entry.explicit_temporary) {match self.save_disconnected(&entries,session_id){Ok(())=>true,Err(error)=>{persistence_error=Some(error);false}}}else{false};
             for entry in entries.values_mut().filter(|e|e.display.owner==Owner::Session(session_id)) {
                 if (entry.display.persistent||still_viewed.contains(&entry.display.id)||(saved&&!entry.explicit_temporary))&&!entry.display.cleanup_pending {
                     entry.display.owner=Owner::Manual;if saved&&!entry.explicit_temporary {entry.display.persistent=true;}
@@ -1016,7 +1110,9 @@ impl Manager {
         };
         let mut first_error = persistence_error;
         for id in ids {
-            if let Err(error) = self.remove_owned(id,None,false) {
+            // A new selection cannot attach to a display after it has been
+            // deemed unused and before Windows has removed its device.
+            if let Err(error) = self.remove_locked(&mut entries,id,None,false) {
                 if first_error.is_none() {
                     first_error = Some(error);
                 }

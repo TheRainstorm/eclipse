@@ -557,16 +557,34 @@ async fn send_video(
     let initial_reply=if let Some(displays)=&displays {
         let displays=displays.clone();
         let virtuals=virtuals.clone();
+        let lifetime=display_lifetime.clone();
+        let allow_headless=displays.first_offer() && !*stop.borrow();
         let request=initial_request.filter(|request| initial_supported || request.virtual_spec().is_some());
         let (source,reply)=tokio::task::spawn_blocking(move||->Result<_> {
-            let Some(request)=request else{return Ok((displays.prepare(preferred_initial.as_deref())?,None));};
+            let Some(request)=request else {
+                let select = |headless: Option<&str>| match headless {
+                    Some(source) => displays.prepare_initial_source(source),
+                    None => displays.prepare(preferred_initial.as_deref()),
+                };
+                let source = match lifetime {
+                    Some(host) => host.select_source(allow_headless, select)?,
+                    None => select(None)?,
+                };
+                return Ok((source, None));
+            };
             ensure!(initial_supported,"initial virtual displays require an enumerable desktop source");
             let (source,created)=match &request {
-                crate::native_displays::InitialRequest::Existing{..}=>(displays.prepare_initial(&request)?,None),
+                crate::native_displays::InitialRequest::Existing{..} => {
+                    let source = match lifetime {
+                        Some(host) => host.select_source(false, |_| displays.prepare_initial(&request))?,
+                        None => displays.prepare_initial(&request)?,
+                    };
+                    (source, None)
+                }
                 crate::native_displays::InitialRequest::Virtual{spec}|crate::native_displays::InitialRequest::VirtualPersistent{spec}=>{
                     let host=virtuals.context("initial virtual displays require management permission and an updated host")?;
                     let display=host.prepare_initial_with_lifetime(*spec,request.virtual_spec().unwrap().1)?;
-                    (displays.prepare_initial_source(&display.source)?,Some(display))
+                    (host.select_source(false, |_| displays.prepare_initial_source(&display.source))?,Some(display))
                 },
             };
             let catalog=displays.catalog();
@@ -579,7 +597,6 @@ async fn send_video(
         ensure!(!initial_request.as_ref().is_some_and(|r|r.virtual_spec().is_some()),"initial virtual displays require a desktop host");
         None
     };
-    if let (Some(host),CaptureSource::Monitor(source))=(&display_lifetime,&config.source) {host.track_source(source)?;}
     // Accepted display mutations must finish before the outer connection
     // lifetime cleans up its leases, even if the viewer closes during setup.
     if *stop.borrow() {return Ok(HostReport::default());}

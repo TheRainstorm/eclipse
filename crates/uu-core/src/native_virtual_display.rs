@@ -460,7 +460,14 @@ impl Host {
             Ok(display)
         })
     }
-    pub(crate) fn track_source(&self,source:&str)->Result<()> {self.manager.track_session_source(self.owner,source)?;Ok(())}
+    pub(crate) fn select_source(
+        &self,
+        allow_headless: bool,
+        select: impl FnOnce(Option<&str>) -> Result<uu_capture::CaptureSource>,
+    ) -> Result<uu_capture::CaptureSource> {
+        ensure!(!self.stopped.load(Ordering::Acquire), "virtual display connection ended");
+        self.manager.select_session_source(self.owner, allow_headless && self.context.permissions.view, select)
+    }
     pub fn permitted(context: &SessionContext) -> bool {
         context
             .access

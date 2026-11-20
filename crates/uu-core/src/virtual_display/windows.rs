@@ -154,6 +154,20 @@ fn scoped_worker<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
     })
 }
 
+impl Windows {
+    fn demand_scope(&self) -> Result<(String, BTreeSet<TargetKey>)> {
+        let mut scope = self.scope.lock().map_err(|_| Error::Platform("display owner is poisoned".into()))?;
+        if let Some(scope) = scope.as_ref() {
+            return Ok(scope.clone());
+        }
+        let directory = crate::Config::from_env().map_err(|error| Error::Platform(error.to_string()))?.at("device-trust");
+        let id = crate::service_profile::directory_key(&directory).map_err(|error| Error::Platform(error.to_string()))?;
+        let current = (id, BTreeSet::new());
+        *scope = Some(current.clone());
+        Ok(current)
+    }
+}
+
 impl Backend for Windows {
     fn on_demand(&self) -> bool { true }
     fn configure_store(&self, directory:&std::path::Path, saved:&[TargetKey], retained:&[LeaseId]) -> Result<()> {
@@ -178,15 +192,33 @@ impl Backend for Windows {
     fn allocation_configures_mode(&self)->bool {true}
     fn allocate_configured(&self,id:LeaseId,name:&str,spec:Spec,position:Option<Position>,existing:&[(TargetKey,Spec)])->Result<Option<(Target,Box<dyn Claim>)>> {
         if !scoped_worker(demand::prepared)?? {self.prepare_on_demand(None)?;}
-        let (scope,saved) = {
-            let mut selected=self.scope.lock().map_err(|_|Error::Platform("display owner is poisoned".into()))?;
-            if selected.is_none() {
-                let directory=crate::Config::from_env().map_err(|e|Error::Platform(e.to_string()))?.at("device-trust");
-                *selected=Some((crate::service_profile::directory_key(&directory).map_err(|e|Error::Platform(e.to_string()))?,BTreeSet::new()));
-            }
-            selected.as_ref().unwrap().clone()
-        };
+        let (scope,saved) = self.demand_scope()?;
         scoped_worker(||demand::create_configured(&scope,id,&saved,name,spec,position,existing)).map(|value|value.map(Some))?
+    }
+    fn allocate_headless(&self, id: LeaseId, name: &str, spec: Spec) -> Result<Option<(Target, Box<dyn Claim>)>> {
+        if !self.preparation_authorized() {
+            return Ok(None);
+        }
+        scoped_worker(|| {
+            // The same desktop binding and global mutation lock cover the
+            // headless observation and allocation. A forced, monitorless
+            // placeholder has already been stripped by query().
+            let topology = match query(QDC_ONLY_ACTIVE_PATHS) {
+                Ok(topology) => topology,
+                Err(error) => {
+                    tracing::debug!(%error, "desktop topology could not establish headless state");
+                    return Ok(None);
+                }
+            };
+            if !topology.paths.is_empty() {
+                return Ok(None);
+            }
+            if !demand::prepared()? {
+                return Err(Error::DriverMissing);
+            }
+            let (scope, saved) = self.demand_scope()?;
+            demand::create_configured(&scope, id, &saved, name, spec, None, &[]).map(Some)
+        })?
     }
     fn reconnect(&self,key:&TargetKey,spec:Spec,position:Option<Position>,existing:&[(TargetKey,Spec)])->Result<Target> {
         scoped_worker(|| {
@@ -944,6 +976,14 @@ fn configure_owned_set(desired:&[(TargetKey,Spec,Option<Position>)],before:Optio
     proposal.paths.retain(|p|target_key(p).is_ok_and(|(k,_)|!owned.contains(&k)));
     for (key,spec,position) in desired {
         proposal=plan_owned_mode_at(proposal,&fresh.all,None,key,*spec,true,*position)?;
+    }
+    // Windows recreates its own placeholder when the last monitor's PnP
+    // device is removed. There is no real path left to submit to CCD.
+    if proposal.paths.is_empty() && retiring.is_some() {
+        if fresh.active.paths.is_empty() {
+            return Ok(());
+        }
+        return Err(Error::Platform("desktop outputs changed after removing the last virtual display".into()));
     }
     let proposal=compact_topology(proposal)?;
     let mut submitted=false;

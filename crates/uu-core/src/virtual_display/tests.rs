@@ -60,6 +60,17 @@ impl Backend for Arc<Fake> {
         let claim=self.claim(&target.key)?;
         Ok(Some((target,claim)))
     }
+    fn allocate_headless(&self, id: LeaseId, _: &str, spec: Spec) -> Result<Option<(Target, Box<dyn Claim>)>> {
+        if self.targets.lock().unwrap().iter().any(|target| target.active) {
+            return Ok(None);
+        }
+        if !self.inventory()?.driver_present {
+            return Err(Error::DriverMissing);
+        }
+        let (target, claim) = self.allocate(id)?.ok_or(Error::Unsupported)?;
+        let target = self.activate(&target.key, spec).map_err(|error| Error::Platform(error.message))?;
+        Ok(Some((target, claim)))
+    }
     fn recover_capacity(&self,checkpoint:&(dyn Fn()->preparation::Result<()>+Sync))->preparation::Result<()> {
         checkpoint()?;
         self.recover().map_err(|e|preparation::Failure::pending(e.to_string()))?;
@@ -288,6 +299,66 @@ fn fixture() -> (Arc<Manager>, Arc<Fake>) {
         }),
         fake,
     )
+}
+
+#[test]
+fn automatic_headless_display_is_shared_and_removed_at_last_disconnect() {
+    use uu_capture::CaptureSource;
+
+    let (manager, backend) = fixture();
+    let directory = saved_policy(&manager);
+    manager.set_keep_after_stream(true).unwrap();
+    backend.targets.lock().unwrap().clear();
+    backend.on_demand.store(true, Ordering::Relaxed);
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    let _first = manager.session_guard(first);
+    let _second = manager.session_guard(second);
+    let select = |source: Option<&str>| Ok(CaptureSource::Monitor(source.unwrap().to_owned()));
+
+    std::thread::scope(|scope| {
+        let other = scope.spawn(|| manager.select_session_source(second, true, select).unwrap());
+        let CaptureSource::Monitor(chosen) = manager.select_session_source(first, true, select).unwrap() else {
+            panic!("expected a monitor");
+        };
+        assert!(matches!(other.join().unwrap(), CaptureSource::Monitor(name) if name == chosen));
+    });
+    assert_eq!(backend.provision_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(manager.list().unwrap().len(), 1);
+    assert!(manager.saved_records().unwrap().is_empty());
+    manager.release_session(first).unwrap();
+    assert_eq!(manager.list().unwrap().len(), 1);
+    manager.release_session(second).unwrap();
+    assert!(backend.targets.lock().unwrap().is_empty());
+    assert!(manager.list().unwrap().is_empty());
+    assert!(manager.saved_records().unwrap().is_empty());
+    assert!(manager.select_session_source(first, true, select).is_err());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn automatic_headless_display_preserves_live_output_and_never_installs_driver() {
+    use uu_capture::CaptureSource;
+
+    let (manager, backend) = fixture();
+    backend.on_demand.store(true, Ordering::Relaxed);
+    let session = Uuid::new_v4();
+    let _guard = manager.session_guard(session);
+    let select = |source: Option<&str>| {
+        assert!(source.is_none());
+        Ok(CaptureSource::Primary)
+    };
+    manager.select_session_source(session, true, select).unwrap();
+    backend.targets.lock().unwrap().clear();
+    *backend.capacity.lock().unwrap() = Some(preparation::Observation {
+        driver_present: false,
+        ..Default::default()
+    });
+    manager.select_session_source(session, false, select).unwrap();
+    let missing = manager.select_session_source(session, true, select).unwrap_err();
+    assert!(matches!(missing.downcast_ref::<Error>(), Some(Error::DriverMissing)));
+    assert_eq!(backend.capacity_downloads.load(Ordering::Relaxed), 0);
+    assert_eq!(backend.provision_calls.load(Ordering::Relaxed), 0);
 }
 
 #[test]
@@ -1482,7 +1553,9 @@ fn a_temporary_manual_display_disables_only_after_its_last_viewer_disconnects() 
     let (manager,backend)=fixture();let path=saved_policy(&manager);
     let display=manager.create_manual(Spec::default(),false).unwrap();
     let a=Uuid::new_v4();let b=Uuid::new_v4();let _a=manager.session_guard(a);let _b=manager.session_guard(b);
-    manager.track_session_source(a,&display.source).unwrap();manager.track_session_source(b,&display.source).unwrap();
+    for viewer in [a, b] {
+        manager.select_session_source(viewer, false, |_| Ok(uu_capture::CaptureSource::Monitor(display.source.clone()))).unwrap();
+    }
     manager.release_session(a).unwrap();assert!(manager.list().unwrap()[0].active);
     manager.release_session(b).unwrap();let disabled=manager.list().unwrap().remove(0);
     assert_eq!(disabled.id,display.id);assert!(!disabled.active&&!disabled.enabled);assert_eq!(backend.removed.lock().unwrap().len(),1);
